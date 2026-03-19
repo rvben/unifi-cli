@@ -1,6 +1,7 @@
 use tabled::{Table, Tabled};
 
 use crate::api::{UnifiClient, format_mac};
+use crate::output::OutputConfig;
 
 #[derive(Tabled)]
 struct DeviceRow {
@@ -18,26 +19,28 @@ struct DeviceRow {
     firmware: String,
 }
 
-pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(
+    client: &mut UnifiClient,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let devices = client.list_devices().await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &devices
-                    .iter()
-                    .map(|d| serde_json::json!({
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(
+            &devices
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
                         "name": d.name,
                         "model": d.model,
                         "mac": d.mac_address,
                         "ip": d.ip_address,
                         "state": d.state,
                         "firmware": d.firmware_version,
-                    }))
-                    .collect::<Vec<_>>()
-            )?
-        );
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
         return Ok(());
     }
 
@@ -57,14 +60,21 @@ pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn st
         })
         .collect();
 
-    println!("{}", Table::new(rows));
-    println!("\n{} devices", devices.len());
+    out.print_data(&Table::new(rows).to_string());
+    out.print_message(&format!("\n{} devices", devices.len()));
     Ok(())
 }
 
-pub async fn restart(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     client.restart_device(mac).await?;
-    println!("Restarting {}", format_mac(mac));
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": "restart", "mac": format_mac(mac)}),
+        &format!("Restarting {}", format_mac(mac)),
+    );
     Ok(())
 }
 
@@ -72,12 +82,18 @@ pub async fn locate(
     client: &UnifiClient,
     mac: &str,
     off: bool,
+    out: OutputConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     client.locate_device(mac, !off).await?;
-    if off {
-        println!("Stopped locating {}", format_mac(mac));
+    let action = if off { "locate_off" } else { "locate_on" };
+    let msg = if off {
+        format!("Stopped locating {}", format_mac(mac))
     } else {
-        println!("Locating {} (LED blinking)", format_mac(mac));
-    }
+        format!("Locating {} (LED blinking)", format_mac(mac))
+    };
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": action, "mac": format_mac(mac)}),
+        &msg,
+    );
     Ok(())
 }

@@ -1,5 +1,6 @@
 use unifi_cli::api;
 use unifi_cli::commands;
+use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes};
 
 use clap::{Parser, Subcommand};
 
@@ -18,9 +19,13 @@ struct Cli {
     #[arg(long, env = "UNIFI_API_KEY")]
     api_key: Option<String>,
 
-    /// Output as JSON
+    /// Output as JSON (auto-enabled when stdout is not a terminal)
     #[arg(long, global = true)]
     json: bool,
+
+    /// Suppress non-data output (summary lines, confirmations)
+    #[arg(long, global = true)]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -42,6 +47,9 @@ enum Command {
     /// System information
     #[command(subcommand)]
     System(SystemCommand),
+
+    /// Dump all commands and arguments as JSON for agent introspection
+    Schema,
 }
 
 #[derive(Subcommand)]
@@ -107,6 +115,107 @@ enum SystemCommand {
     Info,
 }
 
+fn print_schema() {
+    let schema = serde_json::json!({
+        "name": "unifi-cli",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "CLI for UniFi Network controller",
+        "global_flags": {
+            "--json": "Output as JSON (auto-enabled when piped)",
+            "--quiet": "Suppress non-data output",
+            "--host <HOST>": "UniFi controller host (env: UNIFI_HOST)",
+            "--api-key <KEY>": "API key (env: UNIFI_API_KEY)",
+        },
+        "exit_codes": {
+            "0": "success",
+            "1": "general error",
+            "2": "configuration error (missing host/api-key)",
+            "3": "authentication error (401/403)",
+            "4": "not found (404)",
+            "5": "API error (server error)",
+        },
+        "commands": {
+            "clients list": {
+                "description": "List all connected clients",
+                "args": [],
+                "output_fields": ["name", "mac", "ip", "type"],
+            },
+            "clients show": {
+                "description": "Show details for a client by MAC address",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["name", "mac", "ip", "wired", "uptime", "tx_bytes", "rx_bytes", "signal", "ssid", "ap_mac"],
+            },
+            "clients set-fixed-ip": {
+                "description": "Set a fixed IP (DHCP reservation) for a client",
+                "args": [
+                    {"name": "mac", "required": true, "description": "MAC address"},
+                    {"name": "ip", "required": true, "description": "Fixed IP address"},
+                    {"name": "--name", "required": false, "description": "Friendly name"},
+                ],
+                "output_fields": ["status", "action", "mac", "ip", "name"],
+                "mutating": true,
+            },
+            "clients block": {
+                "description": "Block a client",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
+            "clients unblock": {
+                "description": "Unblock a client",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
+            "clients kick": {
+                "description": "Kick (disconnect) a client",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
+            "devices list": {
+                "description": "List all network devices",
+                "args": [],
+                "output_fields": ["name", "model", "mac", "ip", "state", "firmware"],
+            },
+            "devices restart": {
+                "description": "Restart a device",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
+            "devices locate": {
+                "description": "Toggle locate LED on a device",
+                "args": [
+                    {"name": "mac", "required": true, "description": "MAC address"},
+                    {"name": "--off", "required": false, "description": "Turn off locate LED"},
+                ],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
+            "networks": {
+                "description": "List networks",
+                "args": [],
+                "output_fields": ["name", "vlan_id", "enabled", "default"],
+            },
+            "system health": {
+                "description": "Show system health",
+                "args": [],
+                "output_fields": ["subsystem", "status", "num_sta", "wan_ip", "isp_name"],
+            },
+            "system info": {
+                "description": "Show system info",
+                "args": [],
+                "output_fields": ["hostname", "version", "timezone", "uptime"],
+            },
+        },
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&schema).expect("failed to serialize schema")
+    );
+}
+
 fn load_config_from(path: &std::path::Path) -> (Option<String>, Option<String>) {
     if let Ok(contents) = std::fs::read_to_string(path)
         && let Ok(config) = contents.parse::<toml::Table>()
@@ -137,54 +246,62 @@ fn load_config() -> (Option<String>, Option<String>) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let out = OutputConfig::new(cli.json, cli.quiet);
+
+    if matches!(cli.command, Command::Schema) {
+        print_schema();
+        return;
+    }
+
     let (config_host, config_api_key) = load_config();
 
     let host = cli.host.or(config_host).unwrap_or_else(|| {
         eprintln!("Error: No host specified. Set UNIFI_HOST or use --host");
-        std::process::exit(1);
+        std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
     let api_key = cli.api_key.or(config_api_key).unwrap_or_else(|| {
         eprintln!("Error: No API key specified. Set UNIFI_API_KEY or use --api-key");
-        std::process::exit(1);
+        std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
     let mut client = match api::UnifiClient::new(&host, &api_key) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error creating client: {e}");
-            std::process::exit(1);
+            std::process::exit(exit_codes::CONFIG_ERROR);
         }
     };
 
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Command::Clients(cmd) => match cmd {
-            ClientsCommand::List => commands::clients::list(&mut client, cli.json).await,
-            ClientsCommand::Show { mac } => commands::clients::show(&client, &mac, cli.json).await,
+            ClientsCommand::List => commands::clients::list(&mut client, out).await,
+            ClientsCommand::Show { mac } => commands::clients::show(&client, &mac, out).await,
             ClientsCommand::SetFixedIp { mac, ip, name } => {
-                commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref()).await
+                commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
             }
-            ClientsCommand::Block { mac } => commands::clients::block(&client, &mac).await,
-            ClientsCommand::Unblock { mac } => commands::clients::unblock(&client, &mac).await,
-            ClientsCommand::Kick { mac } => commands::clients::kick(&client, &mac).await,
+            ClientsCommand::Block { mac } => commands::clients::block(&client, &mac, out).await,
+            ClientsCommand::Unblock { mac } => commands::clients::unblock(&client, &mac, out).await,
+            ClientsCommand::Kick { mac } => commands::clients::kick(&client, &mac, out).await,
         },
         Command::Devices(cmd) => match cmd {
-            DevicesCommand::List => commands::devices::list(&mut client, cli.json).await,
-            DevicesCommand::Restart { mac } => commands::devices::restart(&client, &mac).await,
+            DevicesCommand::List => commands::devices::list(&mut client, out).await,
+            DevicesCommand::Restart { mac } => commands::devices::restart(&client, &mac, out).await,
             DevicesCommand::Locate { mac, off } => {
-                commands::devices::locate(&client, &mac, off).await
+                commands::devices::locate(&client, &mac, off, out).await
             }
         },
-        Command::Networks => commands::networks::list(&mut client, cli.json).await,
+        Command::Networks => commands::networks::list(&mut client, out).await,
         Command::System(cmd) => match cmd {
-            SystemCommand::Health => commands::system::health(&client, cli.json).await,
-            SystemCommand::Info => commands::system::info(&client, cli.json).await,
+            SystemCommand::Health => commands::system::health(&client, out).await,
+            SystemCommand::Info => commands::system::info(&client, out).await,
         },
+        Command::Schema => unreachable!(),
     };
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
-        std::process::exit(1);
+        std::process::exit(exit_code_for_error(e.as_ref()));
     }
 }
 
@@ -281,6 +398,7 @@ mod tests {
         assert_eq!(cli.host.as_deref(), Some("h"));
         assert_eq!(cli.api_key.as_deref(), Some("k"));
         assert!(!cli.json);
+        assert!(!cli.quiet);
         assert!(matches!(
             cli.command,
             Command::Clients(ClientsCommand::List)
@@ -300,7 +418,9 @@ mod tests {
             "aa:bb:cc:dd:ee:ff",
         ]);
         match cli.command {
-            Command::Clients(ClientsCommand::Show { mac }) => assert_eq!(mac, "aa:bb:cc:dd:ee:ff"),
+            Command::Clients(ClientsCommand::Show { mac }) => {
+                assert_eq!(mac, "aa:bb:cc:dd:ee:ff")
+            }
             _ => panic!("expected Clients Show"),
         }
     }
@@ -543,6 +663,33 @@ mod tests {
             "--json",
         ]);
         assert!(cli.json);
+    }
+
+    #[test]
+    fn cli_quiet_flag() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "--quiet",
+            "networks",
+        ]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn cli_schema_command() {
+        let cli = parse(&["unifi-cli", "schema"]);
+        assert!(matches!(cli.command, Command::Schema));
+    }
+
+    #[test]
+    fn cli_schema_no_host_required() {
+        let cli = parse(&["unifi-cli", "schema"]);
+        assert!(cli.host.is_none());
+        assert!(cli.api_key.is_none());
     }
 
     #[test]

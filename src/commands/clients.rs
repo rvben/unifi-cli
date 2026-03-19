@@ -1,6 +1,7 @@
 use tabled::{Table, Tabled};
 
 use crate::api::{UnifiClient, format_bytes, format_mac, format_uptime};
+use crate::output::OutputConfig;
 
 #[derive(Tabled)]
 struct ClientRow {
@@ -22,24 +23,26 @@ struct ClientDetailRow {
     value: String,
 }
 
-pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(
+    client: &mut UnifiClient,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let clients = client.list_clients().await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &clients
-                    .iter()
-                    .map(|c| serde_json::json!({
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(
+            &clients
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
                         "name": c.display_name(),
                         "mac": c.mac_address,
                         "ip": c.ip_address,
                         "type": c.client_type,
-                    }))
-                    .collect::<Vec<_>>()
-            )?
-        );
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
         return Ok(());
     }
 
@@ -57,34 +60,31 @@ pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn st
         })
         .collect();
 
-    println!("{}", Table::new(rows));
-    println!("\n{} clients", clients.len());
+    out.print_data(&Table::new(rows).to_string());
+    out.print_message(&format!("\n{} clients", clients.len()));
     Ok(())
 }
 
 pub async fn show(
     client: &UnifiClient,
     mac: &str,
-    json: bool,
+    out: OutputConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let c = client.get_client_detail(mac).await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "name": c.display_name(),
-                "mac": c.mac,
-                "ip": c.ip,
-                "wired": c.is_wired,
-                "uptime": c.uptime,
-                "tx_bytes": c.tx_bytes,
-                "rx_bytes": c.rx_bytes,
-                "signal": c.signal,
-                "ssid": c.ssid,
-                "ap_mac": c.ap_mac,
-            }))?
-        );
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
+            "name": c.display_name(),
+            "mac": c.mac,
+            "ip": c.ip,
+            "wired": c.is_wired,
+            "uptime": c.uptime,
+            "tx_bytes": c.tx_bytes,
+            "rx_bytes": c.rx_bytes,
+            "signal": c.signal,
+            "ssid": c.ssid,
+            "ap_mac": c.ap_mac,
+        }))?);
         return Ok(());
     }
 
@@ -150,7 +150,7 @@ pub async fn show(
         }
     }
 
-    println!("{}", Table::new(rows));
+    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }
 
@@ -159,29 +159,64 @@ pub async fn set_fixed_ip(
     mac: &str,
     ip: &str,
     name: Option<&str>,
+    out: OutputConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     client.set_fixed_ip(mac, ip, name).await?;
-    println!("Set fixed IP {ip} for {}", format_mac(mac));
+
+    let mut result = serde_json::json!({
+        "status": "ok",
+        "action": "set_fixed_ip",
+        "mac": format_mac(mac),
+        "ip": ip,
+    });
     if let Some(n) = name {
-        println!("Set name: {n}");
+        result["name"] = serde_json::json!(n);
     }
+
+    let mut msg = format!("Set fixed IP {ip} for {}", format_mac(mac));
+    if let Some(n) = name {
+        msg.push_str(&format!("\nSet name: {n}"));
+    }
+
+    out.print_result(&result, &msg);
     Ok(())
 }
 
-pub async fn block(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn block(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     client.block_client(mac).await?;
-    println!("Blocked {}", format_mac(mac));
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": "block", "mac": format_mac(mac)}),
+        &format!("Blocked {}", format_mac(mac)),
+    );
     Ok(())
 }
 
-pub async fn unblock(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn unblock(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     client.unblock_client(mac).await?;
-    println!("Unblocked {}", format_mac(mac));
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": "unblock", "mac": format_mac(mac)}),
+        &format!("Unblocked {}", format_mac(mac)),
+    );
     Ok(())
 }
 
-pub async fn kick(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn kick(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     client.kick_client(mac).await?;
-    println!("Kicked {}", format_mac(mac));
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": "kick", "mac": format_mac(mac)}),
+        &format!("Kicked {}", format_mac(mac)),
+    );
     Ok(())
 }

@@ -1,6 +1,7 @@
 use tabled::{Table, Tabled};
 
 use crate::api::{UnifiClient, format_uptime};
+use crate::output::OutputConfig;
 
 #[derive(Tabled)]
 struct HealthRow {
@@ -20,25 +21,27 @@ struct InfoRow {
     value: String,
 }
 
-pub async fn health(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn health(
+    client: &UnifiClient,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let subsystems = client.get_health().await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &subsystems
-                    .iter()
-                    .map(|s| serde_json::json!({
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(
+            &subsystems
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
                         "subsystem": s.subsystem,
                         "status": s.status,
                         "num_sta": s.num_sta,
                         "wan_ip": s.wan_ip,
                         "isp_name": s.isp_name,
-                    }))
-                    .collect::<Vec<_>>()
-            )?
-        );
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
         return Ok(());
     }
 
@@ -87,23 +90,23 @@ pub async fn health(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std:
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }
 
-pub async fn info(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn info(
+    client: &UnifiClient,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sys = client.get_sysinfo().await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "hostname": sys.hostname,
-                "version": sys.version,
-                "timezone": sys.timezone,
-                "uptime": sys.uptime,
-            }))?
-        );
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
+            "hostname": sys.hostname,
+            "version": sys.version,
+            "timezone": sys.timezone,
+            "uptime": sys.uptime,
+        }))?);
         return Ok(());
     }
 
@@ -134,6 +137,6 @@ pub async fn info(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std::e
         });
     }
 
-    println!("{}", Table::new(rows));
+    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }

@@ -605,6 +605,21 @@ mod error_handling {
 
 mod command_output {
     use super::*;
+    use unifi_cli::output::OutputConfig;
+
+    fn out_table() -> OutputConfig {
+        OutputConfig {
+            json: false,
+            quiet: false,
+        }
+    }
+
+    fn out_json() -> OutputConfig {
+        OutputConfig {
+            json: true,
+            quiet: false,
+        }
+    }
 
     // Helper: mount sites + clients list endpoint
     async fn mount_clients_list(server: &MockServer) {
@@ -627,7 +642,7 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, false)
+        unifi_cli::commands::clients::list(&mut client, out_table())
             .await
             .unwrap();
     }
@@ -637,7 +652,7 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, true)
+        unifi_cli::commands::clients::list(&mut client, out_json())
             .await
             .unwrap();
     }
@@ -659,7 +674,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", false)
+        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", out_table())
             .await
             .unwrap();
     }
@@ -682,7 +697,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "11:22:33:44:55:66", false)
+        unifi_cli::commands::clients::show(&client, "11:22:33:44:55:66", out_table())
             .await
             .unwrap();
     }
@@ -703,7 +718,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", true)
+        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", out_json())
             .await
             .unwrap();
     }
@@ -729,9 +744,15 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::set_fixed_ip(&client, "aa:bb:cc:dd:ee:ff", "10.0.0.50", None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::set_fixed_ip(
+            &client,
+            "aa:bb:cc:dd:ee:ff",
+            "10.0.0.50",
+            None,
+            out_table(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -760,6 +781,7 @@ mod command_output {
             "aa:bb:cc:dd:ee:ff",
             "10.0.0.50",
             Some("MyDevice"),
+            out_table(),
         )
         .await
         .unwrap();
@@ -778,7 +800,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::block(&client, "aa:bb:cc:dd:ee:ff")
+        unifi_cli::commands::clients::block(&client, "aa:bb:cc:dd:ee:ff", out_table())
             .await
             .unwrap();
     }
@@ -796,7 +818,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::unblock(&client, "aa:bb:cc:dd:ee:ff")
+        unifi_cli::commands::clients::unblock(&client, "aa:bb:cc:dd:ee:ff", out_table())
             .await
             .unwrap();
     }
@@ -814,7 +836,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::kick(&client, "aa:bb:cc:dd:ee:ff")
+        unifi_cli::commands::clients::kick(&client, "aa:bb:cc:dd:ee:ff", out_table())
             .await
             .unwrap();
     }
@@ -833,7 +855,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, false)
+        unifi_cli::commands::devices::list(&mut client, out_table())
             .await
             .unwrap();
     }
@@ -852,7 +874,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, true)
+        unifi_cli::commands::devices::list(&mut client, out_json())
             .await
             .unwrap();
     }
@@ -870,7 +892,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::restart(&client, "aa:bb:cc:dd:ee:ff")
+        unifi_cli::commands::devices::restart(&client, "aa:bb:cc:dd:ee:ff", out_table())
             .await
             .unwrap();
     }
@@ -888,7 +910,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", false)
+        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", false, out_table())
             .await
             .unwrap();
     }
@@ -906,7 +928,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", true)
+        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", true, out_table())
             .await
             .unwrap();
     }
@@ -930,7 +952,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::networks::list(&mut client, false)
+        unifi_cli::commands::networks::list(&mut client, out_table())
             .await
             .unwrap();
     }
@@ -954,7 +976,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::networks::list(&mut client, true)
+        unifi_cli::commands::networks::list(&mut client, out_json())
             .await
             .unwrap();
     }
@@ -977,7 +999,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::health(&client, false)
+        unifi_cli::commands::system::health(&client, out_table())
             .await
             .unwrap();
     }
@@ -997,7 +1019,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::health(&client, true)
+        unifi_cli::commands::system::health(&client, out_json())
             .await
             .unwrap();
     }
@@ -1015,7 +1037,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, false)
+        unifi_cli::commands::system::info(&client, out_table())
             .await
             .unwrap();
     }
@@ -1033,7 +1055,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, true)
+        unifi_cli::commands::system::info(&client, out_json())
             .await
             .unwrap();
     }
@@ -1051,7 +1073,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, false)
+        unifi_cli::commands::system::info(&client, out_table())
             .await
             .unwrap();
     }

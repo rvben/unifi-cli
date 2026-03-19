@@ -1,6 +1,7 @@
 use tabled::{Table, Tabled};
 
 use crate::api::UnifiClient;
+use crate::output::OutputConfig;
 
 #[derive(Tabled)]
 struct NetworkRow {
@@ -14,24 +15,26 @@ struct NetworkRow {
     is_default: String,
 }
 
-pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(
+    client: &mut UnifiClient,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let networks = client.list_networks().await?;
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &networks
-                    .iter()
-                    .map(|n| serde_json::json!({
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(
+            &networks
+                .iter()
+                .map(|n| {
+                    serde_json::json!({
                         "name": n.name,
                         "vlan_id": n.vlan_id,
                         "enabled": n.enabled,
                         "default": n.default,
-                    }))
-                    .collect::<Vec<_>>()
-            )?
-        );
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?);
         return Ok(());
     }
 
@@ -48,6 +51,6 @@ pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn st
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }
