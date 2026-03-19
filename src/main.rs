@@ -4,7 +4,7 @@ use unifi_cli::commands;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "unifi-cli", about = "Minimal CLI for UniFi Network controller")]
+#[command(name = "unifi-cli", about = "CLI for UniFi Network controller")]
 struct Cli {
     /// UniFi controller host (or set UNIFI_HOST env var)
     #[arg(long, env = "UNIFI_HOST")]

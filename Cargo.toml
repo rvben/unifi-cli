@@ -3,7 +3,12 @@ name = "unifi-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Minimal CLI for UniFi Network controller"
+description = "CLI for UniFi Network controller"
+license = "MIT"
+repository = "https://github.com/rvben/unifi-cli"
+homepage = "https://github.com/rvben/unifi-cli"
+keywords = ["unifi", "ubiquiti", "cli", "network"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
