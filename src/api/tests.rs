@@ -452,3 +452,47 @@ fn deserialize_sysinfo_minimal() {
     assert!(info.hostname.is_none());
     assert!(info.uptime.is_none());
 }
+
+// --- LegacyDevice ---
+
+#[test]
+fn deserialize_legacy_device() {
+    let json = r#"{
+        "mac": "9c:05:d6:bc:06:43",
+        "ip": "192.168.1.1",
+        "name": "UCG Ultra",
+        "model": "UCG Ultra",
+        "type": "ugw",
+        "state": 1,
+        "version": "5.0.12",
+        "uptime": 1737960,
+        "num_sta": 42
+    }"#;
+    let device: LegacyDevice = serde_json::from_str(json).unwrap();
+    assert_eq!(device.mac.as_deref(), Some("9c:05:d6:bc:06:43"));
+    assert_eq!(device.name.as_deref(), Some("UCG Ultra"));
+    assert_eq!(device.state, Some(1));
+    assert_eq!(device.state_str(), "ONLINE");
+    assert_eq!(device.uptime, Some(1737960));
+    assert_eq!(device.num_sta, Some(42));
+}
+
+#[test]
+fn legacy_device_state_str() {
+    let make_device = |state| -> LegacyDevice {
+        serde_json::from_str(&format!(r#"{{"state": {state}}}"#)).unwrap()
+    };
+    assert_eq!(make_device(0).state_str(), "OFFLINE");
+    assert_eq!(make_device(1).state_str(), "ONLINE");
+    assert_eq!(make_device(2).state_str(), "ADOPTING");
+    assert_eq!(make_device(4).state_str(), "UPGRADING");
+    assert_eq!(make_device(5).state_str(), "PROVISIONING");
+    assert_eq!(make_device(99).state_str(), "UNKNOWN");
+}
+
+#[test]
+fn legacy_device_no_state() {
+    let device: LegacyDevice = serde_json::from_str(r#"{}"#).unwrap();
+    assert_eq!(device.state_str(), "UNKNOWN");
+    assert!(device.mac.is_none());
+}

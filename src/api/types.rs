@@ -96,6 +96,34 @@ pub struct Device {
     pub firmware_version: Option<String>,
 }
 
+// Device from Legacy stat/device endpoint (richer data)
+#[derive(Debug, Deserialize)]
+pub struct LegacyDevice {
+    pub mac: Option<String>,
+    pub ip: Option<String>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    #[serde(rename = "type")]
+    pub device_type: Option<String>,
+    pub state: Option<u32>,
+    pub version: Option<String>,
+    pub uptime: Option<u64>,
+    pub num_sta: Option<u32>,
+}
+
+impl LegacyDevice {
+    pub fn state_str(&self) -> &str {
+        match self.state {
+            Some(1) => "ONLINE",
+            Some(0) => "OFFLINE",
+            Some(2) => "ADOPTING",
+            Some(4) => "UPGRADING",
+            Some(5) => "PROVISIONING",
+            _ => "UNKNOWN",
+        }
+    }
+}
+
 // Network from Integration API
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

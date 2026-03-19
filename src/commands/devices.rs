@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{Device, UnifiClient, format_mac};
+use crate::api::{Device, UnifiClient, format_mac, format_uptime};
 use crate::output::OutputConfig;
 
 #[derive(Tabled)]
@@ -78,6 +78,85 @@ pub async fn list(
         render_devices(&devices, &out);
         Ok(())
     }
+}
+
+#[derive(Tabled)]
+struct DeviceDetailRow {
+    #[tabled(rename = "Field")]
+    field: String,
+    #[tabled(rename = "Value")]
+    value: String,
+}
+
+pub async fn show(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let d = client.get_device_detail(mac).await?;
+
+    if out.json {
+        out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
+            "name": d.name,
+            "model": d.model,
+            "mac": d.mac,
+            "ip": d.ip,
+            "state": d.state_str(),
+            "version": d.version,
+            "uptime": d.uptime,
+            "num_sta": d.num_sta,
+        }))?);
+        return Ok(());
+    }
+
+    let mut rows = vec![
+        DeviceDetailRow {
+            field: "Name".into(),
+            value: d.name.as_deref().unwrap_or("-").to_string(),
+        },
+        DeviceDetailRow {
+            field: "Model".into(),
+            value: d.model.as_deref().unwrap_or("-").to_string(),
+        },
+        DeviceDetailRow {
+            field: "MAC".into(),
+            value: d
+                .mac
+                .as_deref()
+                .map(format_mac)
+                .unwrap_or_else(|| "-".into()),
+        },
+        DeviceDetailRow {
+            field: "IP".into(),
+            value: d.ip.as_deref().unwrap_or("-").to_string(),
+        },
+        DeviceDetailRow {
+            field: "State".into(),
+            value: d.state_str().to_string(),
+        },
+    ];
+
+    if let Some(ref v) = d.version {
+        rows.push(DeviceDetailRow {
+            field: "Firmware".into(),
+            value: v.clone(),
+        });
+    }
+    if let Some(uptime) = d.uptime {
+        rows.push(DeviceDetailRow {
+            field: "Uptime".into(),
+            value: format_uptime(uptime),
+        });
+    }
+    if let Some(num_sta) = d.num_sta {
+        rows.push(DeviceDetailRow {
+            field: "Clients".into(),
+            value: num_sta.to_string(),
+        });
+    }
+
+    out.print_data(&Table::new(rows).to_string());
+    Ok(())
 }
 
 pub async fn restart(
