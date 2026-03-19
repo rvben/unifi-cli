@@ -167,7 +167,10 @@ fn deserialize_paginated_response() {
     assert_eq!(resp.total_count, 2);
     assert_eq!(resp.data.len(), 2);
     assert_eq!(resp.data[0].name.as_deref(), Some("Test"));
-    assert_eq!(resp.data[0].mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+    assert_eq!(
+        resp.data[0].mac_address.as_deref(),
+        Some("aa:bb:cc:dd:ee:ff")
+    );
     assert_eq!(resp.data[1].hostname.as_deref(), Some("host2"));
     assert_eq!(resp.data[1].client_type.as_deref(), Some("WIRELESS"));
 }

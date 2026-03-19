@@ -5,7 +5,6 @@ use std::fmt;
 #[path = "tests.rs"]
 mod tests;
 
-
 // Integration API response wrapper (paginated)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,8 +131,7 @@ pub struct SysInfo {
 }
 
 pub fn normalize_mac(mac: &str) -> String {
-    mac.to_lowercase()
-        .replace([':', '-'], "")
+    mac.to_lowercase().replace([':', '-'], "")
 }
 
 pub fn format_mac(mac: &str) -> String {
@@ -208,7 +206,9 @@ impl std::error::Error for ApiError {}
 
 impl From<reqwest::Error> for ApiError {
     fn from(e: reqwest::Error) -> Self {
-        if e.status().is_some_and(|s| s.as_u16() == 401 || s.as_u16() == 403) {
+        if e.status()
+            .is_some_and(|s| s.as_u16() == 401 || s.as_u16() == 403)
+        {
             ApiError::Auth(e.to_string())
         } else if e.status().is_some_and(|s| s.as_u16() == 404) {
             ApiError::NotFound(e.to_string())

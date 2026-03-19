@@ -58,7 +58,9 @@ mod client_api {
 
         // First page
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/clients"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 200, "totalCount": 201,
                 "data": (0..200).map(|i| serde_json::json!({
@@ -72,7 +74,9 @@ mod client_api {
 
         // Second page
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/clients"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 200, "limit": 200, "count": 1, "totalCount": 201,
                 "data": [{"macAddress": "ff:ff:ff:ff:ff:ff", "type": "WIRED"}]
@@ -124,7 +128,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        let err = client.get_client_detail("00:00:00:00:00:00").await.unwrap_err();
+        let err = client
+            .get_client_detail("00:00:00:00:00:00")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("Not found"));
     }
 
@@ -170,7 +177,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        client.set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.50", None).await.unwrap();
+        client
+            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.50", None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -209,7 +219,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        client.set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.99", Some("NewDevice")).await.unwrap();
+        client
+            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.99", Some("NewDevice"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -226,7 +239,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        let err = client.set_fixed_ip("00:00:00:00:00:00", "10.0.0.1", None).await.unwrap_err();
+        let err = client
+            .set_fixed_ip("00:00:00:00:00:00", "10.0.0.1", None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("Not found"));
     }
 
@@ -341,7 +357,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        client.locate_device("aa:bb:cc:dd:ee:ff", true).await.unwrap();
+        client
+            .locate_device("aa:bb:cc:dd:ee:ff", true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -359,7 +378,10 @@ mod client_api {
             .await;
 
         let client = mock_client(&server).await;
-        client.locate_device("aa:bb:cc:dd:ee:ff", false).await.unwrap();
+        client
+            .locate_device("aa:bb:cc:dd:ee:ff", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -368,7 +390,9 @@ mod client_api {
         mount_site_discovery(&server).await;
 
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/networks"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/networks",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 3, "totalCount": 3,
                 "data": [
@@ -469,7 +493,9 @@ mod error_handling {
         mount_site_discovery(&server).await;
 
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/clients"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
             .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
             .mount(&server)
             .await;
@@ -544,7 +570,9 @@ mod error_handling {
             .await;
 
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/clients"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 0, "totalCount": 0, "data": []
             })))
@@ -599,7 +627,9 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, false).await.unwrap();
+        unifi_cli::commands::clients::list(&mut client, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -607,7 +637,9 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, true).await.unwrap();
+        unifi_cli::commands::clients::list(&mut client, true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -627,7 +659,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", false).await.unwrap();
+        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -648,7 +682,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "11:22:33:44:55:66", false).await.unwrap();
+        unifi_cli::commands::clients::show(&client, "11:22:33:44:55:66", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -667,7 +703,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", true).await.unwrap();
+        unifi_cli::commands::clients::show(&client, "aa:bb:cc:dd:ee:ff", true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -683,12 +721,17 @@ mod command_output {
             .await;
         Mock::given(method("PUT"))
             .and(path("/proxy/network/api/s/default/rest/user/c1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": [{}]})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": [{}]})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::set_fixed_ip(&client, "aa:bb:cc:dd:ee:ff", "10.0.0.50", None).await.unwrap();
+        unifi_cli::commands::clients::set_fixed_ip(&client, "aa:bb:cc:dd:ee:ff", "10.0.0.50", None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -704,12 +747,22 @@ mod command_output {
             .await;
         Mock::given(method("PUT"))
             .and(path("/proxy/network/api/s/default/rest/user/c1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": [{}]})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": [{}]})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::set_fixed_ip(&client, "aa:bb:cc:dd:ee:ff", "10.0.0.50", Some("MyDevice")).await.unwrap();
+        unifi_cli::commands::clients::set_fixed_ip(
+            &client,
+            "aa:bb:cc:dd:ee:ff",
+            "10.0.0.50",
+            Some("MyDevice"),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -717,12 +770,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/stamgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::block(&client, "aa:bb:cc:dd:ee:ff").await.unwrap();
+        unifi_cli::commands::clients::block(&client, "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -730,12 +788,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/stamgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::unblock(&client, "aa:bb:cc:dd:ee:ff").await.unwrap();
+        unifi_cli::commands::clients::unblock(&client, "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -743,12 +806,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/stamgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::clients::kick(&client, "aa:bb:cc:dd:ee:ff").await.unwrap();
+        unifi_cli::commands::clients::kick(&client, "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -765,7 +833,9 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, false).await.unwrap();
+        unifi_cli::commands::devices::list(&mut client, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -782,7 +852,9 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, true).await.unwrap();
+        unifi_cli::commands::devices::list(&mut client, true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -790,12 +862,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/devmgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::restart(&client, "aa:bb:cc:dd:ee:ff").await.unwrap();
+        unifi_cli::commands::devices::restart(&client, "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -803,12 +880,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/devmgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", false).await.unwrap();
+        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -816,12 +898,17 @@ mod command_output {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/proxy/network/api/s/default/cmd/devmgr"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
             .mount(&server)
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", true).await.unwrap();
+        unifi_cli::commands::devices::locate(&client, "aa:bb:cc:dd:ee:ff", true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -829,7 +916,9 @@ mod command_output {
         let server = MockServer::start().await;
         mount_site_discovery(&server).await;
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/networks"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/networks",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
                 "data": [
@@ -841,7 +930,9 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::networks::list(&mut client, false).await.unwrap();
+        unifi_cli::commands::networks::list(&mut client, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -849,7 +940,9 @@ mod command_output {
         let server = MockServer::start().await;
         mount_site_discovery(&server).await;
         Mock::given(method("GET"))
-            .and(path_regex(r"/proxy/network/integration/v1/sites/.*/networks"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/networks",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
                 "data": [
@@ -861,7 +954,9 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::networks::list(&mut client, true).await.unwrap();
+        unifi_cli::commands::networks::list(&mut client, true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -882,7 +977,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::health(&client, false).await.unwrap();
+        unifi_cli::commands::system::health(&client, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -900,7 +997,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::health(&client, true).await.unwrap();
+        unifi_cli::commands::system::health(&client, true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -916,7 +1015,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, false).await.unwrap();
+        unifi_cli::commands::system::info(&client, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -932,7 +1033,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, true).await.unwrap();
+        unifi_cli::commands::system::info(&client, true)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -948,7 +1051,9 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::system::info(&client, false).await.unwrap();
+        unifi_cli::commands::system::info(&client, false)
+            .await
+            .unwrap();
     }
 }
 
