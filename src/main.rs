@@ -20,6 +20,10 @@ struct Cli {
     #[arg(long, env = "UNIFI_API_KEY")]
     api_key: Option<String>,
 
+    /// Config profile to use (or set UNIFI_PROFILE env var)
+    #[arg(long, env = "UNIFI_PROFILE")]
+    profile: Option<String>,
+
     /// Output as JSON (auto-enabled when stdout is not a terminal)
     #[arg(long, global = true)]
     json: bool,
@@ -57,6 +61,9 @@ enum Command {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Create or update the configuration file interactively
+    Init,
 }
 
 #[derive(Subcommand)]
@@ -154,6 +161,7 @@ fn print_schema() {
             "--quiet": "Suppress non-data output",
             "--host <HOST>": "UniFi controller host (env: UNIFI_HOST)",
             "--api-key <KEY>": "API key (env: UNIFI_API_KEY)",
+            "--profile <NAME>": "Config profile to use (env: UNIFI_PROFILE)",
         },
         "exit_codes": {
             "0": "success",
@@ -254,6 +262,11 @@ fn print_schema() {
                 "args": [{"name": "shell", "required": true, "description": "Shell (bash, zsh, fish, powershell)"}],
                 "note": "Does not require --host or --api-key",
             },
+            "init": {
+                "description": "Create or update config file interactively",
+                "args": [],
+                "note": "Does not require --host or --api-key. Supports named profiles.",
+            },
         },
     });
     println!(
@@ -262,31 +275,248 @@ fn print_schema() {
     );
 }
 
-fn load_config_from(path: &std::path::Path) -> (Option<String>, Option<String>) {
+fn load_config_from(
+    path: &std::path::Path,
+    profile: Option<&str>,
+) -> (Option<String>, Option<String>) {
     if let Ok(contents) = std::fs::read_to_string(path)
         && let Ok(config) = contents.parse::<toml::Table>()
     {
-        let host = config
-            .get("host")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let api_key = config
-            .get("api_key")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        return (host, api_key);
+        if let Some(table) = resolve_profile_table(&config, profile) {
+            return extract_credentials(table);
+        }
+        if let Some(name) = profile {
+            eprintln!("Warning: Profile '{name}' not found in config");
+        }
     }
     (None, None)
 }
 
-fn load_config() -> (Option<String>, Option<String>) {
+fn load_config(profile: Option<&str>) -> (Option<String>, Option<String>) {
     let config_path = dirs::config_dir().map(|d| d.join("unifi-cli").join("config.toml"));
 
     if let Some(path) = config_path {
-        return load_config_from(&path);
+        return load_config_from(&path, profile);
     }
 
     (None, None)
+}
+
+fn default_config_path() -> Result<std::path::PathBuf, InitError> {
+    dirs::config_dir()
+        .map(|d| d.join("unifi-cli").join("config.toml"))
+        .ok_or(InitError("Could not determine config directory".into()))
+}
+
+#[derive(Debug)]
+struct InitError(String);
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for InitError {}
+
+impl From<std::io::Error> for InitError {
+    fn from(e: std::io::Error) -> Self {
+        InitError(e.to_string())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum InitOutcome {
+    Saved { profile: Option<String> },
+    Cancelled,
+}
+
+fn prompt_line(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    prompt: &str,
+) -> Result<String, InitError> {
+    write!(writer, "{prompt}")?;
+    writer.flush()?;
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+fn extract_credentials(table: &toml::Table) -> (Option<String>, Option<String>) {
+    (
+        table.get("host").and_then(|v| v.as_str()).map(String::from),
+        table
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    )
+}
+
+fn resolve_profile_table<'a>(
+    config: &'a toml::Table,
+    profile: Option<&str>,
+) -> Option<&'a toml::Table> {
+    if let Some(name) = profile {
+        config
+            .get("profiles")
+            .and_then(|v| v.as_table())
+            .and_then(|p| p.get(name))
+            .and_then(|v| v.as_table())
+    } else {
+        Some(config)
+    }
+}
+
+fn run_init_with_io(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    config_path: &std::path::Path,
+) -> Result<InitOutcome, InitError> {
+    // Load existing config, warn if file exists but is corrupt
+    let existing = match std::fs::read_to_string(config_path) {
+        Ok(contents) => match contents.parse::<toml::Table>() {
+            Ok(table) => Some(table),
+            Err(e) => {
+                writeln!(
+                    writer,
+                    "Warning: Existing config at {} is invalid TOML: {e}",
+                    config_path.display()
+                )?;
+                writeln!(writer, "A new config will be created.\n")?;
+                None
+            }
+        },
+        Err(_) => None,
+    };
+
+    // Profile name
+    let profile_input = prompt_line(reader, writer, "Profile name (leave empty for default): ")?;
+    let profile_name = if profile_input.is_empty() {
+        None
+    } else {
+        Some(profile_input)
+    };
+
+    // Current values for this profile/default
+    let (current_host, current_key) = existing
+        .as_ref()
+        .and_then(|c| resolve_profile_table(c, profile_name.as_deref()))
+        .map(extract_credentials)
+        .unwrap_or((None, None));
+
+    // Host prompt
+    let host_prompt = match current_host {
+        Some(ref h) => format!("Controller host [{h}]: "),
+        None => "Controller host (e.g., https://unifi.local): ".to_string(),
+    };
+    let host_input = prompt_line(reader, writer, &host_prompt)?;
+    let host = if host_input.is_empty() {
+        current_host.ok_or(InitError("Host is required".into()))?
+    } else {
+        host_input
+    };
+
+    // API key prompt
+    let key_prompt = match current_key {
+        Some(ref k) => format!("API key [{}]: ", mask_api_key(k)),
+        None => "API key: ".to_string(),
+    };
+    let key_input = prompt_line(reader, writer, &key_prompt)?;
+    let api_key = if key_input.is_empty() {
+        current_key.ok_or(InitError("API key is required".into()))?
+    } else {
+        key_input
+    };
+
+    // Show summary and confirm
+    let label = profile_name
+        .as_deref()
+        .map(|n| format!(" (profile: {n})"))
+        .unwrap_or_default();
+    writeln!(writer)?;
+    writeln!(writer, "Configuration{label}:")?;
+    writeln!(writer, "  host    = {host}")?;
+    writeln!(writer, "  api_key = {}", mask_api_key(&api_key))?;
+    writeln!(writer, "  path    = {}", config_path.display())?;
+
+    let confirm = prompt_line(reader, writer, "\nSave? (y/n): ")?;
+    if !matches!(confirm.to_lowercase().as_str(), "y" | "yes") {
+        writeln!(writer, "Cancelled.")?;
+        return Ok(InitOutcome::Cancelled);
+    }
+
+    // Build config TOML, preserving existing entries
+    let mut config = existing.unwrap_or_default();
+    if let Some(ref name) = profile_name {
+        let profiles = config
+            .entry("profiles")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or(InitError("'profiles' key exists but is not a table".into()))?;
+
+        let mut section = toml::Table::new();
+        section.insert("host".into(), toml::Value::String(host));
+        section.insert("api_key".into(), toml::Value::String(api_key));
+        profiles.insert(name.clone(), toml::Value::Table(section));
+    } else {
+        config.insert("host".into(), toml::Value::String(host));
+        config.insert("api_key".into(), toml::Value::String(api_key));
+    }
+
+    // Write config
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| InitError(format!("Failed to create config directory: {e}")))?;
+    }
+    let toml_str = toml::to_string_pretty(&config)
+        .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
+    std::fs::write(config_path, &toml_str)
+        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+
+    writeln!(writer, "Config saved to {}{label}", config_path.display())?;
+    writeln!(
+        writer,
+        "\nRun 'unifi-cli system health' to verify your connection."
+    )?;
+
+    Ok(InitOutcome::Saved {
+        profile: profile_name,
+    })
+}
+
+fn run_init() {
+    let path = match default_config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        }
+    };
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    match run_init_with_io(&mut reader, &mut writer, &path) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(exit_codes::CONFIG_ERROR);
+        }
+    }
+}
+
+fn mask_api_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
+        "****".to_string()
+    } else {
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{prefix}…{suffix}")
+    }
 }
 
 #[tokio::main]
@@ -308,10 +538,14 @@ async fn main() {
             );
             return;
         }
+        Command::Init => {
+            run_init();
+            return;
+        }
         _ => {}
     }
 
-    let (config_host, config_api_key) = load_config();
+    let (config_host, config_api_key) = load_config(cli.profile.as_deref());
 
     let host = cli.host.or(config_host).unwrap_or_else(|| {
         eprintln!("Error: No host specified. Set UNIFI_HOST or use --host");
@@ -373,7 +607,7 @@ async fn main() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
-        Command::Schema | Command::Completions { .. } => unreachable!(),
+        Command::Schema | Command::Completions { .. } | Command::Init => unreachable!(),
     };
 
     if let Err(e) = result {
@@ -398,7 +632,7 @@ mod tests {
         writeln!(f, "host = \"unifi.example.com\"").unwrap();
         writeln!(f, "api_key = \"secret123\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path);
+        let (host, api_key) = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("unifi.example.com"));
         assert_eq!(api_key.as_deref(), Some("secret123"));
     }
@@ -409,7 +643,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "host = \"unifi.local\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path);
+        let (host, api_key) = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("unifi.local"));
         assert!(api_key.is_none());
     }
@@ -417,7 +651,7 @@ mod tests {
     #[test]
     fn load_config_missing_file() {
         let path = std::path::Path::new("/tmp/nonexistent-unifi-cli-test.toml");
-        let (host, api_key) = load_config_from(path);
+        let (host, api_key) = load_config_from(path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -428,7 +662,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "not valid toml {{{{").unwrap();
 
-        let (host, api_key) = load_config_from(&path);
+        let (host, api_key) = load_config_from(&path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -439,7 +673,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
 
-        let (host, api_key) = load_config_from(&path);
+        let (host, api_key) = load_config_from(&path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -450,9 +684,289 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "host = \"h\"\napi_key = \"k\"\nfoo = \"bar\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path);
+        let (host, api_key) = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("h"));
         assert_eq!(api_key.as_deref(), Some("k"));
+    }
+
+    // --- Profile loading ---
+
+    #[test]
+    fn load_config_named_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+host = "default.local"
+api_key = "default_key"
+
+[profiles.office]
+host = "office.local"
+api_key = "office_key"
+"#,
+        )
+        .unwrap();
+
+        let (host, api_key) = load_config_from(&path, Some("office"));
+        assert_eq!(host.as_deref(), Some("office.local"));
+        assert_eq!(api_key.as_deref(), Some("office_key"));
+    }
+
+    #[test]
+    fn load_config_default_ignores_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+host = "default.local"
+api_key = "default_key"
+
+[profiles.office]
+host = "office.local"
+api_key = "office_key"
+"#,
+        )
+        .unwrap();
+
+        let (host, api_key) = load_config_from(&path, None);
+        assert_eq!(host.as_deref(), Some("default.local"));
+        assert_eq!(api_key.as_deref(), Some("default_key"));
+    }
+
+    #[test]
+    fn load_config_missing_profile_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "host = \"h\"\napi_key = \"k\"").unwrap();
+
+        let (host, api_key) = load_config_from(&path, Some("nonexistent"));
+        assert!(host.is_none());
+        assert!(api_key.is_none());
+    }
+
+    #[test]
+    fn load_config_multiple_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+host = "default.local"
+api_key = "default_key"
+
+[profiles.home]
+host = "home.local"
+api_key = "home_key"
+
+[profiles.work]
+host = "work.example.com"
+api_key = "work_key"
+"#,
+        )
+        .unwrap();
+
+        let (host, _) = load_config_from(&path, Some("home"));
+        assert_eq!(host.as_deref(), Some("home.local"));
+
+        let (host, _) = load_config_from(&path, Some("work"));
+        assert_eq!(host.as_deref(), Some("work.example.com"));
+    }
+
+    // --- mask_api_key ---
+
+    #[test]
+    fn mask_api_key_long() {
+        assert_eq!(mask_api_key("abcdefghijklmnop"), "abcd…mnop");
+    }
+
+    #[test]
+    fn mask_api_key_short() {
+        assert_eq!(mask_api_key("abcd"), "****");
+    }
+
+    #[test]
+    fn mask_api_key_exactly_eight() {
+        assert_eq!(mask_api_key("12345678"), "****");
+    }
+
+    #[test]
+    fn mask_api_key_nine_chars() {
+        assert_eq!(mask_api_key("123456789"), "1234…6789");
+    }
+
+    #[test]
+    fn mask_api_key_empty() {
+        assert_eq!(mask_api_key(""), "****");
+    }
+
+    #[test]
+    fn mask_api_key_unicode() {
+        assert_eq!(mask_api_key("αβγδεζηθικλ"), "αβγδ…θικλ");
+    }
+
+    // --- init (interactive flow) ---
+
+    fn run_init_test(existing_config: Option<&str>, input: &str) -> (InitOutcome, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        if let Some(content) = existing_config {
+            std::fs::write(&path, content).unwrap();
+        }
+
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+
+        let result = run_init_with_io(&mut reader, &mut output, &path).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        let display = String::from_utf8(output).unwrap();
+        (result, written, display)
+    }
+
+    #[test]
+    fn init_fresh_default_profile() {
+        let (result, written, display) =
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\ny\n");
+
+        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(written.contains("host = \"https://unifi.local\""));
+        assert!(written.contains("api_key = \"my-api-key\""));
+        assert!(display.contains("Config saved to"));
+        assert!(display.contains("unifi-cli system health"));
+    }
+
+    #[test]
+    fn init_fresh_named_profile() {
+        let (result, written, _) =
+            run_init_test(None, "office\nhttps://office.local\noffice-key\ny\n");
+
+        assert_eq!(
+            result,
+            InitOutcome::Saved {
+                profile: Some("office".into())
+            }
+        );
+        assert!(written.contains("[profiles.office]"));
+        assert!(written.contains("host = \"https://office.local\""));
+    }
+
+    #[test]
+    fn init_cancelled() {
+        let (result, written, display) =
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\nn\n");
+
+        assert_eq!(result, InitOutcome::Cancelled);
+        assert!(written.is_empty());
+        assert!(display.contains("Cancelled"));
+    }
+
+    #[test]
+    fn init_preserves_existing_default_when_adding_profile() {
+        let existing = "host = \"default.local\"\napi_key = \"default-key\"\n";
+        let (result, written, _) =
+            run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\ny\n");
+
+        assert_eq!(
+            result,
+            InitOutcome::Saved {
+                profile: Some("work".into())
+            }
+        );
+        assert!(written.contains("host = \"default.local\""));
+        assert!(written.contains("api_key = \"default-key\""));
+        assert!(written.contains("[profiles.work]"));
+        assert!(written.contains("host = \"https://work.local\""));
+    }
+
+    #[test]
+    fn init_keeps_existing_value_on_empty_input() {
+        let existing = "host = \"existing.local\"\napi_key = \"existing-key\"\n";
+        // Empty host and key inputs → keep existing values
+        let (result, written, _) = run_init_test(Some(existing), "\n\n\ny\n");
+
+        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(written.contains("host = \"existing.local\""));
+        assert!(written.contains("api_key = \"existing-key\""));
+    }
+
+    #[test]
+    fn init_overwrites_existing_value() {
+        let existing = "host = \"old.local\"\napi_key = \"old-key\"\n";
+        let (_, written, _) = run_init_test(Some(existing), "\nnew.local\nnew-key\ny\n");
+
+        assert!(written.contains("host = \"new.local\""));
+        assert!(written.contains("api_key = \"new-key\""));
+        assert!(!written.contains("old.local"));
+    }
+
+    #[test]
+    fn init_shows_masked_key_in_prompt() {
+        let existing = "host = \"h\"\napi_key = \"abcdefghij\"\n";
+        let (_, _, display) = run_init_test(Some(existing), "\n\n\ny\n");
+
+        assert!(display.contains("abcd…ghij"));
+    }
+
+    #[test]
+    fn init_shows_summary_before_confirm() {
+        let (_, _, display) = run_init_test(None, "\nhttps://test.local\ntest-key-1234567890\ny\n");
+
+        assert!(display.contains("Configuration:"));
+        assert!(display.contains("host    = https://test.local"));
+        assert!(display.contains("api_key = test…7890"));
+        assert!(display.contains("Save? (y/n)"));
+    }
+
+    #[test]
+    fn init_warns_on_corrupt_existing_config() {
+        let (result, written, display) = run_init_test(
+            Some("not valid {{{ toml"),
+            "\nhttps://new.local\nnew-key\ny\n",
+        );
+
+        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(display.contains("Warning: Existing config"));
+        assert!(display.contains("invalid TOML"));
+        assert!(written.contains("host = \"https://new.local\""));
+    }
+
+    #[test]
+    fn init_accepts_mixed_case_yes() {
+        let (result, _, _) = run_init_test(None, "\nhttps://h\nk\nYes\n");
+        assert_eq!(result, InitOutcome::Saved { profile: None });
+    }
+
+    #[test]
+    fn init_host_required_when_no_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let input = "\n\nkey\ny\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+
+        let result = run_init_with_io(&mut reader, &mut output, &path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Host is required"));
+    }
+
+    #[test]
+    fn init_api_key_required_when_no_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let input = "\nhttps://test.local\n\ny\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+
+        let result = run_init_with_io(&mut reader, &mut output, &path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("API key is required")
+        );
     }
 
     // --- CLI parsing ---
@@ -891,5 +1405,34 @@ mod tests {
     fn cli_completions() {
         let cli = parse(&["unifi-cli", "completions", "bash"]);
         assert!(matches!(cli.command, Command::Completions { .. }));
+    }
+
+    #[test]
+    fn cli_init() {
+        let cli = parse(&["unifi-cli", "init"]);
+        assert!(matches!(cli.command, Command::Init));
+        assert!(cli.host.is_none());
+        assert!(cli.api_key.is_none());
+    }
+
+    #[test]
+    fn cli_profile_flag() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--profile",
+            "office",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "networks",
+        ]);
+        assert_eq!(cli.profile.as_deref(), Some("office"));
+    }
+
+    #[test]
+    fn cli_profile_default_none() {
+        let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "networks"]);
+        assert!(cli.profile.is_none());
     }
 }
