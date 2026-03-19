@@ -1,6 +1,8 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{Client, UnifiClient, format_bytes, format_mac, format_uptime, normalize_mac};
+use crate::api::{
+    Client, LegacyClient, UnifiClient, format_bytes, format_mac, format_uptime, normalize_mac,
+};
 use crate::output::OutputConfig;
 
 #[derive(Tabled)]
@@ -265,5 +267,80 @@ pub async fn kick(
         &serde_json::json!({"status": "ok", "action": "kick", "mac": format_mac(mac)}),
         &format!("Kicked {}", format_mac(mac)),
     );
+    Ok(())
+}
+
+#[derive(Tabled)]
+struct TopClientRow {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "MAC")]
+    mac: String,
+    #[tabled(rename = "IP")]
+    ip: String,
+    #[tabled(rename = "TX")]
+    tx: String,
+    #[tabled(rename = "RX")]
+    rx: String,
+    #[tabled(rename = "Total")]
+    total: String,
+}
+
+fn total_bytes(c: &LegacyClient) -> u64 {
+    c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0)
+}
+
+pub async fn top(
+    client: &UnifiClient,
+    out: OutputConfig,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut clients = client.list_clients_legacy().await?;
+    clients.sort_by_key(|c| std::cmp::Reverse(total_bytes(c)));
+    let top_clients: Vec<&LegacyClient> = clients.iter().take(limit).collect();
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(
+                &top_clients
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.display_name(),
+                            "mac": c.mac.as_deref().map(|m| format_mac(&normalize_mac(m))),
+                            "ip": c.ip,
+                            "tx_bytes": c.tx_bytes,
+                            "rx_bytes": c.rx_bytes,
+                            "total_bytes": total_bytes(c),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        let rows: Vec<TopClientRow> = top_clients
+            .iter()
+            .map(|c| TopClientRow {
+                name: c.display_name().to_string(),
+                mac: c
+                    .mac
+                    .as_deref()
+                    .map(|m| format_mac(&normalize_mac(m)))
+                    .unwrap_or_else(|| "-".into()),
+                ip: c.ip.as_deref().unwrap_or("-").to_string(),
+                tx: format_bytes(c.tx_bytes.unwrap_or(0)),
+                rx: format_bytes(c.rx_bytes.unwrap_or(0)),
+                total: format_bytes(total_bytes(c)),
+            })
+            .collect();
+
+        out.print_data(&Table::new(rows).to_string());
+    }
+    out.print_message(&format!(
+        "\nTop {} of {} clients by bandwidth",
+        top_clients.len(),
+        clients.len()
+    ));
     Ok(())
 }

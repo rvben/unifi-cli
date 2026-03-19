@@ -303,6 +303,33 @@ impl UnifiClient {
         .await
     }
 
+    // Events
+    pub async fn list_events(&self, limit: usize) -> Result<Vec<Event>, ApiError> {
+        let events: Vec<Event> = self
+            .get_legacy(&format!("/stat/event?_limit={limit}"))
+            .await?;
+        Ok(events)
+    }
+
+    // Port table for a specific device
+    pub async fn get_device_ports(&self, mac: &str) -> Result<DeviceWithPorts, ApiError> {
+        let normalized = normalize_mac(mac);
+        let devices: Vec<DeviceWithPorts> = self.get_legacy("/stat/device").await?;
+        devices
+            .into_iter()
+            .find(|d| {
+                d.mac
+                    .as_deref()
+                    .is_some_and(|m| normalize_mac(m) == normalized)
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("Device with MAC {mac}")))
+    }
+
+    // All clients with bandwidth data (legacy endpoint for richer stats)
+    pub async fn list_clients_legacy(&self) -> Result<Vec<LegacyClient>, ApiError> {
+        self.get_legacy("/stat/sta").await
+    }
+
     // System
     pub async fn get_health(&self) -> Result<Vec<HealthSubsystem>, ApiError> {
         self.get_legacy("/stat/health").await

@@ -49,6 +49,10 @@ enum Command {
     /// List networks
     Networks,
 
+    /// View controller events
+    #[command(subcommand)]
+    Events(EventsCommand),
+
     /// System information
     #[command(subcommand)]
     System(SystemCommand),
@@ -113,6 +117,12 @@ enum ClientsCommand {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
     },
+    /// Show top clients by bandwidth usage
+    Top {
+        /// Number of clients to show
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -140,6 +150,21 @@ enum DevicesCommand {
         /// Turn off locate LED
         #[arg(long)]
         off: bool,
+    },
+    /// Show switch/router port table
+    Ports {
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
+        mac: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum EventsCommand {
+    /// List recent events
+    List {
+        /// Number of events to show
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
     },
 }
 
@@ -215,6 +240,13 @@ fn print_schema() {
                 "output_fields": ["status", "action", "mac"],
                 "mutating": true,
             },
+            "clients top": {
+                "description": "Show top clients by bandwidth usage",
+                "args": [
+                    {"name": "--limit", "required": false, "description": "Number of clients (default: 10)"},
+                ],
+                "output_fields": ["name", "mac", "ip", "tx_bytes", "rx_bytes", "total_bytes"],
+            },
             "devices list": {
                 "description": "List all network devices",
                 "args": [
@@ -242,10 +274,22 @@ fn print_schema() {
                 "output_fields": ["status", "action", "mac"],
                 "mutating": true,
             },
+            "devices ports": {
+                "description": "Show switch/router port table",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["port_idx", "name", "media", "up", "speed", "full_duplex", "poe_enable", "poe_power", "tx_bytes", "rx_bytes"],
+            },
             "networks": {
                 "description": "List networks",
                 "args": [],
                 "output_fields": ["name", "vlan_id", "enabled", "default"],
+            },
+            "events list": {
+                "description": "List recent controller events",
+                "args": [
+                    {"name": "--limit", "required": false, "description": "Number of events (default: 10)"},
+                ],
+                "output_fields": ["key", "msg", "subsystem", "time", "datetime"],
             },
             "system health": {
                 "description": "Show system health",
@@ -591,6 +635,7 @@ async fn main() {
             ClientsCommand::Block { mac } => commands::clients::block(&client, &mac, out).await,
             ClientsCommand::Unblock { mac } => commands::clients::unblock(&client, &mac, out).await,
             ClientsCommand::Kick { mac } => commands::clients::kick(&client, &mac, out).await,
+            ClientsCommand::Top { limit } => commands::clients::top(&client, out, limit).await,
         },
         Command::Devices(cmd) => match cmd {
             DevicesCommand::List { watch } => {
@@ -601,8 +646,12 @@ async fn main() {
             DevicesCommand::Locate { mac, off } => {
                 commands::devices::locate(&client, &mac, off, out).await
             }
+            DevicesCommand::Ports { mac } => commands::devices::ports(&client, &mac, out).await,
         },
         Command::Networks => commands::networks::list(&mut client, out).await,
+        Command::Events(cmd) => match cmd {
+            EventsCommand::List { limit } => commands::events::list(&client, out, limit).await,
+        },
         Command::System(cmd) => match cmd {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
@@ -1434,5 +1483,105 @@ api_key = "work_key"
     fn cli_profile_default_none() {
         let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "networks"]);
         assert!(cli.profile.is_none());
+    }
+
+    #[test]
+    fn cli_events_list() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "events",
+            "list",
+        ]);
+        match cli.command {
+            Command::Events(EventsCommand::List { limit }) => {
+                assert_eq!(limit, 10); // default
+            }
+            _ => panic!("expected Events List"),
+        }
+    }
+
+    #[test]
+    fn cli_events_list_custom_limit() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "events",
+            "list",
+            "-n",
+            "50",
+        ]);
+        match cli.command {
+            Command::Events(EventsCommand::List { limit }) => {
+                assert_eq!(limit, 50);
+            }
+            _ => panic!("expected Events List"),
+        }
+    }
+
+    #[test]
+    fn cli_clients_top() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "top",
+        ]);
+        match cli.command {
+            Command::Clients(ClientsCommand::Top { limit }) => {
+                assert_eq!(limit, 10); // default
+            }
+            _ => panic!("expected Clients Top"),
+        }
+    }
+
+    #[test]
+    fn cli_clients_top_custom_limit() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "top",
+            "-n",
+            "5",
+        ]);
+        match cli.command {
+            Command::Clients(ClientsCommand::Top { limit }) => {
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("expected Clients Top"),
+        }
+    }
+
+    #[test]
+    fn cli_devices_ports() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "devices",
+            "ports",
+            "aa:bb:cc:dd:ee:ff",
+        ]);
+        match cli.command {
+            Command::Devices(DevicesCommand::Ports { mac }) => {
+                assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
+            }
+            _ => panic!("expected Devices Ports"),
+        }
     }
 }

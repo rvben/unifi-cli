@@ -453,6 +453,98 @@ fn deserialize_sysinfo_minimal() {
     assert!(info.uptime.is_none());
 }
 
+// --- Event ---
+
+#[test]
+fn deserialize_event() {
+    let json = r#"{
+        "key": "EVT_AP_Connected",
+        "msg": "AP[80:2a:a8:cd:47:ab] was connected",
+        "subsystem": "wlan",
+        "time": 1710886800,
+        "datetime": "2026-03-19T12:00:00Z"
+    }"#;
+    let event: Event = serde_json::from_str(json).unwrap();
+    assert_eq!(event.key.as_deref(), Some("EVT_AP_Connected"));
+    assert_eq!(event.subsystem.as_deref(), Some("wlan"));
+    assert_eq!(event.time, Some(1710886800));
+    assert!(event.msg.as_ref().unwrap().contains("was connected"));
+}
+
+#[test]
+fn deserialize_event_minimal() {
+    let json = r#"{}"#;
+    let event: Event = serde_json::from_str(json).unwrap();
+    assert!(event.key.is_none());
+    assert!(event.msg.is_none());
+    assert!(event.time.is_none());
+}
+
+// --- PortEntry ---
+
+#[test]
+fn deserialize_port_entry() {
+    let json = r#"{
+        "port_idx": 1,
+        "name": "Port 1",
+        "media": "GE",
+        "up": true,
+        "speed": 1000,
+        "full_duplex": true,
+        "poe_enable": true,
+        "poe_power": 4.5,
+        "port_poe": true,
+        "tx_bytes": 1048576,
+        "rx_bytes": 2097152
+    }"#;
+    let port: PortEntry = serde_json::from_str(json).unwrap();
+    assert_eq!(port.port_idx, Some(1));
+    assert_eq!(port.name.as_deref(), Some("Port 1"));
+    assert!(port.up);
+    assert_eq!(port.speed, Some(1000));
+    assert!(port.full_duplex);
+    assert!(port.poe_enable);
+    assert_eq!(port.poe_power, Some(4.5));
+    assert_eq!(port.tx_bytes, Some(1048576));
+}
+
+#[test]
+fn deserialize_port_entry_minimal() {
+    let json = r#"{}"#;
+    let port: PortEntry = serde_json::from_str(json).unwrap();
+    assert!(port.port_idx.is_none());
+    assert!(!port.up);
+    assert!(!port.poe_enable);
+    assert!(!port.port_poe);
+}
+
+// --- DeviceWithPorts ---
+
+#[test]
+fn deserialize_device_with_ports() {
+    let json = r#"{
+        "mac": "9c:05:d6:bc:06:43",
+        "name": "USW-24-PoE",
+        "model": "USW-24-PoE",
+        "port_table": [
+            {"port_idx": 1, "name": "Port 1", "up": true, "speed": 1000},
+            {"port_idx": 2, "name": "Port 2", "up": false}
+        ]
+    }"#;
+    let device: DeviceWithPorts = serde_json::from_str(json).unwrap();
+    assert_eq!(device.name.as_deref(), Some("USW-24-PoE"));
+    assert_eq!(device.port_table.len(), 2);
+    assert!(device.port_table[0].up);
+    assert!(!device.port_table[1].up);
+}
+
+#[test]
+fn deserialize_device_with_empty_port_table() {
+    let json = r#"{"mac": "aa:bb:cc:dd:ee:ff"}"#;
+    let device: DeviceWithPorts = serde_json::from_str(json).unwrap();
+    assert!(device.port_table.is_empty());
+}
+
 // --- LegacyDevice ---
 
 #[test]

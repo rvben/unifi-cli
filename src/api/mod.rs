@@ -3,6 +3,6 @@ mod types;
 
 pub use client::UnifiClient;
 pub use types::{
-    ApiError, Client, Device, HealthSubsystem, LegacyClient, LegacyDevice, Network, SysInfo,
-    format_bytes, format_mac, format_uptime, normalize_mac,
+    ApiError, Client, Device, DeviceWithPorts, Event, HealthSubsystem, LegacyClient, LegacyDevice,
+    Network, PortEntry, SysInfo, format_bytes, format_mac, format_uptime, normalize_mac,
 };

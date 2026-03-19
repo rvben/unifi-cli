@@ -208,6 +208,46 @@ pub fn format_uptime(seconds: u64) -> String {
     }
 }
 
+// Event from Legacy stat/event endpoint
+#[derive(Debug, Deserialize)]
+pub struct Event {
+    pub key: Option<String>,
+    pub msg: Option<String>,
+    pub subsystem: Option<String>,
+    pub time: Option<u64>,
+    pub datetime: Option<String>,
+}
+
+// Port entry from Legacy stat/device port_table
+#[derive(Debug, Deserialize)]
+pub struct PortEntry {
+    pub port_idx: Option<u32>,
+    pub name: Option<String>,
+    pub media: Option<String>,
+    #[serde(default)]
+    pub up: bool,
+    pub speed: Option<u32>,
+    #[serde(default)]
+    pub full_duplex: bool,
+    #[serde(default)]
+    pub poe_enable: bool,
+    pub poe_power: Option<f64>,
+    #[serde(default)]
+    pub port_poe: bool,
+    pub tx_bytes: Option<u64>,
+    pub rx_bytes: Option<u64>,
+}
+
+// Device with port_table from Legacy stat/device endpoint
+#[derive(Debug, Deserialize)]
+pub struct DeviceWithPorts {
+    pub mac: Option<String>,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    #[serde(default)]
+    pub port_table: Vec<PortEntry>,
+}
+
 // Error types
 #[derive(Debug)]
 pub enum ApiError {

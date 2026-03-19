@@ -599,6 +599,101 @@ mod error_handling {
         let err = client.block_client("aa:bb:cc:dd:ee:ff").await.unwrap_err();
         assert!(err.to_string().contains("Authentication error:"));
     }
+
+    #[tokio::test]
+    async fn list_events_returns_events() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_WU_Connected", "msg": "User connected", "subsystem": "wlan", "time": 1700000000, "datetime": "2024-01-01T00:00:00Z"},
+                    {"key": "EVT_LU_Disconnected", "msg": "User disconnected", "subsystem": "lan", "time": 1700000001}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let events = client.list_events(10).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key.as_deref(), Some("EVT_WU_Connected"));
+        assert_eq!(events[1].subsystem.as_deref(), Some("lan"));
+    }
+
+    #[tokio::test]
+    async fn list_clients_legacy_returns_clients() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.1", "name": "Desktop", "is_wired": true, "tx_bytes": 1000000, "rx_bytes": 2000000},
+                    {"_id": "c2", "mac": "11:22:33:44:55:66", "ip": "10.0.0.2", "hostname": "phone", "is_wired": false, "tx_bytes": 500, "rx_bytes": 300}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let clients = client.list_clients_legacy().await.unwrap();
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].tx_bytes, Some(1000000));
+        assert_eq!(clients[1].display_name(), "phone");
+    }
+
+    #[tokio::test]
+    async fn get_device_ports_finds_by_mac() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "model": "USW-24-PoE",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456, "rx_bytes": 654321},
+                        {"port_idx": 2, "name": "Port 2", "media": "GE", "up": false, "speed": 0, "full_duplex": false, "poe_enable": false, "port_poe": true, "tx_bytes": 0, "rx_bytes": 0}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let device = client.get_device_ports("9c:05:d6:bc:06:43").await.unwrap();
+        assert_eq!(device.port_table.len(), 2);
+        assert!(device.port_table[0].up);
+        assert!(!device.port_table[1].up);
+        assert_eq!(device.port_table[0].poe_power, Some(5.2));
+    }
+
+    #[tokio::test]
+    async fn get_device_ports_not_found() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let err = client
+            .get_device_ports("00:00:00:00:00:00")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Not found"));
+    }
 }
 
 // --- Command output tests ---
@@ -1241,6 +1336,183 @@ mod command_output {
         unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
             .await
             .unwrap();
+    }
+
+    // --- Events ---
+
+    #[tokio::test]
+    async fn events_list_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_WU_Connected", "msg": "User[aa:bb:cc:dd:ee:ff] has connected", "subsystem": "wlan", "datetime": "2024-01-15T10:30:00Z"},
+                    {"key": "EVT_SW_PoeOverload", "msg": "PoE overload on port 5", "subsystem": "lan", "datetime": "2024-01-15T10:29:00Z"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::events::list(&client, out_table(), 10)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn events_list_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_WU_Connected", "msg": "User connected", "subsystem": "wlan", "time": 1700000000}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::events::list(&client, out_json(), 5)
+            .await
+            .unwrap();
+    }
+
+    // --- Clients top ---
+
+    #[tokio::test]
+    async fn clients_top_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "10.0.0.1", "name": "Heavy User", "is_wired": true, "tx_bytes": 5000000000_u64, "rx_bytes": 10000000000_u64},
+                    {"_id": "c2", "mac": "aa:bb:cc:dd:ee:02", "ip": "10.0.0.2", "name": "Light User", "is_wired": false, "tx_bytes": 1000, "rx_bytes": 2000},
+                    {"_id": "c3", "mac": "aa:bb:cc:dd:ee:03", "ip": "10.0.0.3", "hostname": "medium-host", "is_wired": true, "tx_bytes": 500000, "rx_bytes": 600000}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::clients::top(&client, out_table(), 2)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_top_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "10.0.0.1", "name": "User1", "is_wired": true, "tx_bytes": 100, "rx_bytes": 200}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::clients::top(&client, out_json(), 10)
+            .await
+            .unwrap();
+    }
+
+    // --- Devices ports ---
+
+    #[tokio::test]
+    async fn devices_ports_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE", "model": "USW-24-PoE",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456789, "rx_bytes": 987654321},
+                        {"port_idx": 2, "name": "Port 2", "media": "GE", "up": true, "speed": 100, "full_duplex": false, "poe_enable": false, "port_poe": true, "tx_bytes": 1000, "rx_bytes": 2000},
+                        {"port_idx": 3, "name": "Port 3", "media": "GE", "up": false, "poe_enable": false, "port_poe": false}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::ports(&client, "9c:05:d6:bc:06:43", out_table())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_ports_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-Lite-8",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 3.8, "port_poe": true, "tx_bytes": 100, "rx_bytes": 200}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::ports(&client, "9c:05:d6:bc:06:43", out_json())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_ports_empty_port_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:ee:ff", "name": "UAP-AC-Pro",
+                    "port_table": []
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::ports(&client, "aa:bb:cc:dd:ee:ff", out_table())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_ports_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let err = unifi_cli::commands::devices::ports(&client, "00:00:00:00:00:00", out_table())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Not found"));
     }
 }
 

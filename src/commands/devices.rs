@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{Device, UnifiClient, format_mac, format_uptime};
+use crate::api::{Device, UnifiClient, format_bytes, format_mac, format_uptime};
 use crate::output::OutputConfig;
 
 #[derive(Tabled)]
@@ -169,6 +169,119 @@ pub async fn restart(
         &serde_json::json!({"status": "ok", "action": "restart", "mac": format_mac(mac)}),
         &format!("Restarting {}", format_mac(mac)),
     );
+    Ok(())
+}
+
+#[derive(Tabled)]
+struct PortRow {
+    #[tabled(rename = "Port")]
+    port: String,
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Link")]
+    link: String,
+    #[tabled(rename = "Speed")]
+    speed: String,
+    #[tabled(rename = "PoE")]
+    poe: String,
+    #[tabled(rename = "TX")]
+    tx: String,
+    #[tabled(rename = "RX")]
+    rx: String,
+}
+
+pub async fn ports(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let device = client.get_device_ports(mac).await?;
+
+    if device.port_table.is_empty() {
+        out.print_message("No port table available for this device (not a switch or router)");
+        if out.json {
+            out.print_data("[]");
+        }
+        return Ok(());
+    }
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(
+                &device
+                    .port_table
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "port_idx": p.port_idx,
+                            "name": p.name,
+                            "media": p.media,
+                            "up": p.up,
+                            "speed": p.speed,
+                            "full_duplex": p.full_duplex,
+                            "poe_enable": p.poe_enable,
+                            "poe_power": p.poe_power,
+                            "port_poe": p.port_poe,
+                            "tx_bytes": p.tx_bytes,
+                            "rx_bytes": p.rx_bytes,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        let device_label = device
+            .name
+            .as_deref()
+            .unwrap_or(device.model.as_deref().unwrap_or("Device"));
+        out.print_message(&format!("Ports for {device_label}:\n"));
+
+        let rows: Vec<PortRow> = device
+            .port_table
+            .iter()
+            .map(|p| {
+                let poe = if p.poe_enable {
+                    match p.poe_power {
+                        Some(w) if w > 0.0 => format!("{w:.1}W"),
+                        _ => "on".into(),
+                    }
+                } else if p.port_poe {
+                    "off".into()
+                } else {
+                    "-".into()
+                };
+
+                let speed = if p.up {
+                    match p.speed {
+                        Some(s) => {
+                            let duplex = if p.full_duplex { "FD" } else { "HD" };
+                            format!("{s}{duplex}")
+                        }
+                        None => "up".into(),
+                    }
+                } else {
+                    "down".into()
+                };
+
+                PortRow {
+                    port: p
+                        .port_idx
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    name: p.name.as_deref().unwrap_or("-").to_string(),
+                    link: if p.up { "up" } else { "down" }.into(),
+                    speed,
+                    poe,
+                    tx: p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()),
+                    rx: p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()),
+                }
+            })
+            .collect();
+
+        out.print_data(&Table::new(rows).to_string());
+    }
+    out.print_message(&format!("\n{} ports", device.port_table.len()));
     Ok(())
 }
 
