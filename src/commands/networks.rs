@@ -14,10 +14,7 @@ struct NetworkRow {
     is_default: String,
 }
 
-pub async fn list(
-    client: &mut UnifiClient,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let networks = client.list_networks().await?;
 
     if json {

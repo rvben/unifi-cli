@@ -43,9 +43,11 @@ impl UnifiClient {
             let resp: PaginatedResponse<Site> = self
                 .get_integration("/proxy/network/integration/v1/sites")
                 .await?;
-            let site = resp.data.into_iter().next().ok_or_else(|| {
-                ApiError::Other("No sites found on controller".into())
-            })?;
+            let site = resp
+                .data
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiError::Other("No sites found on controller".into()))?;
             self.site_id = Some(site.id);
         }
         Ok(self.site_id.as_deref().unwrap())
@@ -144,10 +146,7 @@ impl UnifiClient {
     }
 
     // Paginate through all results from Integration API
-    async fn paginate_all<T: DeserializeOwned>(
-        &self,
-        base_path: &str,
-    ) -> Result<Vec<T>, ApiError> {
+    async fn paginate_all<T: DeserializeOwned>(&self, base_path: &str) -> Result<Vec<T>, ApiError> {
         let mut all = Vec::new();
         let mut offset = 0;
         let limit = 200;
@@ -285,16 +284,9 @@ impl UnifiClient {
 
     pub async fn locate_device(&self, mac: &str, enable: bool) -> Result<(), ApiError> {
         let formatted = format_mac(&normalize_mac(mac));
-        let cmd = if enable {
-            "set-locate"
-        } else {
-            "unset-locate"
-        };
-        self.post_legacy_cmd(
-            "devmgr",
-            serde_json::json!({"cmd": cmd, "mac": formatted}),
-        )
-        .await?;
+        let cmd = if enable { "set-locate" } else { "unset-locate" };
+        self.post_legacy_cmd("devmgr", serde_json::json!({"cmd": cmd, "mac": formatted}))
+            .await?;
         Ok(())
     }
 

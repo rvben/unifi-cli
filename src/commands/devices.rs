@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{format_mac, UnifiClient};
+use crate::api::{UnifiClient, format_mac};
 
 #[derive(Tabled)]
 struct DeviceRow {
@@ -18,10 +18,7 @@ struct DeviceRow {
     firmware: String,
 }
 
-pub async fn list(
-    client: &mut UnifiClient,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let devices = client.list_devices().await?;
 
     if json {
@@ -65,10 +62,7 @@ pub async fn list(
     Ok(())
 }
 
-pub async fn restart(
-    client: &UnifiClient,
-    mac: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn restart(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     client.restart_device(mac).await?;
     println!("Restarting {}", format_mac(mac));
     Ok(())

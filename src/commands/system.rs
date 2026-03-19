@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{format_uptime, UnifiClient};
+use crate::api::{UnifiClient, format_uptime};
 
 #[derive(Tabled)]
 struct HealthRow {
@@ -20,10 +20,7 @@ struct InfoRow {
     value: String,
 }
 
-pub async fn health(
-    client: &UnifiClient,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn health(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let subsystems = client.get_health().await?;
 
     if json {
@@ -94,10 +91,7 @@ pub async fn health(
     Ok(())
 }
 
-pub async fn info(
-    client: &UnifiClient,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn info(client: &UnifiClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let sys = client.get_sysinfo().await?;
 
     if json {

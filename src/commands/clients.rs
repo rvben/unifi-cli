@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{format_bytes, format_mac, format_uptime, UnifiClient};
+use crate::api::{UnifiClient, format_bytes, format_mac, format_uptime};
 
 #[derive(Tabled)]
 struct ClientRow {
@@ -52,11 +52,7 @@ pub async fn list(client: &mut UnifiClient, json: bool) -> Result<(), Box<dyn st
                 .as_deref()
                 .map(format_mac)
                 .unwrap_or_else(|| "-".into()),
-            ip: c
-                .ip_address
-                .as_deref()
-                .unwrap_or("-")
-                .to_string(),
+            ip: c.ip_address.as_deref().unwrap_or("-").to_string(),
             client_type: c.client_type.as_deref().unwrap_or("-").to_string(),
         })
         .collect();
@@ -172,28 +168,19 @@ pub async fn set_fixed_ip(
     Ok(())
 }
 
-pub async fn block(
-    client: &UnifiClient,
-    mac: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn block(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     client.block_client(mac).await?;
     println!("Blocked {}", format_mac(mac));
     Ok(())
 }
 
-pub async fn unblock(
-    client: &UnifiClient,
-    mac: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn unblock(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     client.unblock_client(mac).await?;
     println!("Unblocked {}", format_mac(mac));
     Ok(())
 }
 
-pub async fn kick(
-    client: &UnifiClient,
-    mac: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn kick(client: &UnifiClient, mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     client.kick_client(mac).await?;
     println!("Kicked {}", format_mac(mac));
     Ok(())
