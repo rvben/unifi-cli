@@ -1,6 +1,11 @@
 use serde::Deserialize;
 use std::fmt;
 
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
+
+
 // Integration API response wrapper (paginated)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
