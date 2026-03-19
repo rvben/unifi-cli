@@ -52,9 +52,7 @@ impl UnifiClient {
                 .get_integration("/proxy/network/integration/v1/sites")
                 .await?;
             let site = resp.data.into_iter().next().ok_or_else(|| {
-                ApiError::Other(
-                    "No sites found — check that the API key has site access".into(),
-                )
+                ApiError::Other("No sites found — check that the API key has site access".into())
             })?;
             self.site_id = Some(site.id);
         }

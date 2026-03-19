@@ -1086,6 +1086,162 @@ mod command_output {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn devices_show_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "ip": "192.168.1.1",
+                    "name": "UCG Ultra", "model": "UCG Ultra",
+                    "state": 1, "version": "5.0.12", "uptime": 86400, "num_sta": 42
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::show(&client, "9c:05:d6:bc:06:43", out_table())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_show_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "ip": "192.168.1.1",
+                    "name": "UCG Ultra", "model": "UCG Ultra",
+                    "state": 1, "version": "5.0.12"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::show(&client, "9c:05:d6:bc:06:43", out_json())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_show_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let err = unifi_cli::commands::devices::show(&client, "00:00:00:00:00:00", out_table())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Not found"));
+    }
+
+    // --- Filter integration tests ---
+    // apply_filter is private, so we test filtering through the list command
+
+    #[tokio::test]
+    async fn clients_list_wired_filter() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 3, "totalCount": 3,
+                "data": [
+                    {"macAddress": "aa:bb:cc:dd:ee:01", "name": "WiredDevice", "type": "WIRED"},
+                    {"macAddress": "aa:bb:cc:dd:ee:02", "name": "WirelessDevice", "type": "WIRELESS"},
+                    {"macAddress": "aa:bb:cc:dd:ee:03", "name": "AnotherWired", "type": "WIRED"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = mock_client(&server).await;
+        let filter = unifi_cli::commands::clients::ListFilter {
+            wired: true,
+            wireless: false,
+            name: None,
+        };
+        // Should succeed (filter happens internally, we verify no error)
+        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_list_wireless_filter() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
+                "data": [
+                    {"macAddress": "aa:bb:cc:dd:ee:01", "name": "WiredDevice", "type": "WIRED"},
+                    {"macAddress": "aa:bb:cc:dd:ee:02", "name": "WirelessDevice", "type": "WIRELESS"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = mock_client(&server).await;
+        let filter = unifi_cli::commands::clients::ListFilter {
+            wired: false,
+            wireless: true,
+            name: None,
+        };
+        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_list_name_filter() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/clients",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 3, "totalCount": 3,
+                "data": [
+                    {"macAddress": "aa:bb:cc:dd:ee:01", "name": "iPhone", "type": "WIRELESS"},
+                    {"macAddress": "aa:bb:cc:dd:ee:02", "name": "Desktop", "type": "WIRED"},
+                    {"macAddress": "aa:bb:cc:dd:ee:03", "name": "iPad", "type": "WIRELESS"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = mock_client(&server).await;
+        let filter = unifi_cli::commands::clients::ListFilter {
+            wired: false,
+            wireless: false,
+            name: Some("phone".into()),
+        };
+        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
+            .await
+            .unwrap();
+    }
 }
 
 // --- Client construction tests ---

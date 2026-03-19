@@ -64,10 +64,10 @@ enum ClientsCommand {
     /// List all connected clients
     List {
         /// Show only wired clients
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wireless")]
         wired: bool,
         /// Show only wireless clients
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wired")]
         wireless: bool,
         /// Filter by name (case-insensitive substring match)
         #[arg(long)]
@@ -83,9 +83,9 @@ enum ClientsCommand {
     },
     /// Set a fixed IP (DHCP reservation) for a client
     SetFixedIp {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Fixed IP address to assign
+        /// Fixed IP address to assign (e.g., 10.0.0.5)
         ip: String,
         /// Friendly name for the client
         #[arg(long)]
@@ -93,17 +93,17 @@ enum ClientsCommand {
     },
     /// Block a client
     Block {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
     },
     /// Unblock a client
     Unblock {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
     },
     /// Kick (disconnect) a client
     Kick {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
     },
 }
@@ -116,14 +116,19 @@ enum DevicesCommand {
         #[arg(short, long, value_name = "SECONDS")]
         watch: Option<u64>,
     },
+    /// Show details for a device by MAC address
+    Show {
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
+        mac: String,
+    },
     /// Restart a device
     Restart {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
     },
     /// Toggle locate LED on a device
     Locate {
-        /// MAC address
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
         /// Turn off locate LED
         #[arg(long)]
@@ -209,6 +214,11 @@ fn print_schema() {
                 ],
                 "output_fields": ["name", "model", "mac", "ip", "state", "firmware"],
             },
+            "devices show": {
+                "description": "Show details for a device by MAC address",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["name", "model", "mac", "ip", "state", "firmware", "uptime", "num_sta", "version"],
+            },
             "devices restart": {
                 "description": "Restart a device",
                 "args": [{"name": "mac", "required": true, "description": "MAC address"}],
@@ -232,12 +242,17 @@ fn print_schema() {
             "system health": {
                 "description": "Show system health",
                 "args": [],
-                "output_fields": ["subsystem", "status", "num_sta", "wan_ip", "isp_name"],
+                "output_fields": ["subsystem", "status", "num_sta", "num_ap", "num_switches", "wan_ip", "isp_name"],
             },
             "system info": {
                 "description": "Show system info",
                 "args": [],
                 "output_fields": ["hostname", "version", "timezone", "uptime"],
+            },
+            "completions": {
+                "description": "Generate shell completions",
+                "args": [{"name": "shell", "required": true, "description": "Shell (bash, zsh, fish, powershell)"}],
+                "note": "Does not require --host or --api-key",
             },
         },
     });
@@ -333,6 +348,10 @@ async fn main() {
             }
             ClientsCommand::Show { mac } => commands::clients::show(&client, &mac, out).await,
             ClientsCommand::SetFixedIp { mac, ip, name } => {
+                if ip.parse::<std::net::IpAddr>().is_err() {
+                    eprintln!("Error: Invalid IP address: {ip}");
+                    std::process::exit(exit_codes::CONFIG_ERROR);
+                }
                 commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
             }
             ClientsCommand::Block { mac } => commands::clients::block(&client, &mac, out).await,
@@ -343,6 +362,7 @@ async fn main() {
             DevicesCommand::List { watch } => {
                 commands::devices::list(&mut client, out, watch).await
             }
+            DevicesCommand::Show { mac } => commands::devices::show(&client, &mac, out).await,
             DevicesCommand::Restart { mac } => commands::devices::restart(&client, &mac, out).await,
             DevicesCommand::Locate { mac, off } => {
                 commands::devices::locate(&client, &mac, off, out).await
@@ -759,5 +779,117 @@ mod tests {
         let cli = parse(&["unifi-cli", "networks"]);
         assert!(cli.host.is_none());
         assert!(cli.api_key.is_none());
+    }
+
+    #[test]
+    fn cli_wired_and_wireless_conflict() {
+        let result = Cli::try_parse_from([
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--wired",
+            "--wireless",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_clients_list_wired_flag() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--wired",
+        ]);
+        match cli.command {
+            Command::Clients(ClientsCommand::List {
+                wired,
+                wireless,
+                name,
+                watch,
+            }) => {
+                assert!(wired);
+                assert!(!wireless);
+                assert!(name.is_none());
+                assert!(watch.is_none());
+            }
+            _ => panic!("expected Clients List"),
+        }
+    }
+
+    #[test]
+    fn cli_clients_list_name_filter() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--name",
+            "phone",
+        ]);
+        match cli.command {
+            Command::Clients(ClientsCommand::List { name, .. }) => {
+                assert_eq!(name.as_deref(), Some("phone"));
+            }
+            _ => panic!("expected Clients List"),
+        }
+    }
+
+    #[test]
+    fn cli_clients_list_watch() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--watch",
+            "5",
+        ]);
+        match cli.command {
+            Command::Clients(ClientsCommand::List { watch, .. }) => {
+                assert_eq!(watch, Some(5));
+            }
+            _ => panic!("expected Clients List"),
+        }
+    }
+
+    #[test]
+    fn cli_devices_show() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "devices",
+            "show",
+            "aa:bb:cc:dd:ee:ff",
+        ]);
+        match cli.command {
+            Command::Devices(DevicesCommand::Show { mac }) => {
+                assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
+            }
+            _ => panic!("expected Devices Show"),
+        }
+    }
+
+    #[test]
+    fn cli_completions() {
+        let cli = parse(&["unifi-cli", "completions", "bash"]);
+        assert!(matches!(cli.command, Command::Completions { .. }));
     }
 }

@@ -35,6 +35,7 @@ pub async fn list(
                 })
                 .collect::<Vec<_>>(),
         )?);
+        out.print_message(&format!("\n{} networks", networks.len()));
         return Ok(());
     }
 
@@ -52,5 +53,6 @@ pub async fn list(
         .collect();
 
     out.print_data(&Table::new(rows).to_string());
+    out.print_message(&format!("\n{} networks", networks.len()));
     Ok(())
 }

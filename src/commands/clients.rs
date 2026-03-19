@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{Client, UnifiClient, format_bytes, format_mac, format_uptime};
+use crate::api::{Client, UnifiClient, format_bytes, format_mac, format_uptime, normalize_mac};
 use crate::output::OutputConfig;
 
 #[derive(Tabled)]
@@ -60,7 +60,7 @@ fn render_clients(clients: &[Client], out: &OutputConfig) {
                     .map(|c| {
                         serde_json::json!({
                             "name": c.display_name(),
-                            "mac": c.mac_address,
+                            "mac": c.mac_address.as_deref().map(|m| format_mac(&normalize_mac(m))),
                             "ip": c.ip_address,
                             "type": c.client_type,
                         })

@@ -36,6 +36,8 @@ pub async fn health(
                         "subsystem": s.subsystem,
                         "status": s.status,
                         "num_sta": s.num_sta,
+                        "num_ap": s.num_ap,
+                        "num_switches": s.num_switches,
                         "wan_ip": s.wan_ip,
                         "isp_name": s.isp_name,
                     })
