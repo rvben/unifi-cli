@@ -853,6 +853,367 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
     result
 }
 
+// --- Ports Live TUI ---
+
+use crate::api::{DeviceWithPorts, PortEntry};
+
+struct PortsState {
+    device: Option<DeviceWithPorts>,
+    prev_bytes: HashMap<u32, (u64, u64, Instant)>,
+    port_rates: HashMap<u32, (f64, f64)>,
+    scroll: usize,
+    interval_secs: u64,
+    last_error: Option<String>,
+}
+
+impl PortsState {
+    fn new(interval_secs: u64) -> Self {
+        Self {
+            device: None,
+            prev_bytes: HashMap::new(),
+            port_rates: HashMap::new(),
+            scroll: 0,
+            interval_secs,
+            last_error: None,
+        }
+    }
+
+    fn update_port_rates(&mut self) {
+        let now = Instant::now();
+        let ports = match &self.device {
+            Some(d) => &d.port_table,
+            None => return,
+        };
+
+        for port in ports {
+            let idx = match port.port_idx {
+                Some(i) => i,
+                None => continue,
+            };
+            let tx = port.tx_bytes.unwrap_or(0);
+            let rx = port.rx_bytes.unwrap_or(0);
+
+            if let Some((prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&idx) {
+                let elapsed = now.duration_since(*prev_time).as_secs_f64();
+                if elapsed > 0.1 {
+                    let tx_rate = if tx >= *prev_tx {
+                        (tx - prev_tx) as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    let rx_rate = if rx >= *prev_rx {
+                        (rx - prev_rx) as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    self.port_rates.insert(idx, (tx_rate, rx_rate));
+                }
+            }
+
+            self.prev_bytes.insert(idx, (tx, rx, now));
+        }
+    }
+}
+
+fn port_link_color(port: &PortEntry) -> Color {
+    if port.up {
+        match port.speed {
+            Some(s) if s >= 2500 => Color::Green,
+            Some(s) if s >= 1000 => Color::Cyan,
+            Some(_) => Color::Yellow,
+            None => Color::White,
+        }
+    } else {
+        DIM_COLOR
+    }
+}
+
+fn draw_ports(f: &mut ratatui::Frame, state: &PortsState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10),   // port table
+            Constraint::Length(1), // footer
+        ])
+        .split(f.area());
+
+    let device_name = state
+        .device
+        .as_ref()
+        .and_then(|d| d.name.as_deref())
+        .unwrap_or("Device");
+    let port_count = state
+        .device
+        .as_ref()
+        .map(|d| d.port_table.len())
+        .unwrap_or(0);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_COLOR))
+        .title(Span::styled(
+            format!(" {device_name} \u{2502} {port_count} ports "),
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let header = Row::new(vec![
+        Cell::from("Port").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Name").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Link").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Speed").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("PoE").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("TX/s").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("RX/s").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("TX Total").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("RX Total").style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+    .height(1);
+
+    let inner_height = chunks[0].height.saturating_sub(4) as usize;
+    let ports = state
+        .device
+        .as_ref()
+        .map(|d| &d.port_table[..])
+        .unwrap_or(&[]);
+
+    let rows: Vec<Row> = ports
+        .iter()
+        .skip(state.scroll)
+        .take(inner_height)
+        .map(|p| {
+            let idx = p.port_idx.unwrap_or(0);
+            let link_color = port_link_color(p);
+            let (tx_rate, rx_rate) = state.port_rates.get(&idx).copied().unwrap_or((0.0, 0.0));
+
+            let link_str = if p.up { "\u{25cf} up" } else { "\u{25cb} down" };
+
+            let speed_str = if p.up {
+                match p.speed {
+                    Some(s) => {
+                        let duplex = if p.full_duplex { "FD" } else { "HD" };
+                        format!("{s} {duplex}")
+                    }
+                    None => "up".into(),
+                }
+            } else {
+                "-".into()
+            };
+
+            let poe_str = if p.poe_enable {
+                match p.poe_power {
+                    Some(w) if w > 0.0 => format!("{w:.1}W"),
+                    _ => "on".into(),
+                }
+            } else if p.port_poe {
+                "off".into()
+            } else {
+                "-".into()
+            };
+
+            let poe_color = if p.poe_enable && p.poe_power.is_some_and(|w| w > 0.0) {
+                Color::Yellow
+            } else {
+                DIM_COLOR
+            };
+
+            Row::new(vec![
+                Cell::from(idx.to_string()).style(
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Cell::from(p.name.as_deref().unwrap_or("-").to_string())
+                    .style(Style::default().fg(Color::White)),
+                Cell::from(link_str).style(Style::default().fg(link_color)),
+                Cell::from(speed_str).style(Style::default().fg(link_color)),
+                Cell::from(poe_str).style(Style::default().fg(poe_color)),
+                Cell::from(format_rate(tx_rate)).style(Style::default().fg(if tx_rate >= 1024.0 {
+                    Color::Green
+                } else {
+                    DIM_COLOR
+                })),
+                Cell::from(format_rate(rx_rate)).style(Style::default().fg(if rx_rate >= 1024.0 {
+                    Color::Green
+                } else {
+                    DIM_COLOR
+                })),
+                Cell::from(p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()))
+                    .style(Style::default().fg(DIM_COLOR)),
+                Cell::from(p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()))
+                    .style(Style::default().fg(DIM_COLOR)),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(5),
+        Constraint::Min(14),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(8),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Length(10),
+    ];
+
+    if ports.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "No ports found (not a switch or router)",
+            Style::default().fg(DIM_COLOR),
+        )))
+        .block(block)
+        .alignment(Alignment::Center);
+        f.render_widget(empty, chunks[0]);
+    } else {
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(block)
+            .row_highlight_style(Style::default().bg(SELECTED_BG));
+        f.render_widget(table, chunks[0]);
+    }
+
+    // Footer
+    let error_span = if let Some(ref err) = state.last_error {
+        Span::styled(
+            format!(" \u{26a0} {err} "),
+            Style::default().fg(OFFLINE_COLOR),
+        )
+    } else {
+        Span::raw("")
+    };
+
+    let footer = Line::from(vec![
+        Span::styled(
+            " q",
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" quit  ", Style::default().fg(DIM_COLOR)),
+        Span::styled(
+            "\u{2191}\u{2193}",
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" scroll", Style::default().fg(DIM_COLOR)),
+        error_span,
+        Span::raw("  "),
+        Span::styled(
+            format!("\u{21bb} {}s", state.interval_secs),
+            Style::default().fg(DIM_COLOR),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(footer), chunks[1]);
+}
+
+pub async fn run_ports(
+    api: &UnifiClient,
+    mac: &str,
+    interval_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut state = PortsState::new(interval_secs);
+    let tick_rate = Duration::from_secs(interval_secs);
+    let mut last_tick = Instant::now() - tick_rate;
+
+    let result = loop {
+        if last_tick.elapsed() >= tick_rate {
+            match api.get_device_ports(mac).await {
+                Ok(device) => {
+                    state.device = Some(device);
+                    state.update_port_rates();
+                    state.last_error = None;
+                }
+                Err(e) => {
+                    state.last_error = Some(e.to_string());
+                }
+            }
+            last_tick = Instant::now();
+        }
+
+        terminal.draw(|f| draw_ports(f, &state))?;
+
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(()),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.scroll = state.scroll.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = state
+                        .device
+                        .as_ref()
+                        .map(|d| d.port_table.len())
+                        .unwrap_or(0);
+                    if state.scroll + 1 < max {
+                        state.scroll += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

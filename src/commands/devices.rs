@@ -67,10 +67,27 @@ pub async fn list(
     watch: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(interval) = watch {
+        use crossterm::execute;
+        use crossterm::terminal::EnterAlternateScreen;
+
+        let mut stdout = std::io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+
         loop {
-            eprint!("\x1B[2J\x1B[H");
-            let devices = client.list_devices().await?;
-            render_devices(&devices, &out);
+            execute!(stdout, crossterm::cursor::MoveTo(0, 0))?;
+            execute!(
+                stdout,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+            )?;
+            eprintln!("Every {interval}s | devices list (press Ctrl+C to exit)\n");
+            match client.list_devices().await {
+                Ok(devices) => {
+                    render_devices(&devices, &out);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
         }
     } else {
@@ -282,6 +299,19 @@ pub async fn ports(
         out.print_data(&Table::new(rows).to_string());
     }
     out.print_message(&format!("\n{} ports", device.port_table.len()));
+    Ok(())
+}
+
+pub async fn upgrade(
+    client: &UnifiClient,
+    mac: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    client.upgrade_device(mac).await?;
+    out.print_result(
+        &serde_json::json!({"status": "ok", "action": "upgrade", "mac": format_mac(mac)}),
+        &format!("Upgrading firmware on {}", format_mac(mac)),
+    );
     Ok(())
 }
 

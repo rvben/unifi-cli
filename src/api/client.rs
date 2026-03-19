@@ -286,6 +286,16 @@ impl UnifiClient {
         Ok(())
     }
 
+    pub async fn upgrade_device(&self, mac: &str) -> Result<(), ApiError> {
+        let formatted = format_mac(&normalize_mac(mac));
+        self.post_legacy_cmd(
+            "devmgr",
+            serde_json::json!({"cmd": "upgrade", "mac": formatted}),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn locate_device(&self, mac: &str, enable: bool) -> Result<(), ApiError> {
         let formatted = format_mac(&normalize_mac(mac));
         let cmd = if enable { "set-locate" } else { "unset-locate" };

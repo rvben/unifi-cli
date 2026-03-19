@@ -98,12 +98,28 @@ pub async fn list(
     watch: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(interval) = watch {
+        use crossterm::execute;
+        use crossterm::terminal::EnterAlternateScreen;
+
+        let mut stdout = std::io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+
         loop {
-            // Clear screen for watch mode
-            eprint!("\x1B[2J\x1B[H");
-            let clients = client.list_clients().await?;
-            let filtered = apply_filter(clients, &filter);
-            render_clients(&filtered, &out);
+            execute!(stdout, crossterm::cursor::MoveTo(0, 0))?;
+            execute!(
+                stdout,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+            )?;
+            eprintln!("Every {interval}s | clients list (press Ctrl+C to exit)\n");
+            match client.list_clients().await {
+                Ok(clients) => {
+                    let filtered = apply_filter(clients, &filter);
+                    render_clients(&filtered, &out);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                }
+            }
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
         }
     } else {

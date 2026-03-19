@@ -343,6 +343,22 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn upgrade_device_sends_correct_command() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        client.upgrade_device("aa:bb:cc:dd:ee:ff").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn locate_device_enable() {
         let server = MockServer::start().await;
 
@@ -502,7 +518,9 @@ mod error_handling {
 
         let mut client = mock_client(&server).await;
         let err = client.list_clients().await.unwrap_err();
-        assert!(err.to_string().contains("Authentication error:"));
+        let msg = err.to_string();
+        assert!(msg.contains("Authentication error:"));
+        assert!(msg.contains("Hint:"));
     }
 
     #[tokio::test]
@@ -1572,6 +1590,42 @@ mod command_output {
 
         let client = mock_client(&server).await;
         unifi_cli::commands::devices::ports(&client, "aa:bb:cc:dd:ee:ff", out_table())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_upgrade_output() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::upgrade(&client, "aa:bb:cc:dd:ee:ff", out_table())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn devices_upgrade_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"meta": {"rc": "ok"}, "data": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::devices::upgrade(&client, "aa:bb:cc:dd:ee:ff", out_json())
             .await
             .unwrap();
     }

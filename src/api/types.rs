@@ -261,10 +261,38 @@ pub enum ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ApiError::Http(e) => write!(f, "HTTP error: {e}"),
+            ApiError::Http(e) => {
+                let msg = e.to_string();
+                write!(f, "HTTP error: {e}")?;
+                if msg.contains("connect") || msg.contains("Connection refused") {
+                    write!(
+                        f,
+                        "\n  Hint: Check that the host is reachable and the URL is correct"
+                    )?;
+                } else if msg.contains("dns") || msg.contains("resolve") {
+                    write!(
+                        f,
+                        "\n  Hint: Could not resolve hostname. Check the host value"
+                    )?;
+                } else if msg.contains("timed out") || msg.contains("timeout") {
+                    write!(f, "\n  Hint: Request timed out. Is the controller running?")?;
+                } else if msg.contains("certificate") || msg.contains("SSL") {
+                    write!(
+                        f,
+                        "\n  Hint: TLS/certificate error. The CLI accepts self-signed certs by default"
+                    )?;
+                }
+                Ok(())
+            }
             ApiError::Api { status, message } => write!(f, "API error ({status}): {message}"),
             ApiError::NotFound(msg) => write!(f, "Not found: {msg}"),
-            ApiError::Auth(msg) => write!(f, "Authentication error: {msg}"),
+            ApiError::Auth(msg) => {
+                write!(f, "Authentication error: {msg}")?;
+                write!(
+                    f,
+                    "\n  Hint: Check your API key. Generate one in UniFi Settings > API"
+                )
+            }
             ApiError::Other(msg) => write!(f, "{msg}"),
         }
     }

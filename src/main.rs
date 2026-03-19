@@ -64,10 +64,14 @@ enum Command {
     Completions {
         /// Shell to generate completions for
         shell: Shell,
+        /// Install completions to the standard location for your shell
+        #[arg(long)]
+        install: bool,
     },
 
-    /// Create or update the configuration file interactively
-    Init,
+    /// Manage configuration
+    #[command(subcommand)]
+    Config(ConfigCommand),
 
     /// Live dashboard with real-time bandwidth and device status
     Top {
@@ -162,7 +166,26 @@ enum DevicesCommand {
     Ports {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Live-updating TUI view of port status
+        #[arg(long)]
+        live: bool,
+        /// Refresh interval in seconds (only with --live)
+        #[arg(short = 'i', long, default_value = "2")]
+        interval: u64,
     },
+    /// Trigger firmware upgrade on a device
+    Upgrade {
+        /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
+        mac: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Create or update the configuration file interactively
+    Init,
+    /// Verify configuration and test connectivity
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -298,6 +321,12 @@ fn print_schema() {
                 ],
                 "output_fields": ["key", "msg", "subsystem", "time", "datetime"],
             },
+            "devices upgrade": {
+                "description": "Trigger firmware upgrade on a device",
+                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
+                "output_fields": ["status", "action", "mac"],
+                "mutating": true,
+            },
             "system health": {
                 "description": "Show system health",
                 "args": [],
@@ -313,10 +342,15 @@ fn print_schema() {
                 "args": [{"name": "shell", "required": true, "description": "Shell (bash, zsh, fish, powershell)"}],
                 "note": "Does not require --host or --api-key",
             },
-            "init": {
+            "config init": {
                 "description": "Create or update config file interactively",
                 "args": [],
                 "note": "Does not require --host or --api-key. Supports named profiles.",
+            },
+            "config check": {
+                "description": "Verify configuration and test connectivity",
+                "args": [],
+                "note": "Requires --host and --api-key (or config file).",
             },
             "top": {
                 "description": "Live dashboard with real-time bandwidth and device status",
@@ -577,6 +611,122 @@ fn mask_api_key(key: &str) -> String {
     }
 }
 
+fn install_completions(shell: Shell) {
+    let (dir, filename) = match shell {
+        Shell::Zsh => {
+            let dir = dirs::home_dir()
+                .map(|h| h.join(".zsh").join("completions"))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            (dir, "_unifi-cli".to_string())
+        }
+        Shell::Bash => {
+            let dir = dirs::data_dir()
+                .map(|d| d.join("bash-completion").join("completions"))
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .map(|h| {
+                            h.join(".local")
+                                .join("share")
+                                .join("bash-completion")
+                                .join("completions")
+                        })
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                });
+            (dir, "unifi-cli".to_string())
+        }
+        Shell::Fish => {
+            let dir = dirs::config_dir()
+                .map(|d| d.join("fish").join("completions"))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            (dir, "unifi-cli.fish".to_string())
+        }
+        _ => {
+            eprintln!(
+                "--install is not supported for {shell}. Use 'completions {shell}' to print to stdout."
+            );
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        }
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("Failed to create directory {}: {e}", dir.display());
+        std::process::exit(exit_codes::GENERAL_ERROR);
+    }
+
+    let path = dir.join(&filename);
+    let mut file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create {}: {e}", path.display());
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        }
+    };
+
+    clap_complete::generate(shell, &mut Cli::command(), "unifi-cli", &mut file);
+    eprintln!("Installed {shell} completions to {}", path.display());
+
+    match shell {
+        Shell::Zsh => {
+            eprintln!(
+                "\nMake sure {} is in your fpath. Add to ~/.zshrc:",
+                dir.display()
+            );
+            eprintln!("  fpath=({}  $fpath)", dir.display());
+            eprintln!("  autoload -Uz compinit && compinit");
+        }
+        Shell::Bash => {
+            eprintln!("\nCompletions will be loaded automatically on next login.");
+        }
+        Shell::Fish => {
+            eprintln!("\nCompletions will be loaded automatically on next login.");
+        }
+        _ => {}
+    }
+}
+
+async fn run_config_check(client: &api::UnifiClient) {
+    eprintln!("Checking connectivity...\n");
+
+    // Test 1: Can we reach the controller?
+    match client.get_health().await {
+        Ok(subsystems) => {
+            eprintln!("  \u{2714} Connected to controller");
+            for s in &subsystems {
+                let status = s.status.as_deref().unwrap_or("unknown");
+                let icon = if status == "ok" {
+                    "\u{2714}"
+                } else {
+                    "\u{26a0}"
+                };
+                eprintln!("  {icon} {} subsystem: {status}", s.subsystem);
+            }
+        }
+        Err(api::ApiError::Auth(msg)) => {
+            eprintln!("  \u{2718} Authentication failed: {msg}");
+            eprintln!("\n  Hint: Check your API key. Generate one in UniFi Settings > API");
+            std::process::exit(exit_codes::AUTH_ERROR);
+        }
+        Err(e) => {
+            eprintln!("  \u{2718} Connection failed: {e}");
+            std::process::exit(exit_codes::GENERAL_ERROR);
+        }
+    }
+
+    // Test 2: Can we fetch sysinfo?
+    match client.get_sysinfo().await {
+        Ok(info) => {
+            let host = info.hostname.as_deref().unwrap_or("unknown");
+            let ver = info.version.as_deref().unwrap_or("unknown");
+            eprintln!("\n  Controller: {host} v{ver}");
+        }
+        Err(_) => {
+            eprintln!("\n  \u{26a0} Could not fetch system info (non-critical)");
+        }
+    }
+
+    eprintln!("\nConfiguration is valid.");
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -587,16 +737,20 @@ async fn main() {
             print_schema();
             return;
         }
-        Command::Completions { shell } => {
-            clap_complete::generate(
-                *shell,
-                &mut Cli::command(),
-                "unifi-cli",
-                &mut std::io::stdout(),
-            );
+        Command::Completions { shell, install } => {
+            if *install {
+                install_completions(*shell);
+            } else {
+                clap_complete::generate(
+                    *shell,
+                    &mut Cli::command(),
+                    "unifi-cli",
+                    &mut std::io::stdout(),
+                );
+            }
             return;
         }
-        Command::Init => {
+        Command::Config(ConfigCommand::Init) => {
             run_init();
             return;
         }
@@ -660,7 +814,18 @@ async fn main() {
             DevicesCommand::Locate { mac, off } => {
                 commands::devices::locate(&client, &mac, off, out).await
             }
-            DevicesCommand::Ports { mac } => commands::devices::ports(&client, &mac, out).await,
+            DevicesCommand::Ports {
+                mac,
+                live,
+                interval,
+            } => {
+                if live {
+                    unifi_cli::tui::run_ports(&client, &mac, interval).await
+                } else {
+                    commands::devices::ports(&client, &mac, out).await
+                }
+            }
+            DevicesCommand::Upgrade { mac } => commands::devices::upgrade(&client, &mac, out).await,
         },
         Command::Networks => commands::networks::list(&mut client, out).await,
         Command::Events(cmd) => match cmd {
@@ -671,7 +836,13 @@ async fn main() {
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
         Command::Top { interval } => unifi_cli::tui::run(&client, interval).await,
-        Command::Schema | Command::Completions { .. } | Command::Init => unreachable!(),
+        Command::Config(ConfigCommand::Check) => {
+            run_config_check(&client).await;
+            return;
+        }
+        Command::Schema | Command::Completions { .. } | Command::Config(ConfigCommand::Init) => {
+            unreachable!()
+        }
     };
 
     if let Err(e) = result {
@@ -1472,11 +1643,37 @@ api_key = "work_key"
     }
 
     #[test]
-    fn cli_init() {
-        let cli = parse(&["unifi-cli", "init"]);
-        assert!(matches!(cli.command, Command::Init));
+    fn cli_completions_install() {
+        let cli = parse(&["unifi-cli", "completions", "zsh", "--install"]);
+        match cli.command {
+            Command::Completions { shell, install } => {
+                assert_eq!(shell, Shell::Zsh);
+                assert!(install);
+            }
+            _ => panic!("expected Completions"),
+        }
+    }
+
+    #[test]
+    fn cli_config_init() {
+        let cli = parse(&["unifi-cli", "config", "init"]);
+        assert!(matches!(cli.command, Command::Config(ConfigCommand::Init)));
         assert!(cli.host.is_none());
         assert!(cli.api_key.is_none());
+    }
+
+    #[test]
+    fn cli_config_check() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "config",
+            "check",
+        ]);
+        assert!(matches!(cli.command, Command::Config(ConfigCommand::Check)));
     }
 
     #[test]
@@ -1620,10 +1817,60 @@ api_key = "work_key"
             "aa:bb:cc:dd:ee:ff",
         ]);
         match cli.command {
-            Command::Devices(DevicesCommand::Ports { mac }) => {
+            Command::Devices(DevicesCommand::Ports { mac, live, .. }) => {
                 assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
+                assert!(!live);
             }
             _ => panic!("expected Devices Ports"),
+        }
+    }
+
+    #[test]
+    fn cli_devices_ports_live() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "devices",
+            "ports",
+            "aa:bb:cc:dd:ee:ff",
+            "--live",
+            "-i",
+            "3",
+        ]);
+        match cli.command {
+            Command::Devices(DevicesCommand::Ports {
+                mac,
+                live,
+                interval,
+            }) => {
+                assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
+                assert!(live);
+                assert_eq!(interval, 3);
+            }
+            _ => panic!("expected Devices Ports"),
+        }
+    }
+
+    #[test]
+    fn cli_devices_upgrade() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "devices",
+            "upgrade",
+            "aa:bb:cc:dd:ee:ff",
+        ]);
+        match cli.command {
+            Command::Devices(DevicesCommand::Upgrade { mac }) => {
+                assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
+            }
+            _ => panic!("expected Devices Upgrade"),
         }
     }
 }

@@ -140,7 +140,9 @@ fn api_error_display_not_found() {
 #[test]
 fn api_error_display_auth() {
     let err = ApiError::Auth("Invalid API key".into());
-    assert_eq!(err.to_string(), "Authentication error: Invalid API key");
+    let display = err.to_string();
+    assert!(display.starts_with("Authentication error: Invalid API key"));
+    assert!(display.contains("Hint:"));
 }
 
 #[test]
