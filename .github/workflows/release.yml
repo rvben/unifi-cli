@@ -11,6 +11,11 @@ on:
         required: false
         default: true
         type: boolean
+      skip_crates_io:
+        description: 'Skip publishing to crates.io (if already published)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -27,6 +32,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify Cargo.lock is up to date
+        run: cargo check --locked
+
       - name: Run tests
         run: make test
 
@@ -40,6 +48,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -63,7 +73,13 @@ jobs:
 
       - name: Verify binary
         if: ${{ !contains(matrix.target, 'aarch64-unknown-linux') }}
-        run: ./target/${{ matrix.target }}/release/unifi-cli --version
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ./target/${{ matrix.target }}/release/unifi-cli.exe --version
+          else
+            ./target/${{ matrix.target }}/release/unifi-cli --version
+          fi
 
       - name: Create release archive
         shell: bash
@@ -72,13 +88,22 @@ jobs:
           ARCHIVE_NAME="unifi-cli-${VERSION}-${{ matrix.target }}"
 
           mkdir -p release-package
-          cp "target/${{ matrix.target }}/release/unifi-cli" release-package/unifi-cli
-          tar -czf "${ARCHIVE_NAME}.tar.gz" -C release-package unifi-cli
 
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/unifi-cli.exe" release-package/unifi-cli.exe
+            cd release-package
+            powershell -command "Compress-Archive -Path unifi-cli.exe -DestinationPath ../${ARCHIVE_NAME}.zip"
+            cd ..
+            powershell -command "Get-FileHash -Path '${ARCHIVE_NAME}.zip' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" > "${ARCHIVE_NAME}.zip.sha256"
           else
-            sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+            cp "target/${{ matrix.target }}/release/unifi-cli" release-package/unifi-cli
+            tar -czf "${ARCHIVE_NAME}.tar.gz" -C release-package unifi-cli
+
+            if [[ "${{ runner.os }}" == "macOS" ]]; then
+              shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+            else
+              sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+            fi
           fi
 
           rm -rf release-package
@@ -88,6 +113,7 @@ jobs:
         with:
           path: |
             unifi-cli-*-${{ matrix.target }}.tar.gz*
+            unifi-cli-*-${{ matrix.target }}.zip*
           name: release-${{ matrix.target }}
 
   release:
@@ -99,16 +125,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && inputs.skip_crates_io != true }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked
 
       - name: Test crates.io publish (dry run)
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ inputs.dry_run == true && inputs.skip_crates_io != true }}
         run: |
           echo "DRY RUN: Would publish to crates.io"
           cargo publish --dry-run --locked
+
+      - name: Skip crates.io publishing
+        if: ${{ inputs.skip_crates_io == true }}
+        run: echo "Skipping crates.io publishing as requested"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -123,6 +153,8 @@ jobs:
           files: |
             artifacts/release-*/unifi-cli-*.tar.gz
             artifacts/release-*/unifi-cli-*.tar.gz.sha256
+            artifacts/release-*/unifi-cli-*.zip
+            artifacts/release-*/unifi-cli-*.zip.sha256
 
       - name: Dry Run Summary
         if: ${{ inputs.dry_run == true }}
