@@ -37,17 +37,25 @@ impl UnifiClient {
         })
     }
 
+    fn error_for_status(status: u16, message: String) -> ApiError {
+        match status {
+            401 | 403 => ApiError::Auth(message),
+            404 => ApiError::NotFound(message),
+            _ => ApiError::Api { status, message },
+        }
+    }
+
     // Auto-discover site UUID from Integration API
     async fn ensure_site_id(&mut self) -> Result<&str, ApiError> {
         if self.site_id.is_none() {
             let resp: PaginatedResponse<Site> = self
                 .get_integration("/proxy/network/integration/v1/sites")
                 .await?;
-            let site = resp
-                .data
-                .into_iter()
-                .next()
-                .ok_or_else(|| ApiError::Other("No sites found on controller".into()))?;
+            let site = resp.data.into_iter().next().ok_or_else(|| {
+                ApiError::Other(
+                    "No sites found — check that the API key has site access".into(),
+                )
+            })?;
             self.site_id = Some(site.id);
         }
         Ok(self.site_id.as_deref().unwrap())
@@ -59,10 +67,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ApiError::Api {
-                status,
-                message: body,
-            });
+            return Err(Self::error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -73,10 +78,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ApiError::Api {
-                status,
-                message: body,
-            });
+            return Err(Self::error_for_status(status, body));
         }
         let legacy: LegacyResponse<T> = resp.json().await?;
         if legacy.meta.rc != "ok" {
@@ -101,10 +103,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ApiError::Api {
-                status,
-                message: body,
-            });
+            return Err(Self::error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -119,10 +118,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ApiError::Api {
-                status,
-                message: body,
-            });
+            return Err(Self::error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -137,10 +133,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ApiError::Api {
-                status,
-                message: body,
-            });
+            return Err(Self::error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -224,7 +217,7 @@ impl UnifiClient {
         let path = format!("/rest/user/{}", client.id);
         match self.put_legacy(&path, &payload).await {
             Ok(_) => Ok(()),
-            Err(ApiError::Api { status: 404, .. }) => {
+            Err(ApiError::NotFound(_)) => {
                 // Client doesn't have a user entry yet, create one
                 self.post_legacy("/rest/user", &payload).await?;
                 Ok(())
@@ -270,6 +263,19 @@ impl UnifiClient {
             "/proxy/network/integration/v1/sites/{site_id}/devices"
         ))
         .await
+    }
+
+    pub async fn get_device_detail(&self, mac: &str) -> Result<LegacyDevice, ApiError> {
+        let normalized = normalize_mac(mac);
+        let devices: Vec<LegacyDevice> = self.get_legacy("/stat/device").await?;
+        devices
+            .into_iter()
+            .find(|d| {
+                d.mac
+                    .as_deref()
+                    .is_some_and(|m| normalize_mac(m) == normalized)
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("Device with MAC {mac}")))
     }
 
     pub async fn restart_device(&self, mac: &str) -> Result<(), ApiError> {

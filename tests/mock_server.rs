@@ -502,7 +502,7 @@ mod error_handling {
 
         let mut client = mock_client(&server).await;
         let err = client.list_clients().await.unwrap_err();
-        assert!(err.to_string().contains("API error (401)"));
+        assert!(err.to_string().contains("Authentication error:"));
     }
 
     #[tokio::test]
@@ -581,7 +581,8 @@ mod error_handling {
 
         let mut client = mock_client(&server).await;
         let err = client.list_clients().await.unwrap_err();
-        assert!(err.to_string().contains("No sites found"));
+        let msg = err.to_string();
+        assert!(msg.contains("No sites found") && msg.contains("API key"));
     }
 
     #[tokio::test]
@@ -596,7 +597,7 @@ mod error_handling {
 
         let client = mock_client(&server).await;
         let err = client.block_client("aa:bb:cc:dd:ee:ff").await.unwrap_err();
-        assert!(err.to_string().contains("API error (403)"));
+        assert!(err.to_string().contains("Authentication error:"));
     }
 }
 

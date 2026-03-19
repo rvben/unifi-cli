@@ -53,16 +53,57 @@ pub mod exit_codes {
     pub const GENERAL_ERROR: i32 = 1;
 }
 
-/// Map an error to a specific exit code based on its type.
-pub fn exit_code_for_error(err: &dyn std::error::Error) -> i32 {
-    let msg = err.to_string();
-    if msg.starts_with("Authentication error:") {
-        exit_codes::AUTH_ERROR
-    } else if msg.starts_with("Not found:") {
-        exit_codes::NOT_FOUND
-    } else if msg.starts_with("API error") {
-        exit_codes::API_ERROR
+/// Map an error to a specific exit code by downcasting to ApiError.
+pub fn exit_code_for_error(err: &(dyn std::error::Error + 'static)) -> i32 {
+    if let Some(api_err) = err.downcast_ref::<crate::api::ApiError>() {
+        match api_err {
+            crate::api::ApiError::Auth(_) => exit_codes::AUTH_ERROR,
+            crate::api::ApiError::NotFound(_) => exit_codes::NOT_FOUND,
+            crate::api::ApiError::Api { .. } => exit_codes::API_ERROR,
+            crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
+                exit_codes::GENERAL_ERROR
+            }
+        }
     } else {
         exit_codes::GENERAL_ERROR
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::ApiError;
+
+    #[test]
+    fn exit_code_for_auth_error() {
+        let err = ApiError::Auth("bad key".into());
+        assert_eq!(exit_code_for_error(&err), exit_codes::AUTH_ERROR);
+    }
+
+    #[test]
+    fn exit_code_for_not_found() {
+        let err = ApiError::NotFound("Client with MAC aa:bb".into());
+        assert_eq!(exit_code_for_error(&err), exit_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn exit_code_for_api_error() {
+        let err = ApiError::Api {
+            status: 500,
+            message: "Internal Server Error".into(),
+        };
+        assert_eq!(exit_code_for_error(&err), exit_codes::API_ERROR);
+    }
+
+    #[test]
+    fn exit_code_for_other_error() {
+        let err = ApiError::Other("something".into());
+        assert_eq!(exit_code_for_error(&err), exit_codes::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn exit_code_for_non_api_error() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        assert_eq!(exit_code_for_error(&err), exit_codes::GENERAL_ERROR);
     }
 }
