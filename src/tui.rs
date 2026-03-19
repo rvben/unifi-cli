@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -9,10 +9,10 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::api::{
     ApiError, HealthSubsystem, LegacyClient, LegacyDevice, SysInfo, UnifiClient, format_bytes,
@@ -62,7 +62,7 @@ impl SortMode {
 struct ClientRate {
     tx_rate: f64,
     rx_rate: f64,
-    history: Vec<u64>,
+    history: VecDeque<u64>,
 }
 
 struct AppState {
@@ -78,12 +78,12 @@ struct AppState {
     device_scroll: usize,
     filter: String,
     filtering: bool,
-    tick_count: u64,
+    interval_secs: u64,
     last_error: Option<String>,
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(interval_secs: u64) -> Self {
         Self {
             sysinfo: None,
             health: Vec::new(),
@@ -97,7 +97,7 @@ impl AppState {
             device_scroll: 0,
             filter: String::new(),
             filtering: false,
-            tick_count: 0,
+            interval_secs,
             last_error: None,
         }
     }
@@ -130,15 +130,15 @@ impl AppState {
                     let rate = self.rates.entry(mac.clone()).or_insert(ClientRate {
                         tx_rate: 0.0,
                         rx_rate: 0.0,
-                        history: Vec::with_capacity(SPARKLINE_HISTORY),
+                        history: VecDeque::with_capacity(SPARKLINE_HISTORY),
                     });
                     rate.tx_rate = tx_rate;
                     rate.rx_rate = rx_rate;
 
                     let combined = (tx_rate + rx_rate) as u64;
-                    rate.history.push(combined);
+                    rate.history.push_back(combined);
                     if rate.history.len() > SPARKLINE_HISTORY {
-                        rate.history.remove(0);
+                        rate.history.pop_front();
                     }
                 }
             }
@@ -339,6 +339,7 @@ fn draw_header(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(HEADER_COLOR))
         .title(Span::styled(
             title,
@@ -359,20 +360,21 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let border_color = if is_focused { ACCENT_COLOR } else { DIM_COLOR };
 
     let filter_info = if !state.filter.is_empty() {
-        format!(" [filter: {}]", state.filter)
+        format!(" │ filter: {}", state.filter)
     } else {
         String::new()
     };
 
     let title = format!(
-        " Clients ({}){}── sorted by: {} ",
+        " Clients ({}) │ sort: {}{} ",
         clients.len(),
+        state.sort.label(),
         filter_info,
-        state.sort.label()
     );
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
@@ -491,12 +493,26 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Constraint::Min(20),
     ];
 
-    let table = Table::new(rows, widths)
-        .header(header)
+    if clients.is_empty() {
+        let msg = if state.filter.is_empty() {
+            "No clients connected"
+        } else {
+            "No clients match filter"
+        };
+        let empty = Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(DIM_COLOR),
+        )))
         .block(block)
-        .row_highlight_style(Style::default().bg(SELECTED_BG));
-
-    f.render_widget(table, area);
+        .alignment(Alignment::Center);
+        f.render_widget(empty, area);
+    } else {
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(block)
+            .row_highlight_style(Style::default().bg(SELECTED_BG));
+        f.render_widget(table, area);
+    }
 }
 
 fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
@@ -506,6 +522,7 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let title = format!(" Devices ({}) ", state.devices.len());
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
@@ -607,9 +624,18 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Constraint::Length(10),
     ];
 
-    let table = Table::new(rows, widths).header(header).block(block);
-
-    f.render_widget(table, area);
+    if state.devices.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "No devices found",
+            Style::default().fg(DIM_COLOR),
+        )))
+        .block(block)
+        .alignment(Alignment::Center);
+        f.render_widget(empty, area);
+    } else {
+        let table = Table::new(rows, widths).header(header).block(block);
+        f.render_widget(table, area);
+    }
 }
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
@@ -672,7 +698,10 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         filter_hint,
         error_span,
         Span::raw("  "),
-        Span::styled(format!("↻ {}s", 2), Style::default().fg(DIM_COLOR)),
+        Span::styled(
+            format!("↻ {}s", state.interval_secs),
+            Style::default().fg(DIM_COLOR),
+        ),
         Span::raw("  "),
         Span::styled(
             format!("▲ {} ▼ {} ", format_rate(total_tx), format_rate(total_rx)),
@@ -692,7 +721,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     f.render_widget(paragraph, area);
 }
 
-fn sparkline_str(history: &[u64]) -> String {
+fn sparkline_str(history: &VecDeque<u64>) -> String {
     if history.is_empty() {
         return String::new();
     }
@@ -732,7 +761,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new();
+    let mut state = AppState::new(interval_secs);
     let tick_rate = Duration::from_secs(interval_secs);
     let mut last_tick = Instant::now() - tick_rate; // Force immediate first fetch
 
@@ -746,7 +775,6 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.clients = clients;
                     state.devices = devices;
                     state.update_rates();
-                    state.tick_count += 1;
                     state.last_error = None;
                 }
                 Err(e) => {
@@ -856,17 +884,17 @@ mod tests {
 
     #[test]
     fn sparkline_str_empty() {
-        assert_eq!(sparkline_str(&[]), "");
+        assert_eq!(sparkline_str(&VecDeque::new()), "");
     }
 
     #[test]
     fn sparkline_str_single() {
-        assert_eq!(sparkline_str(&[100]), "█");
+        assert_eq!(sparkline_str(&VecDeque::from([100])), "█");
     }
 
     #[test]
     fn sparkline_str_ascending() {
-        let result = sparkline_str(&[0, 25, 50, 75, 100]);
+        let result = sparkline_str(&VecDeque::from([0, 25, 50, 75, 100]));
         assert_eq!(result.chars().count(), 5);
         let chars: Vec<char> = result.chars().collect();
         assert_eq!(chars[0], '▁');
@@ -875,7 +903,7 @@ mod tests {
 
     #[test]
     fn sparkline_str_all_zeros() {
-        assert_eq!(sparkline_str(&[0, 0, 0]), "▁▁▁");
+        assert_eq!(sparkline_str(&VecDeque::from([0, 0, 0])), "▁▁▁");
     }
 
     #[test]
@@ -897,7 +925,7 @@ mod tests {
 
     #[test]
     fn app_state_scroll_bounds() {
-        let mut state = AppState::new();
+        let mut state = AppState::new(2);
         state.scroll_up();
         assert_eq!(state.client_scroll, 0);
 
