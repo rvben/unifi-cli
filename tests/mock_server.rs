@@ -637,12 +637,20 @@ mod command_output {
             .await;
     }
 
+    fn no_filter() -> unifi_cli::commands::clients::ListFilter {
+        unifi_cli::commands::clients::ListFilter {
+            wired: false,
+            wireless: false,
+            name: None,
+        }
+    }
+
     #[tokio::test]
     async fn clients_list_table() {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, out_table())
+        unifi_cli::commands::clients::list(&mut client, out_table(), no_filter(), None)
             .await
             .unwrap();
     }
@@ -652,7 +660,7 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, out_json())
+        unifi_cli::commands::clients::list(&mut client, out_json(), no_filter(), None)
             .await
             .unwrap();
     }
@@ -855,7 +863,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, out_table())
+        unifi_cli::commands::devices::list(&mut client, out_table(), None)
             .await
             .unwrap();
     }
@@ -874,7 +882,7 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, out_json())
+        unifi_cli::commands::devices::list(&mut client, out_json(), None)
             .await
             .unwrap();
     }

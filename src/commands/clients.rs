@@ -1,6 +1,6 @@
 use tabled::{Table, Tabled};
 
-use crate::api::{UnifiClient, format_bytes, format_mac, format_uptime};
+use crate::api::{Client, UnifiClient, format_bytes, format_mac, format_uptime};
 use crate::output::OutputConfig;
 
 #[derive(Tabled)]
@@ -23,46 +23,93 @@ struct ClientDetailRow {
     value: String,
 }
 
+pub struct ListFilter {
+    pub wired: bool,
+    pub wireless: bool,
+    pub name: Option<String>,
+}
+
+fn apply_filter(clients: Vec<Client>, filter: &ListFilter) -> Vec<Client> {
+    clients
+        .into_iter()
+        .filter(|c| {
+            if filter.wired && c.client_type.as_deref() != Some("WIRED") {
+                return false;
+            }
+            if filter.wireless && c.client_type.as_deref() != Some("WIRELESS") {
+                return false;
+            }
+            if let Some(ref name_filter) = filter.name {
+                let needle = name_filter.to_lowercase();
+                let display = c.display_name().to_lowercase();
+                if !display.contains(&needle) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
+
+fn render_clients(clients: &[Client], out: &OutputConfig) {
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(
+                &clients
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.display_name(),
+                            "mac": c.mac_address,
+                            "ip": c.ip_address,
+                            "type": c.client_type,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        let rows: Vec<ClientRow> = clients
+            .iter()
+            .map(|c| ClientRow {
+                name: c.display_name().to_string(),
+                mac: c
+                    .mac_address
+                    .as_deref()
+                    .map(format_mac)
+                    .unwrap_or_else(|| "-".into()),
+                ip: c.ip_address.as_deref().unwrap_or("-").to_string(),
+                client_type: c.client_type.as_deref().unwrap_or("-").to_string(),
+            })
+            .collect();
+
+        out.print_data(&Table::new(rows).to_string());
+    }
+    out.print_message(&format!("\n{} clients", clients.len()));
+}
+
 pub async fn list(
     client: &mut UnifiClient,
     out: OutputConfig,
+    filter: ListFilter,
+    watch: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clients = client.list_clients().await?;
-
-    if out.json {
-        out.print_data(&serde_json::to_string_pretty(
-            &clients
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.display_name(),
-                        "mac": c.mac_address,
-                        "ip": c.ip_address,
-                        "type": c.client_type,
-                    })
-                })
-                .collect::<Vec<_>>(),
-        )?);
-        return Ok(());
+    if let Some(interval) = watch {
+        loop {
+            // Clear screen for watch mode
+            eprint!("\x1B[2J\x1B[H");
+            let clients = client.list_clients().await?;
+            let filtered = apply_filter(clients, &filter);
+            render_clients(&filtered, &out);
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        }
+    } else {
+        let clients = client.list_clients().await?;
+        let filtered = apply_filter(clients, &filter);
+        render_clients(&filtered, &out);
+        Ok(())
     }
-
-    let rows: Vec<ClientRow> = clients
-        .iter()
-        .map(|c| ClientRow {
-            name: c.display_name().to_string(),
-            mac: c
-                .mac_address
-                .as_deref()
-                .map(format_mac)
-                .unwrap_or_else(|| "-".into()),
-            ip: c.ip_address.as_deref().unwrap_or("-").to_string(),
-            client_type: c.client_type.as_deref().unwrap_or("-").to_string(),
-        })
-        .collect();
-
-    out.print_data(&Table::new(rows).to_string());
-    out.print_message(&format!("\n{} clients", clients.len()));
-    Ok(())
 }
 
 pub async fn show(

@@ -2,7 +2,8 @@ use unifi_cli::api;
 use unifi_cli::commands;
 use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(
@@ -50,12 +51,31 @@ enum Command {
 
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand)]
 enum ClientsCommand {
     /// List all connected clients
-    List,
+    List {
+        /// Show only wired clients
+        #[arg(long)]
+        wired: bool,
+        /// Show only wireless clients
+        #[arg(long)]
+        wireless: bool,
+        /// Filter by name (case-insensitive substring match)
+        #[arg(long)]
+        name: Option<String>,
+        /// Refresh every N seconds
+        #[arg(short, long, value_name = "SECONDS")]
+        watch: Option<u64>,
+    },
     /// Show details for a client by MAC address
     Show {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
@@ -91,7 +111,11 @@ enum ClientsCommand {
 #[derive(Subcommand)]
 enum DevicesCommand {
     /// List all network devices
-    List,
+    List {
+        /// Refresh every N seconds
+        #[arg(short, long, value_name = "SECONDS")]
+        watch: Option<u64>,
+    },
     /// Restart a device
     Restart {
         /// MAC address
@@ -137,7 +161,12 @@ fn print_schema() {
         "commands": {
             "clients list": {
                 "description": "List all connected clients",
-                "args": [],
+                "args": [
+                    {"name": "--wired", "required": false, "description": "Show only wired clients"},
+                    {"name": "--wireless", "required": false, "description": "Show only wireless clients"},
+                    {"name": "--name", "required": false, "description": "Filter by name (substring)"},
+                    {"name": "--watch", "required": false, "description": "Refresh every N seconds"},
+                ],
                 "output_fields": ["name", "mac", "ip", "type"],
             },
             "clients show": {
@@ -175,7 +204,9 @@ fn print_schema() {
             },
             "devices list": {
                 "description": "List all network devices",
-                "args": [],
+                "args": [
+                    {"name": "--watch", "required": false, "description": "Refresh every N seconds"},
+                ],
                 "output_fields": ["name", "model", "mac", "ip", "state", "firmware"],
             },
             "devices restart": {
@@ -248,9 +279,21 @@ async fn main() {
     let cli = Cli::parse();
     let out = OutputConfig::new(cli.json, cli.quiet);
 
-    if matches!(cli.command, Command::Schema) {
-        print_schema();
-        return;
+    match &cli.command {
+        Command::Schema => {
+            print_schema();
+            return;
+        }
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                *shell,
+                &mut Cli::command(),
+                "unifi-cli",
+                &mut std::io::stdout(),
+            );
+            return;
+        }
+        _ => {}
     }
 
     let (config_host, config_api_key) = load_config();
@@ -275,7 +318,19 @@ async fn main() {
 
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Command::Clients(cmd) => match cmd {
-            ClientsCommand::List => commands::clients::list(&mut client, out).await,
+            ClientsCommand::List {
+                wired,
+                wireless,
+                name,
+                watch,
+            } => {
+                let filter = commands::clients::ListFilter {
+                    wired,
+                    wireless,
+                    name,
+                };
+                commands::clients::list(&mut client, out, filter, watch).await
+            }
             ClientsCommand::Show { mac } => commands::clients::show(&client, &mac, out).await,
             ClientsCommand::SetFixedIp { mac, ip, name } => {
                 commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
@@ -285,7 +340,9 @@ async fn main() {
             ClientsCommand::Kick { mac } => commands::clients::kick(&client, &mac, out).await,
         },
         Command::Devices(cmd) => match cmd {
-            DevicesCommand::List => commands::devices::list(&mut client, out).await,
+            DevicesCommand::List { watch } => {
+                commands::devices::list(&mut client, out, watch).await
+            }
             DevicesCommand::Restart { mac } => commands::devices::restart(&client, &mac, out).await,
             DevicesCommand::Locate { mac, off } => {
                 commands::devices::locate(&client, &mac, off, out).await
@@ -296,7 +353,7 @@ async fn main() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
-        Command::Schema => unreachable!(),
+        Command::Schema | Command::Completions { .. } => unreachable!(),
     };
 
     if let Err(e) = result {
@@ -401,7 +458,7 @@ mod tests {
         assert!(!cli.quiet);
         assert!(matches!(
             cli.command,
-            Command::Clients(ClientsCommand::List)
+            Command::Clients(ClientsCommand::List { .. })
         ));
     }
 
@@ -536,7 +593,7 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Command::Devices(DevicesCommand::List)
+            Command::Devices(DevicesCommand::List { .. })
         ));
     }
 
