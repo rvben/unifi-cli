@@ -1,5 +1,5 @@
-mod api;
-mod commands;
+use unifi_cli::api;
+use unifi_cli::commands;
 
 use clap::{Parser, Subcommand};
 
