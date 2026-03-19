@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_pypi:
+        description: 'Skip publishing to PyPI (if already published)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -66,6 +71,22 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            *-gnu)
+              pip install ziglang
+              maturin build --release --target ${{ matrix.target }} --compatibility manylinux_2_28 --zig
+              ;;
+            *)
+              maturin build --release --target ${{ matrix.target }}
+              ;;
+          esac
+
       - name: Build binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
@@ -108,6 +129,12 @@ jobs:
 
           rm -rf release-package
 
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          path: target/wheels/*
+          name: wheel-${{ matrix.target }}
+
       - name: Upload release archives
         uses: actions/upload-artifact@v4
         with:
@@ -116,13 +143,36 @@ jobs:
             unifi-cli-*-${{ matrix.target }}.zip*
           name: release-${{ matrix.target }}
 
+  sdist:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: maturin sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          path: target/wheels/*.tar.gz
+          name: sdist
+
   release:
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, sdist]
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Publish to crates.io
         if: ${{ inputs.dry_run != true && inputs.skip_crates_io != true }}
@@ -144,6 +194,26 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Publish to PyPI
+        if: ${{ inputs.dry_run != true && inputs.skip_pypi != true }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv tool run twine upload artifacts/wheel-*/*.whl artifacts/sdist/*.tar.gz
+
+      - name: Test PyPI upload (dry run)
+        if: ${{ inputs.dry_run == true && inputs.skip_pypi != true }}
+        run: |
+          echo "DRY RUN: Would upload to PyPI:"
+          find artifacts/wheel-* -name "*.whl" -type f | sort
+          find artifacts/sdist -name "*.tar.gz" -type f | sort
+          uv tool run twine check artifacts/wheel-*/*.whl artifacts/sdist/*.tar.gz
+
+      - name: Skip PyPI publishing
+        if: ${{ inputs.skip_pypi == true }}
+        run: echo "Skipping PyPI publishing as requested"
 
       - name: Create Release
         if: ${{ inputs.dry_run != true }}
