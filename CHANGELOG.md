@@ -4,10 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-19
+
 ### Added
+- Interactive config setup via `unifi-cli init` with confirmation before writing
+- Multi-controller support via `--profile` flag and `UNIFI_PROFILE` env var
+- `devices show` command with detailed device info from legacy API
 - Shell completion generation for bash, zsh, fish, and PowerShell (`completions` command)
 - Client filtering: `--wired`, `--wireless`, `--name` flags on `clients list`
 - Watch mode: `--watch` / `-w` flag on `clients list` and `devices list`
+- MAC format hints on all MAC-accepting commands
+- Pre-commit hooks via prek (fmt, clippy, test on push)
+- Pre-release verification script (`make verify-release`)
+
+### Fixed
+- Exit code mapping uses type downcast instead of fragile string matching
+- `--wired` and `--wireless` flags are now mutually exclusive
+- MAC addresses normalized in JSON output
+- `set-fixed-ip` correctly falls back to POST on 404
+
+### Changed
+- Config file supports `[profiles.<name>]` sections (backward-compatible)
+- `LegacyDevice` type for richer device data
+- Explicit module exports instead of wildcard re-export
 
 ## [0.0.4] - 2026-03-19
 
@@ -51,7 +70,8 @@ All notable changes to this project will be documented in this file.
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
 
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/rvben/unifi-cli/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/rvben/unifi-cli/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/rvben/unifi-cli/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/rvben/unifi-cli/compare/v0.0.1...v0.0.2
