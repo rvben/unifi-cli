@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (skip actual publishing)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: make test
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify binary
+        if: ${{ !contains(matrix.target, 'aarch64-unknown-linux') }}
+        run: ./target/${{ matrix.target }}/release/unifi-cli --version
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          ARCHIVE_NAME="unifi-cli-${VERSION}-${{ matrix.target }}"
+
+          mkdir -p release-package
+          cp "target/${{ matrix.target }}/release/unifi-cli" release-package/unifi-cli
+          tar -czf "${ARCHIVE_NAME}.tar.gz" -C release-package unifi-cli
+
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          else
+            sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+          fi
+
+          rm -rf release-package
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            unifi-cli-*-${{ matrix.target }}.tar.gz*
+          name: release-${{ matrix.target }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        if: ${{ inputs.dry_run != true }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+      - name: Test crates.io publish (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "DRY RUN: Would publish to crates.io"
+          cargo publish --dry-run --locked
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        if: ${{ inputs.dry_run != true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/release-*/unifi-cli-*.tar.gz
+            artifacts/release-*/unifi-cli-*.tar.gz.sha256
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "Dry run complete. Artifacts built but nothing published."
+          echo "Archives:"
+          find artifacts/release-* -type f | sort
