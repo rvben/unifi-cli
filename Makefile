@@ -1,4 +1,4 @@
-.PHONY: build release test lint fmt check clean install version-get version-patch version-minor version-push release-patch release-minor
+.PHONY: build release test lint fmt check clean install verify-release version-get version-patch version-minor version-push release-patch release-minor
 
 build:
 	cargo build
@@ -23,6 +23,9 @@ clean:
 
 install: release
 	cp target/release/unifi-cli ~/.local/bin/unifi-cli
+
+verify-release:
+	@./scripts/verify-release-ready.sh
 
 # Version management
 version-get:
