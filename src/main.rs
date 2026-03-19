@@ -68,6 +68,13 @@ enum Command {
 
     /// Create or update the configuration file interactively
     Init,
+
+    /// Live dashboard with real-time bandwidth and device status
+    Top {
+        /// Refresh interval in seconds
+        #[arg(short = 'i', long, default_value = "2")]
+        interval: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -310,6 +317,13 @@ fn print_schema() {
                 "description": "Create or update config file interactively",
                 "args": [],
                 "note": "Does not require --host or --api-key. Supports named profiles.",
+            },
+            "top": {
+                "description": "Live dashboard with real-time bandwidth and device status",
+                "args": [
+                    {"name": "--interval", "required": false, "description": "Refresh interval in seconds (default: 2)"},
+                ],
+                "note": "Interactive TUI. Keys: q quit, s sort, tab focus, / filter, ↑↓ scroll",
             },
         },
     });
@@ -656,6 +670,7 @@ async fn main() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
+        Command::Top { interval } => unifi_cli::tui::run(&client, interval).await,
         Command::Schema | Command::Completions { .. } | Command::Init => unreachable!(),
     };
 
@@ -1562,6 +1577,33 @@ api_key = "work_key"
                 assert_eq!(limit, 5);
             }
             _ => panic!("expected Clients Top"),
+        }
+    }
+
+    #[test]
+    fn cli_top_default_interval() {
+        let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "top"]);
+        match cli.command {
+            Command::Top { interval } => assert_eq!(interval, 2),
+            _ => panic!("expected Top"),
+        }
+    }
+
+    #[test]
+    fn cli_top_custom_interval() {
+        let cli = parse(&[
+            "unifi-cli",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "top",
+            "-i",
+            "5",
+        ]);
+        match cli.command {
+            Command::Top { interval } => assert_eq!(interval, 5),
+            _ => panic!("expected Top"),
         }
     }
 

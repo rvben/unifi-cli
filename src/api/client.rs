@@ -330,6 +330,11 @@ impl UnifiClient {
         self.get_legacy("/stat/sta").await
     }
 
+    // All devices with full detail (legacy endpoint)
+    pub async fn get_legacy_devices(&self) -> Result<Vec<LegacyDevice>, ApiError> {
+        self.get_legacy("/stat/device").await
+    }
+
     // System
     pub async fn get_health(&self) -> Result<Vec<HealthSubsystem>, ApiError> {
         self.get_legacy("/stat/health").await
