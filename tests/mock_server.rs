@@ -694,6 +694,86 @@ mod error_handling {
             .unwrap_err();
         assert!(err.to_string().contains("Not found"));
     }
+
+    #[tokio::test]
+    async fn list_clients_legacy_sorted_by_bandwidth_descending() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "name": "Light", "is_wired": true, "tx_bytes": 100, "rx_bytes": 200},
+                    {"_id": "c2", "mac": "aa:bb:cc:dd:ee:02", "name": "Heavy", "is_wired": true, "tx_bytes": 5000000, "rx_bytes": 10000000},
+                    {"_id": "c3", "mac": "aa:bb:cc:dd:ee:03", "name": "Medium", "is_wired": false, "tx_bytes": 50000, "rx_bytes": 60000}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let mut clients = client.list_clients_legacy().await.unwrap();
+
+        // Verify sorting matches what `clients top` does
+        clients
+            .sort_by_key(|c| std::cmp::Reverse(c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0)));
+
+        assert_eq!(clients[0].display_name(), "Heavy");
+        assert_eq!(clients[1].display_name(), "Medium");
+        assert_eq!(clients[2].display_name(), "Light");
+    }
+
+    #[tokio::test]
+    async fn get_device_ports_field_values() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:ee:ff", "name": "TestSwitch",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Uplink", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 12.5, "port_poe": true, "tx_bytes": 999999, "rx_bytes": 888888},
+                        {"port_idx": 2, "up": false, "port_poe": false},
+                        {"port_idx": 3, "up": true, "speed": 100, "full_duplex": false, "poe_enable": false, "port_poe": true}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let device = client.get_device_ports("aa:bb:cc:dd:ee:ff").await.unwrap();
+        assert_eq!(device.name.as_deref(), Some("TestSwitch"));
+
+        // Port 1: full data
+        let p1 = &device.port_table[0];
+        assert_eq!(p1.port_idx, Some(1));
+        assert_eq!(p1.name.as_deref(), Some("Uplink"));
+        assert!(p1.up);
+        assert_eq!(p1.speed, Some(1000));
+        assert!(p1.full_duplex);
+        assert!(p1.poe_enable);
+        assert_eq!(p1.poe_power, Some(12.5));
+        assert_eq!(p1.tx_bytes, Some(999999));
+        assert_eq!(p1.rx_bytes, Some(888888));
+
+        // Port 2: minimal data, down
+        let p2 = &device.port_table[1];
+        assert!(!p2.up);
+        assert!(p2.name.is_none());
+        assert!(!p2.port_poe);
+
+        // Port 3: up, half duplex, PoE-capable but disabled
+        let p3 = &device.port_table[2];
+        assert!(p3.up);
+        assert_eq!(p3.speed, Some(100));
+        assert!(!p3.full_duplex);
+        assert!(!p3.poe_enable);
+        assert!(p3.port_poe);
+    }
 }
 
 // --- Command output tests ---

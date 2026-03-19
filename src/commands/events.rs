@@ -58,10 +58,64 @@ pub async fn list(
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max - 1).collect();
-        format!("{truncated}…")
+    if max == 0 {
+        return String::new();
+    }
+    let mut chars = s.chars();
+    let mut result: String = (&mut chars).take(max).collect();
+    if chars.next().is_some() {
+        result.pop();
+        result.push('…');
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_one_over() {
+        assert_eq!(truncate("hello!", 5), "hell…");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        assert_eq!(truncate("hello world, this is long", 10), "hello wor…");
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn truncate_max_zero() {
+        assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_max_one() {
+        assert_eq!(truncate("hello", 1), "…");
+    }
+
+    #[test]
+    fn truncate_unicode() {
+        assert_eq!(truncate("αβγδεζ", 4), "αβγ…");
+    }
+
+    #[test]
+    fn truncate_unicode_exact() {
+        assert_eq!(truncate("αβγδ", 4), "αβγδ");
     }
 }
