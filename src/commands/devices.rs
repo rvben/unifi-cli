@@ -1,23 +1,7 @@
-use tabled::{Table, Tabled};
+use owo_colors::OwoColorize;
 
 use crate::api::{Device, UnifiClient, format_bytes, format_mac, format_uptime};
-use crate::output::OutputConfig;
-
-#[derive(Tabled)]
-struct DeviceRow {
-    #[tabled(rename = "Name")]
-    name: String,
-    #[tabled(rename = "Model")]
-    model: String,
-    #[tabled(rename = "MAC")]
-    mac: String,
-    #[tabled(rename = "IP")]
-    ip: String,
-    #[tabled(rename = "State")]
-    state: String,
-    #[tabled(rename = "Firmware")]
-    firmware: String,
-}
+use crate::output::{OutputConfig, use_color};
 
 fn render_devices(devices: &[Device], out: &OutputConfig) {
     if out.json {
@@ -40,23 +24,48 @@ fn render_devices(devices: &[Device], out: &OutputConfig) {
             .expect("failed to serialize JSON"),
         );
     } else {
-        let rows: Vec<DeviceRow> = devices
-            .iter()
-            .map(|d| DeviceRow {
-                name: d.name.as_deref().unwrap_or("-").to_string(),
-                model: d.model.as_deref().unwrap_or("-").to_string(),
-                mac: d
-                    .mac_address
-                    .as_deref()
-                    .map(format_mac)
-                    .unwrap_or_else(|| "-".into()),
-                ip: d.ip_address.as_deref().unwrap_or("-").to_string(),
-                state: d.state.as_deref().unwrap_or("-").to_string(),
-                firmware: d.firmware_version.as_deref().unwrap_or("-").to_string(),
-            })
-            .collect();
+        let color = use_color();
+        let header = format!(
+            "{:<24} {:<14} {:<19} {:<15} {:<10} {}",
+            "Name", "Model", "MAC", "IP", "State", "Firmware"
+        );
+        if color {
+            println!("{}", header.bold());
+            println!("{}", "-".repeat(95).dimmed());
+        } else {
+            println!("{header}");
+            println!("{}", "-".repeat(95));
+        }
 
-        out.print_data(&Table::new(rows).to_string());
+        for d in devices {
+            let name = d.name.as_deref().unwrap_or("-");
+            let model = d.model.as_deref().unwrap_or("-");
+            let mac = d
+                .mac_address
+                .as_deref()
+                .map(format_mac)
+                .unwrap_or_else(|| "-".into());
+            let ip = d.ip_address.as_deref().unwrap_or("-");
+            let state = d.state.as_deref().unwrap_or("-");
+            let fw = d.firmware_version.as_deref().unwrap_or("-");
+
+            if color {
+                println!(
+                    " {:<23} {:<14} {:<19} {:<15} {:<10} {}",
+                    name.bold(),
+                    model,
+                    mac.dimmed(),
+                    ip,
+                    state,
+                    fw,
+                );
+            } else {
+                println!(
+                    " {:<23} {:<14} {:<19} {:<15} {:<10} {}",
+                    name, model, mac, ip, state, fw
+                );
+            }
+        }
     }
     out.print_message(&format!("\n{} devices", devices.len()));
 }
@@ -97,14 +106,6 @@ pub async fn list(
     }
 }
 
-#[derive(Tabled)]
-struct DeviceDetailRow {
-    #[tabled(rename = "Field")]
-    field: String,
-    #[tabled(rename = "Value")]
-    value: String,
-}
-
 pub async fn show(
     client: &UnifiClient,
     mac: &str,
@@ -126,53 +127,52 @@ pub async fn show(
         return Ok(());
     }
 
-    let mut rows = vec![
-        DeviceDetailRow {
-            field: "Name".into(),
-            value: d.name.as_deref().unwrap_or("-").to_string(),
-        },
-        DeviceDetailRow {
-            field: "Model".into(),
-            value: d.model.as_deref().unwrap_or("-").to_string(),
-        },
-        DeviceDetailRow {
-            field: "MAC".into(),
-            value: d
-                .mac
-                .as_deref()
-                .map(format_mac)
-                .unwrap_or_else(|| "-".into()),
-        },
-        DeviceDetailRow {
-            field: "IP".into(),
-            value: d.ip.as_deref().unwrap_or("-").to_string(),
-        },
-        DeviceDetailRow {
-            field: "State".into(),
-            value: d.state_str().to_string(),
-        },
-    ];
+    let color = use_color();
+    let label = |l: &str| -> String {
+        if color {
+            format!("{}", l.dimmed())
+        } else {
+            l.to_string()
+        }
+    };
+
+    let name = d.name.as_deref().unwrap_or("Device");
+    if color {
+        println!("{}", name.bold());
+    } else {
+        println!("{name}");
+    }
+
+    println!(
+        "  {}  {}",
+        label("Model:   "),
+        d.model.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  {}  {}",
+        label("MAC:     "),
+        d.mac
+            .as_deref()
+            .map(format_mac)
+            .unwrap_or_else(|| "-".into())
+    );
+    println!(
+        "  {}  {}",
+        label("IP:      "),
+        d.ip.as_deref().unwrap_or("-")
+    );
+    println!("  {}  {}", label("State:   "), d.state_str());
 
     if let Some(ref v) = d.version {
-        rows.push(DeviceDetailRow {
-            field: "Firmware".into(),
-            value: v.clone(),
-        });
+        println!("  {}  {v}", label("Firmware:"));
     }
     if let Some(uptime) = d.uptime {
-        rows.push(DeviceDetailRow {
-            field: "Uptime".into(),
-            value: format_uptime(uptime),
-        });
+        println!("  {}  {}", label("Uptime:  "), format_uptime(uptime));
     }
     if let Some(num_sta) = d.num_sta {
-        rows.push(DeviceDetailRow {
-            field: "Clients".into(),
-            value: num_sta.to_string(),
-        });
+        println!("  {}  {num_sta}", label("Clients: "));
     }
 
-    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }
 
@@ -187,24 +187,6 @@ pub async fn restart(
         &format!("Restarting {}", format_mac(mac)),
     );
     Ok(())
-}
-
-#[derive(Tabled)]
-struct PortRow {
-    #[tabled(rename = "Port")]
-    port: String,
-    #[tabled(rename = "Name")]
-    name: String,
-    #[tabled(rename = "Link")]
-    link: String,
-    #[tabled(rename = "Speed")]
-    speed: String,
-    #[tabled(rename = "PoE")]
-    poe: String,
-    #[tabled(rename = "TX")]
-    tx: String,
-    #[tabled(rename = "RX")]
-    rx: String,
 }
 
 pub async fn ports(
@@ -254,49 +236,67 @@ pub async fn ports(
             .unwrap_or(device.model.as_deref().unwrap_or("Device"));
         out.print_message(&format!("Ports for {device_label}:\n"));
 
-        let rows: Vec<PortRow> = device
-            .port_table
-            .iter()
-            .map(|p| {
-                let poe = if p.poe_enable {
-                    match p.poe_power {
-                        Some(w) if w > 0.0 => format!("{w:.1}W"),
-                        _ => "on".into(),
-                    }
-                } else if p.port_poe {
-                    "off".into()
-                } else {
-                    "-".into()
-                };
+        let color = use_color();
+        let header = format!(
+            "{:<6} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
+            "Port", "Name", "Link", "Speed", "PoE", "TX", "RX"
+        );
+        if color {
+            println!("{}", header.bold());
+            println!("{}", "-".repeat(70).dimmed());
+        } else {
+            println!("{header}");
+            println!("{}", "-".repeat(70));
+        }
 
-                let speed = if p.up {
-                    match p.speed {
-                        Some(s) => {
-                            let duplex = if p.full_duplex { "FD" } else { "HD" };
-                            format!("{s}{duplex}")
-                        }
-                        None => "up".into(),
+        for p in &device.port_table {
+            let port = p
+                .port_idx
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "-".into());
+            let name = p.name.as_deref().unwrap_or("-");
+            let link = if p.up { "up" } else { "down" };
+            let speed = if p.up {
+                match p.speed {
+                    Some(s) => {
+                        let duplex = if p.full_duplex { "FD" } else { "HD" };
+                        format!("{s}{duplex}")
                     }
-                } else {
-                    "down".into()
-                };
-
-                PortRow {
-                    port: p
-                        .port_idx
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "-".into()),
-                    name: p.name.as_deref().unwrap_or("-").to_string(),
-                    link: if p.up { "up" } else { "down" }.into(),
-                    speed,
-                    poe,
-                    tx: p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()),
-                    rx: p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into()),
+                    None => "up".into(),
                 }
-            })
-            .collect();
+            } else {
+                "down".into()
+            };
+            let poe = if p.poe_enable {
+                match p.poe_power {
+                    Some(w) if w > 0.0 => format!("{w:.1}W"),
+                    _ => "on".into(),
+                }
+            } else if p.port_poe {
+                "off".into()
+            } else {
+                "-".into()
+            };
+            let tx = p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
+            let rx = p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
 
-        out.print_data(&Table::new(rows).to_string());
+            if color {
+                let link_display = if p.up {
+                    format!("{}", "up".green())
+                } else {
+                    format!("{}", "down".dimmed())
+                };
+                println!(
+                    " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
+                    port, name, link_display, speed, poe, tx, rx
+                );
+            } else {
+                println!(
+                    " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
+                    port, name, link, speed, poe, tx, rx
+                );
+            }
+        }
     }
     out.print_message(&format!("\n{} ports", device.port_table.len()));
     Ok(())

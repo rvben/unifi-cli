@@ -1,29 +1,9 @@
-use tabled::{Table, Tabled};
+use owo_colors::OwoColorize;
 
 use crate::api::{
     Client, LegacyClient, UnifiClient, format_bytes, format_mac, format_uptime, normalize_mac,
 };
-use crate::output::OutputConfig;
-
-#[derive(Tabled)]
-struct ClientRow {
-    #[tabled(rename = "Name")]
-    name: String,
-    #[tabled(rename = "MAC")]
-    mac: String,
-    #[tabled(rename = "IP")]
-    ip: String,
-    #[tabled(rename = "Type")]
-    client_type: String,
-}
-
-#[derive(Tabled)]
-struct ClientDetailRow {
-    #[tabled(rename = "Field")]
-    field: String,
-    #[tabled(rename = "Value")]
-    value: String,
-}
+use crate::output::{OutputConfig, use_color};
 
 pub struct ListFilter {
     pub wired: bool,
@@ -72,21 +52,38 @@ fn render_clients(clients: &[Client], out: &OutputConfig) {
             .expect("failed to serialize JSON"),
         );
     } else {
-        let rows: Vec<ClientRow> = clients
-            .iter()
-            .map(|c| ClientRow {
-                name: c.display_name().to_string(),
-                mac: c
-                    .mac_address
-                    .as_deref()
-                    .map(format_mac)
-                    .unwrap_or_else(|| "-".into()),
-                ip: c.ip_address.as_deref().unwrap_or("-").to_string(),
-                client_type: c.client_type.as_deref().unwrap_or("-").to_string(),
-            })
-            .collect();
+        let color = use_color();
+        let header = format!("{:<34} {:<19} {:<15} {}", "Name", "MAC", "IP", "Type");
+        if color {
+            println!("{}", header.bold());
+            println!("{}", "-".repeat(78).dimmed());
+        } else {
+            println!("{header}");
+            println!("{}", "-".repeat(78));
+        }
 
-        out.print_data(&Table::new(rows).to_string());
+        for c in clients {
+            let name = c.display_name();
+            let mac = c
+                .mac_address
+                .as_deref()
+                .map(format_mac)
+                .unwrap_or_else(|| "-".into());
+            let ip = c.ip_address.as_deref().unwrap_or("-");
+            let ctype = c.client_type.as_deref().unwrap_or("-");
+
+            if color {
+                println!(
+                    " {:<33} {:<19} {:<15} {}",
+                    name.bold(),
+                    mac.dimmed(),
+                    ip,
+                    ctype,
+                );
+            } else {
+                println!(" {:<33} {:<19} {:<15} {}", name, mac, ip, ctype);
+            }
+        }
     }
     out.print_message(&format!("\n{} clients", clients.len()));
 }
@@ -153,69 +150,58 @@ pub async fn show(
         return Ok(());
     }
 
-    let mut rows = vec![
-        ClientDetailRow {
-            field: "Name".into(),
-            value: c.display_name().to_string(),
-        },
-        ClientDetailRow {
-            field: "MAC".into(),
-            value: c
-                .mac
-                .as_deref()
-                .map(format_mac)
-                .unwrap_or_else(|| "-".into()),
-        },
-        ClientDetailRow {
-            field: "IP".into(),
-            value: c.ip.as_deref().unwrap_or("-").to_string(),
-        },
-        ClientDetailRow {
-            field: "Type".into(),
-            value: if c.is_wired { "Wired" } else { "Wireless" }.into(),
-        },
-    ];
+    let color = use_color();
+    let label = |l: &str| -> String {
+        if color {
+            format!("{}", l.dimmed())
+        } else {
+            l.to_string()
+        }
+    };
+
+    let name = c.display_name();
+    if color {
+        println!("{}", name.bold());
+    } else {
+        println!("{name}");
+    }
+
+    println!(
+        "  {}  {}",
+        label("MAC:   "),
+        c.mac
+            .as_deref()
+            .map(format_mac)
+            .unwrap_or_else(|| "-".into())
+    );
+    println!("  {}  {}", label("IP:    "), c.ip.as_deref().unwrap_or("-"));
+    println!(
+        "  {}  {}",
+        label("Type:  "),
+        if c.is_wired { "Wired" } else { "Wireless" }
+    );
 
     if let Some(uptime) = c.uptime {
-        rows.push(ClientDetailRow {
-            field: "Uptime".into(),
-            value: format_uptime(uptime),
-        });
+        println!("  {}  {}", label("Uptime:"), format_uptime(uptime));
     }
     if let Some(tx) = c.tx_bytes {
-        rows.push(ClientDetailRow {
-            field: "TX".into(),
-            value: format_bytes(tx),
-        });
+        println!("  {}  {}", label("TX:    "), format_bytes(tx));
     }
     if let Some(rx) = c.rx_bytes {
-        rows.push(ClientDetailRow {
-            field: "RX".into(),
-            value: format_bytes(rx),
-        });
+        println!("  {}  {}", label("RX:    "), format_bytes(rx));
     }
     if !c.is_wired {
         if let Some(signal) = c.signal {
-            rows.push(ClientDetailRow {
-                field: "Signal".into(),
-                value: format!("{signal} dBm"),
-            });
+            println!("  {}  {} dBm", label("Signal:"), signal);
         }
         if let Some(ref ssid) = c.ssid {
-            rows.push(ClientDetailRow {
-                field: "SSID".into(),
-                value: ssid.clone(),
-            });
+            println!("  {}  {ssid}", label("SSID:  "));
         }
         if let Some(ref ap) = c.ap_mac {
-            rows.push(ClientDetailRow {
-                field: "AP".into(),
-                value: format_mac(ap),
-            });
+            println!("  {}  {}", label("AP:    "), format_mac(ap));
         }
     }
 
-    out.print_data(&Table::new(rows).to_string());
     Ok(())
 }
 
@@ -286,22 +272,6 @@ pub async fn kick(
     Ok(())
 }
 
-#[derive(Tabled)]
-struct TopClientRow {
-    #[tabled(rename = "Name")]
-    name: String,
-    #[tabled(rename = "MAC")]
-    mac: String,
-    #[tabled(rename = "IP")]
-    ip: String,
-    #[tabled(rename = "TX")]
-    tx: String,
-    #[tabled(rename = "RX")]
-    rx: String,
-    #[tabled(rename = "Total")]
-    total: String,
-}
-
 fn total_bytes(c: &LegacyClient) -> u64 {
     c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0)
 }
@@ -335,23 +305,48 @@ pub async fn top(
             .expect("failed to serialize JSON"),
         );
     } else {
-        let rows: Vec<TopClientRow> = top_clients
-            .iter()
-            .map(|c| TopClientRow {
-                name: c.display_name().to_string(),
-                mac: c
-                    .mac
-                    .as_deref()
-                    .map(|m| format_mac(&normalize_mac(m)))
-                    .unwrap_or_else(|| "-".into()),
-                ip: c.ip.as_deref().unwrap_or("-").to_string(),
-                tx: format_bytes(c.tx_bytes.unwrap_or(0)),
-                rx: format_bytes(c.rx_bytes.unwrap_or(0)),
-                total: format_bytes(total_bytes(c)),
-            })
-            .collect();
+        let color = use_color();
+        let header = format!(
+            "{:<34} {:<19} {:<15} {:>10} {:>10} {:>10}",
+            "Name", "MAC", "IP", "TX", "RX", "Total"
+        );
+        if color {
+            println!("{}", header.bold());
+            println!("{}", "-".repeat(102).dimmed());
+        } else {
+            println!("{header}");
+            println!("{}", "-".repeat(102));
+        }
 
-        out.print_data(&Table::new(rows).to_string());
+        for c in &top_clients {
+            let name = c.display_name();
+            let mac = c
+                .mac
+                .as_deref()
+                .map(|m| format_mac(&normalize_mac(m)))
+                .unwrap_or_else(|| "-".into());
+            let ip = c.ip.as_deref().unwrap_or("-");
+            let tx = format_bytes(c.tx_bytes.unwrap_or(0));
+            let rx = format_bytes(c.rx_bytes.unwrap_or(0));
+            let total = format_bytes(total_bytes(c));
+
+            if color {
+                println!(
+                    " {:<33} {:<19} {:<15} {:>10} {:>10} {:>10}",
+                    name.bold(),
+                    mac.dimmed(),
+                    ip,
+                    tx,
+                    rx,
+                    total,
+                );
+            } else {
+                println!(
+                    " {:<33} {:<19} {:<15} {:>10} {:>10} {:>10}",
+                    name, mac, ip, tx, rx, total
+                );
+            }
+        }
     }
     out.print_message(&format!(
         "\nTop {} of {} clients by bandwidth",

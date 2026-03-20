@@ -1,19 +1,7 @@
-use tabled::{Table, Tabled};
+use owo_colors::OwoColorize;
 
 use crate::api::UnifiClient;
-use crate::output::OutputConfig;
-
-#[derive(Tabled)]
-struct EventRow {
-    #[tabled(rename = "Time")]
-    time: String,
-    #[tabled(rename = "Subsystem")]
-    subsystem: String,
-    #[tabled(rename = "Key")]
-    key: String,
-    #[tabled(rename = "Message")]
-    message: String,
-}
+use crate::output::{OutputConfig, use_color};
 
 pub async fn list(
     client: &UnifiClient,
@@ -41,17 +29,37 @@ pub async fn list(
             .expect("failed to serialize JSON"),
         );
     } else {
-        let rows: Vec<EventRow> = events
-            .iter()
-            .map(|e| EventRow {
-                time: e.datetime.as_deref().unwrap_or("-").to_string(),
-                subsystem: e.subsystem.as_deref().unwrap_or("-").to_string(),
-                key: e.key.as_deref().unwrap_or("-").to_string(),
-                message: truncate(e.msg.as_deref().unwrap_or("-"), 80),
-            })
-            .collect();
+        let color = use_color();
+        let header = format!(
+            "{:<26} {:<10} {:<24} {}",
+            "Time", "Subsystem", "Key", "Message"
+        );
+        if color {
+            println!("{}", header.bold());
+            println!("{}", "-".repeat(100).dimmed());
+        } else {
+            println!("{header}");
+            println!("{}", "-".repeat(100));
+        }
 
-        out.print_data(&Table::new(rows).to_string());
+        for e in &events {
+            let time = e.datetime.as_deref().unwrap_or("-");
+            let subsystem = e.subsystem.as_deref().unwrap_or("-");
+            let key = e.key.as_deref().unwrap_or("-");
+            let msg = truncate(e.msg.as_deref().unwrap_or("-"), 80);
+
+            if color {
+                println!(
+                    " {:<25} {:<10} {:<24} {}",
+                    time.dimmed(),
+                    subsystem,
+                    key,
+                    msg,
+                );
+            } else {
+                println!(" {:<25} {:<10} {:<24} {}", time, subsystem, key, msg);
+            }
+        }
     }
     out.print_message(&format!("\n{} events", events.len()));
     Ok(())
@@ -65,7 +73,7 @@ fn truncate(s: &str, max: usize) -> String {
     let mut result: String = (&mut chars).take(max).collect();
     if chars.next().is_some() {
         result.pop();
-        result.push('…');
+        result.push('\u{2026}');
     }
     result
 }
@@ -86,12 +94,15 @@ mod tests {
 
     #[test]
     fn truncate_one_over() {
-        assert_eq!(truncate("hello!", 5), "hell…");
+        assert_eq!(truncate("hello!", 5), "hell\u{2026}");
     }
 
     #[test]
     fn truncate_long_string() {
-        assert_eq!(truncate("hello world, this is long", 10), "hello wor…");
+        assert_eq!(
+            truncate("hello world, this is long", 10),
+            "hello wor\u{2026}"
+        );
     }
 
     #[test]
@@ -106,16 +117,22 @@ mod tests {
 
     #[test]
     fn truncate_max_one() {
-        assert_eq!(truncate("hello", 1), "…");
+        assert_eq!(truncate("hello", 1), "\u{2026}");
     }
 
     #[test]
     fn truncate_unicode() {
-        assert_eq!(truncate("αβγδεζ", 4), "αβγ…");
+        assert_eq!(
+            truncate("\u{03b1}\u{03b2}\u{03b3}\u{03b4}\u{03b5}\u{03b6}", 4),
+            "\u{03b1}\u{03b2}\u{03b3}\u{2026}"
+        );
     }
 
     #[test]
     fn truncate_unicode_exact() {
-        assert_eq!(truncate("αβγδ", 4), "αβγδ");
+        assert_eq!(
+            truncate("\u{03b1}\u{03b2}\u{03b3}\u{03b4}", 4),
+            "\u{03b1}\u{03b2}\u{03b3}\u{03b4}"
+        );
     }
 }

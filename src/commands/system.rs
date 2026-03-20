@@ -1,25 +1,7 @@
-use tabled::{Table, Tabled};
+use owo_colors::OwoColorize;
 
 use crate::api::{UnifiClient, format_uptime};
-use crate::output::OutputConfig;
-
-#[derive(Tabled)]
-struct HealthRow {
-    #[tabled(rename = "Subsystem")]
-    subsystem: String,
-    #[tabled(rename = "Status")]
-    status: String,
-    #[tabled(rename = "Details")]
-    details: String,
-}
-
-#[derive(Tabled)]
-struct InfoRow {
-    #[tabled(rename = "Field")]
-    field: String,
-    #[tabled(rename = "Value")]
-    value: String,
-}
+use crate::output::{OutputConfig, use_color};
 
 pub async fn health(
     client: &UnifiClient,
@@ -47,52 +29,65 @@ pub async fn health(
         return Ok(());
     }
 
-    let rows: Vec<HealthRow> = subsystems
-        .iter()
-        .map(|s| {
-            let details = match s.subsystem.as_str() {
-                "wan" => {
-                    let mut parts = Vec::new();
-                    if let Some(ref ip) = s.wan_ip {
-                        parts.push(format!("IP: {ip}"));
-                    }
-                    if let Some(ref isp) = s.isp_name {
-                        parts.push(format!("ISP: {isp}"));
-                    }
-                    parts.join(", ")
-                }
-                "wlan" => {
-                    let mut parts = Vec::new();
-                    if let Some(ap) = s.num_ap {
-                        parts.push(format!("{ap} APs"));
-                    }
-                    if let Some(sta) = s.num_sta {
-                        parts.push(format!("{sta} clients"));
-                    }
-                    parts.join(", ")
-                }
-                "lan" => {
-                    let mut parts = Vec::new();
-                    if let Some(sw) = s.num_switches {
-                        parts.push(format!("{sw} switches"));
-                    }
-                    if let Some(sta) = s.num_sta {
-                        parts.push(format!("{sta} clients"));
-                    }
-                    parts.join(", ")
-                }
-                _ => String::new(),
-            };
+    let color = use_color();
+    let header = format!("{:<14} {:<10} {}", "Subsystem", "Status", "Details");
+    if color {
+        println!("{}", header.bold());
+        println!("{}", "-".repeat(60).dimmed());
+    } else {
+        println!("{header}");
+        println!("{}", "-".repeat(60));
+    }
 
-            HealthRow {
-                subsystem: s.subsystem.clone(),
-                status: s.status.as_deref().unwrap_or("-").to_string(),
-                details,
+    for s in &subsystems {
+        let status = s.status.as_deref().unwrap_or("-");
+        let details = match s.subsystem.as_str() {
+            "wan" => {
+                let mut parts = Vec::new();
+                if let Some(ref ip) = s.wan_ip {
+                    parts.push(format!("IP: {ip}"));
+                }
+                if let Some(ref isp) = s.isp_name {
+                    parts.push(format!("ISP: {isp}"));
+                }
+                parts.join(", ")
             }
-        })
-        .collect();
+            "wlan" => {
+                let mut parts = Vec::new();
+                if let Some(ap) = s.num_ap {
+                    parts.push(format!("{ap} APs"));
+                }
+                if let Some(sta) = s.num_sta {
+                    parts.push(format!("{sta} clients"));
+                }
+                parts.join(", ")
+            }
+            "lan" => {
+                let mut parts = Vec::new();
+                if let Some(sw) = s.num_switches {
+                    parts.push(format!("{sw} switches"));
+                }
+                if let Some(sta) = s.num_sta {
+                    parts.push(format!("{sta} clients"));
+                }
+                parts.join(", ")
+            }
+            _ => String::new(),
+        };
 
-    out.print_data(&Table::new(rows).to_string());
+        let status_display = if color {
+            if status == "ok" {
+                format!("{}", status.green())
+            } else {
+                format!("{}", status.red())
+            }
+        } else {
+            status.to_string()
+        };
+
+        println!(" {:<13} {:<10} {}", s.subsystem, status_display, details);
+    }
+
     Ok(())
 }
 
@@ -115,39 +110,39 @@ pub async fn info(
         return Ok(());
     }
 
-    let mut rows = Vec::new();
+    let color = use_color();
+    let label = |l: &str| -> String {
+        if color {
+            format!("{}", l.dimmed())
+        } else {
+            l.to_string()
+        }
+    };
 
     if let Some(ref h) = sys.hostname {
-        rows.push(InfoRow {
-            field: "Hostname".into(),
-            value: h.clone(),
-        });
-    }
-    if let Some(ref v) = sys.version {
-        rows.push(InfoRow {
-            field: "Version".into(),
-            value: v.clone(),
-        });
-    }
-    if let Some(ref tz) = sys.timezone {
-        rows.push(InfoRow {
-            field: "Timezone".into(),
-            value: tz.clone(),
-        });
-    }
-    if let Some(uptime) = sys.uptime {
-        rows.push(InfoRow {
-            field: "Uptime".into(),
-            value: format_uptime(uptime),
-        });
-    }
-    if update_available {
-        rows.push(InfoRow {
-            field: "Update".into(),
-            value: "Available".into(),
-        });
+        if color {
+            println!("{}", h.bold());
+        } else {
+            println!("{h}");
+        }
     }
 
-    out.print_data(&Table::new(rows).to_string());
+    if let Some(ref v) = sys.version {
+        println!("  {}  {v}", label("Version: "));
+    }
+    if let Some(ref tz) = sys.timezone {
+        println!("  {}  {tz}", label("Timezone:"));
+    }
+    if let Some(uptime) = sys.uptime {
+        println!("  {}  {}", label("Uptime:  "), format_uptime(uptime));
+    }
+    if update_available {
+        if color {
+            println!("  {}  {}", label("Update:  "), "Available".yellow());
+        } else {
+            println!("  {}  Available", label("Update:  "));
+        }
+    }
+
     Ok(())
 }

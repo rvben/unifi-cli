@@ -1,5 +1,10 @@
 use std::io::IsTerminal;
 
+/// Whether to use colored output (only when stdout is a terminal).
+pub fn use_color() -> bool {
+    std::io::stdout().is_terminal()
+}
+
 /// Output configuration for agent-friendly CLI design.
 ///
 /// Supports TTY detection (auto-JSON when piped), quiet mode,

@@ -1,19 +1,7 @@
-use tabled::{Table, Tabled};
+use owo_colors::OwoColorize;
 
 use crate::api::UnifiClient;
-use crate::output::OutputConfig;
-
-#[derive(Tabled)]
-struct NetworkRow {
-    #[tabled(rename = "Name")]
-    name: String,
-    #[tabled(rename = "VLAN")]
-    vlan: String,
-    #[tabled(rename = "Enabled")]
-    enabled: String,
-    #[tabled(rename = "Default")]
-    is_default: String,
-}
+use crate::output::{OutputConfig, use_color};
 
 pub async fn list(
     client: &mut UnifiClient,
@@ -39,20 +27,41 @@ pub async fn list(
         return Ok(());
     }
 
-    let rows: Vec<NetworkRow> = networks
-        .iter()
-        .map(|n| NetworkRow {
-            name: n.name.as_deref().unwrap_or("-").to_string(),
-            vlan: n
-                .vlan_id
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
-            enabled: if n.enabled { "yes" } else { "no" }.into(),
-            is_default: if n.default { "yes" } else { "no" }.into(),
-        })
-        .collect();
+    let color = use_color();
+    let header = format!(
+        "{:<30} {:<8} {:<10} {}",
+        "Name", "VLAN", "Enabled", "Default"
+    );
+    if color {
+        println!("{}", header.bold());
+        println!("{}", "-".repeat(58).dimmed());
+    } else {
+        println!("{header}");
+        println!("{}", "-".repeat(58));
+    }
 
-    out.print_data(&Table::new(rows).to_string());
+    for n in &networks {
+        let name = n.name.as_deref().unwrap_or("-");
+        let vlan = n
+            .vlan_id
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into());
+        let enabled = if n.enabled { "yes" } else { "no" };
+        let is_default = if n.default { "yes" } else { "no" };
+
+        if color {
+            println!(
+                " {:<29} {:<8} {:<10} {}",
+                name.bold(),
+                vlan,
+                enabled,
+                is_default,
+            );
+        } else {
+            println!(" {:<29} {:<8} {:<10} {}", name, vlan, enabled, is_default);
+        }
+    }
+
     out.print_message(&format!("\n{} networks", networks.len()));
     Ok(())
 }
