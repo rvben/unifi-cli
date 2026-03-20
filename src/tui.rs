@@ -1050,6 +1050,9 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
             if d.num_sta.is_some() {
                 n += 1;
             }
+            if d.upgradable {
+                n += 1;
+            }
             n
         }
         Overlay::ApPicker { .. } | Overlay::Confirm { .. } => 0,
@@ -1177,16 +1180,18 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
                 })
                 .unwrap_or("locate");
 
-            let hints = vec![
+            let mut hints = vec![
                 Span::styled(" esc", hint_key),
                 Span::styled(" back ", hint_dim),
                 Span::styled("r", hint_key),
                 Span::styled(" restart ", hint_dim),
-                Span::styled("u", hint_key),
-                Span::styled(" upgrade ", hint_dim),
-                Span::styled("l", hint_key),
-                Span::styled(format!(" {locate_label} "), hint_dim),
             ];
+            if d.upgradable {
+                hints.push(Span::styled("u", hint_key));
+                hints.push(Span::styled(" upgrade ", hint_dim));
+            }
+            hints.push(Span::styled("l", hint_key));
+            hints.push(Span::styled(format!(" {locate_label} "), hint_dim));
 
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -1216,7 +1221,18 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
             ];
 
             if let Some(ref v) = d.version {
-                rows.push(detail_row("Firmware", v));
+                if d.upgradable {
+                    if let Some(ref new_v) = d.upgrade_to_firmware {
+                        rows.push(detail_row("Firmware", &format!("{v} → {new_v}")));
+                    } else {
+                        rows.push(detail_row("Firmware", &format!("{v} (update available)")));
+                    }
+                } else {
+                    rows.push(detail_row("Firmware", v));
+                }
+            }
+            if d.upgradable && d.version.is_none() {
+                rows.push(detail_row("Firmware", "Update available"));
             }
             if let Some(uptime) = d.uptime {
                 rows.push(detail_row("Uptime", &format_uptime(uptime)));
@@ -1705,7 +1721,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                                         action: PendingAction::Device(action),
                                     });
                                 }
-                                KeyCode::Char('u') => {
+                                KeyCode::Char('u') if d.upgradable => {
                                     let action = DeviceAction::Upgrade(mac.clone());
                                     state.overlay = Some(Overlay::Confirm {
                                         message: format!("Upgrade firmware on {name}?"),

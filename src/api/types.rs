@@ -114,6 +114,9 @@ pub struct LegacyDevice {
     pub version: Option<String>,
     pub uptime: Option<u64>,
     pub num_sta: Option<u32>,
+    #[serde(default)]
+    pub upgradable: bool,
+    pub upgrade_to_firmware: Option<String>,
 }
 
 impl LegacyDevice {
