@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::api::{
     ApiError, HealthSubsystem, LegacyClient, LegacyDevice, SysInfo, UnifiClient, format_bytes,
-    format_uptime, normalize_mac,
+    format_uptime,
 };
 
 const HEADER_COLOR: Color = Color::Cyan;
@@ -58,18 +58,11 @@ impl SortMode {
     }
 }
 
-struct ClientRate {
-    tx_rate: f64,
-    rx_rate: f64,
-}
-
 struct AppState {
     sysinfo: Option<SysInfo>,
     health: Vec<HealthSubsystem>,
     clients: Vec<LegacyClient>,
     devices: Vec<LegacyDevice>,
-    prev_bytes: HashMap<String, (u64, u64, Instant)>,
-    rates: HashMap<String, ClientRate>,
     focus: Panel,
     sort: SortMode,
     client_scroll: usize,
@@ -86,8 +79,6 @@ impl AppState {
             health: Vec::new(),
             clients: Vec::new(),
             devices: Vec::new(),
-            prev_bytes: HashMap::new(),
-            rates: HashMap::new(),
             focus: Panel::Clients,
             sort: SortMode::Bandwidth,
             client_scroll: 0,
@@ -95,55 +86,6 @@ impl AppState {
             filter: String::new(),
             filtering: false,
             last_error: None,
-        }
-    }
-
-    fn update_rates(&mut self) {
-        let now = Instant::now();
-        // Smoothing factor: 0.0 = fully smooth (never changes), 1.0 = no smoothing.
-        // 0.4 gives a ~3-tick fade-out, avoiding flicker while staying responsive.
-        const ALPHA: f64 = 0.4;
-
-        for client in &self.clients {
-            let mac = match &client.mac {
-                Some(m) => normalize_mac(m),
-                None => continue,
-            };
-            let tx = client.tx_bytes.unwrap_or(0);
-            let rx = client.rx_bytes.unwrap_or(0);
-
-            if let Some((prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&mac) {
-                let elapsed = now.duration_since(*prev_time).as_secs_f64();
-                if elapsed > 0.1 {
-                    let instant_tx = if tx >= *prev_tx {
-                        (tx - prev_tx) as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-                    let instant_rx = if rx >= *prev_rx {
-                        (rx - prev_rx) as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-
-                    let rate = self.rates.entry(mac.clone()).or_insert(ClientRate {
-                        tx_rate: 0.0,
-                        rx_rate: 0.0,
-                    });
-                    rate.tx_rate = ALPHA * instant_tx + (1.0 - ALPHA) * rate.tx_rate;
-                    rate.rx_rate = ALPHA * instant_rx + (1.0 - ALPHA) * rate.rx_rate;
-
-                    // Snap to zero below 1 B/s to avoid lingering dust
-                    if rate.tx_rate < 1.0 {
-                        rate.tx_rate = 0.0;
-                    }
-                    if rate.rx_rate < 1.0 {
-                        rate.rx_rate = 0.0;
-                    }
-                }
-            }
-
-            self.prev_bytes.insert(mac, (tx, rx, now));
         }
     }
 
@@ -184,12 +126,6 @@ impl AppState {
         }
 
         clients
-    }
-
-    fn total_rate(&self) -> (f64, f64) {
-        self.rates
-            .values()
-            .fold((0.0, 0.0), |(tx, rx), r| (tx + r.tx_rate, rx + r.rx_rate))
     }
 
     fn scroll_up(&mut self) {
@@ -374,7 +310,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let header = Row::new(vec![
         Cell::from("Name").style(header_style),
         Cell::from("IP").style(header_style),
-        Cell::from("Rate").style(header_style),
         Cell::from("Total").style(header_style),
     ])
     .height(1);
@@ -388,23 +323,8 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         .skip(state.client_scroll)
         .take(inner_height)
         .map(|(i, c)| {
-            let mac_key = c.mac.as_deref().map(normalize_mac).unwrap_or_default();
-            let rate = state.rates.get(&mac_key);
-            let tx_rate = rate.map_or(0.0, |r| r.tx_rate);
-            let rx_rate = rate.map_or(0.0, |r| r.rx_rate);
-            let total_rate = tx_rate + rx_rate;
             let total_bytes = c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0);
-            let is_idle = total_rate < 1.0;
-
-            let rate_color = if total_rate >= 1_048_576.0 {
-                Color::Green
-            } else if total_rate >= 1024.0 {
-                Color::Yellow
-            } else if total_rate >= 1.0 {
-                Color::White
-            } else {
-                DIM_COLOR
-            };
+            let is_idle = total_bytes == 0;
 
             let type_icon = if c.is_wired { "⌐ " } else { "◦ " };
 
@@ -427,12 +347,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                     .add_modifier(Modifier::BOLD)
             };
 
-            let rate_str = if total_rate >= 1.0 {
-                format!("▲{} ▼{}", format_rate(tx_rate), format_rate(rx_rate))
-            } else {
-                String::new()
-            };
-
             let is_selected = is_focused && i == state.client_scroll;
             let row_style = if is_selected {
                 Style::default().bg(SELECTED_BG)
@@ -450,7 +364,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Cell::from(name).style(name_style),
                 Cell::from(c.ip.as_deref().unwrap_or("-").to_string())
                     .style(Style::default().fg(DIM_COLOR)),
-                Cell::from(rate_str).style(Style::default().fg(rate_color)),
                 Cell::from(format_bytes(total_bytes)).style(total_style),
             ])
             .style(row_style)
@@ -458,10 +371,9 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         .collect();
 
     let widths = [
-        Constraint::Length(34),
+        Constraint::Min(20),
         Constraint::Length(16),
-        Constraint::Length(22),
-        Constraint::Min(10),
+        Constraint::Length(10),
     ];
 
     if clients.is_empty() {
@@ -610,9 +522,6 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 }
 
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
-    let (total_tx, total_rx) = state.total_rate();
-    let total = total_tx + total_rx;
-
     let error_span = if let Some(ref err) = state.last_error {
         Span::styled(format!(" ⚠ {err} "), Style::default().fg(OFFLINE_COLOR))
     } else {
@@ -644,18 +553,6 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Span::styled(" filter ", dim),
         filter_hint,
         error_span,
-        Span::raw("  "),
-        Span::styled(
-            format!(
-                "▲ {} ▼ {} Σ {}",
-                format_rate(total_tx),
-                format_rate(total_rx),
-                format_rate(total)
-            ),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
     ]);
 
     let paragraph = Paragraph::new(line);
@@ -702,7 +599,6 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.health = health;
                     state.clients = clients;
                     state.devices = devices;
-                    state.update_rates();
                     state.last_error = None;
                 }
                 Err(e) => {
