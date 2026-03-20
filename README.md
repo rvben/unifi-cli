@@ -1,167 +1,234 @@
 # unifi-cli
 
-CLI for UniFi Network controller. Designed for both human operators and AI agents.
+CLI for UniFi Network controller with an interactive TUI dashboard. Designed for both human operators and AI agents.
+
+## Quick start
+
+```bash
+# Install (pick one)
+cargo install unifi-cli        # From source
+uvx unifi-cli --help           # Run without installing (via uv)
+pip install unifi-cli           # Via pip
+
+# Configure
+unifi config init               # Interactive setup (prompts for host + API key)
+
+# Use
+unifi clients list              # List connected clients
+unifi devices list              # List network devices
+unifi tui                       # Interactive dashboard
+```
+
+Generate an API key in your UniFi controller under **Settings > API**.
 
 ## Installation
 
-### From source
+### From crates.io
 
 ```bash
 cargo install unifi-cli
 ```
 
+### From PyPI
+
+```bash
+pip install unifi-cli
+# or run without installing:
+uvx unifi-cli clients list
+```
+
 ### From GitHub releases
 
-Pre-built binaries are available for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64) on the [releases page](https://github.com/rvben/unifi-cli/releases).
+Pre-built binaries for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64) on the [releases page](https://github.com/rvben/unifi-cli/releases).
 
 ## Configuration
 
-Configuration can be provided via CLI flags, environment variables, or a config file.
-
-### CLI flags
-
-```bash
-unifi-cli --host https://unifi.example.com --api-key YOUR_KEY clients list
-```
+Run `unifi config init` for interactive setup, or configure manually:
 
 ### Environment variables
 
 ```bash
 export UNIFI_HOST=https://unifi.example.com
 export UNIFI_API_KEY=YOUR_KEY
-unifi-cli clients list
 ```
 
 ### Config file
 
-Create `~/.config/unifi-cli/config.toml`:
+`~/.config/unifi/config.toml`:
 
 ```toml
 host = "https://unifi.example.com"
 api_key = "YOUR_KEY"
 ```
 
-## Usage
+### Multi-controller profiles
+
+```toml
+[profiles.home]
+host = "https://home.example.com"
+api_key = "KEY_1"
+
+[profiles.office]
+host = "https://office.example.com"
+api_key = "KEY_2"
+```
+
+```bash
+unifi --profile office clients list
+# or: UNIFI_PROFILE=office unifi clients list
+```
+
+### CLI flags
+
+```bash
+unifi --host https://unifi.example.com --api-key YOUR_KEY clients list
+```
+
+Priority: CLI flags > environment variables > config file.
+
+## TUI dashboard
+
+```bash
+unifi tui                       # Launch interactive dashboard
+```
+
+Real-time dashboard with:
+- Client list with bandwidth, connection info, and signal strength
+- Device overview with status and firmware versions
+- Event feed from the controller
+- Client actions: kick, block/unblock, lock/unlock AP
+- Device actions: restart, upgrade firmware, locate LED
+- Filter clients by name with `/`
+
+### Live port monitor
+
+```bash
+unifi devices ports aa:bb:cc:dd:ee:ff --live   # Real-time port stats
+```
+
+## Commands
 
 ### Clients
 
 ```bash
-unifi-cli clients list                          # List connected clients
-unifi-cli clients show aa:bb:cc:dd:ee:ff        # Show client details
-unifi-cli clients block aa:bb:cc:dd:ee:ff       # Block a client
-unifi-cli clients unblock aa:bb:cc:dd:ee:ff     # Unblock a client
-unifi-cli clients kick aa:bb:cc:dd:ee:ff        # Disconnect a client
-unifi-cli clients set-fixed-ip MAC IP [--name]  # Set DHCP reservation
+unifi clients list                          # List connected clients
+unifi clients list --wired                  # Wired clients only
+unifi clients list --wireless --name tasmota  # Filter by type and name
+unifi clients list --watch                  # Auto-refresh
+unifi clients show aa:bb:cc:dd:ee:ff        # Show client details
+unifi clients top                           # Top clients by bandwidth
+unifi clients block aa:bb:cc:dd:ee:ff       # Block a client
+unifi clients unblock aa:bb:cc:dd:ee:ff     # Unblock a client
+unifi clients kick aa:bb:cc:dd:ee:ff        # Disconnect a client
+unifi clients set-fixed-ip MAC IP [--name]  # Set DHCP reservation
 ```
 
 ### Devices
 
 ```bash
-unifi-cli devices list                          # List network devices
-unifi-cli devices restart aa:bb:cc:dd:ee:ff     # Restart a device
-unifi-cli devices locate aa:bb:cc:dd:ee:ff      # Blink locate LED
-unifi-cli devices locate aa:bb:cc:dd:ee:ff --off  # Stop blinking
+unifi devices list                            # List network devices
+unifi devices list --watch                    # Auto-refresh
+unifi devices show aa:bb:cc:dd:ee:ff          # Show device details
+unifi devices ports aa:bb:cc:dd:ee:ff         # Show switch/router ports
+unifi devices restart aa:bb:cc:dd:ee:ff       # Restart a device
+unifi devices upgrade aa:bb:cc:dd:ee:ff       # Upgrade firmware
+unifi devices locate aa:bb:cc:dd:ee:ff        # Blink locate LED
+unifi devices locate aa:bb:cc:dd:ee:ff --off  # Stop blinking
+```
+
+### Events
+
+```bash
+unifi events list                           # Recent controller events
+unifi events list --limit 50                # Last 50 events
 ```
 
 ### Networks
 
 ```bash
-unifi-cli networks                              # List all networks
+unifi networks                              # List all networks
 ```
 
 ### System
 
 ```bash
-unifi-cli system health                         # Show subsystem health
-unifi-cli system info                           # Show controller info
+unifi system health                         # Show subsystem health
+unifi system info                           # Show controller info
+```
+
+### Configuration
+
+```bash
+unifi config init                           # Interactive setup
+unifi config check                          # Verify connectivity and API key
+```
+
+### Shell completions
+
+```bash
+unifi completions zsh --install             # Install zsh completions
+unifi completions bash --install            # Install bash completions
+unifi completions fish --install            # Install fish completions
 ```
 
 ## Agent-friendly design
 
-unifi-cli is designed to work well with AI agents and automation scripts. Instead of requiring an MCP server, agents can call the CLI directly with lower overhead and better composability.
+unifi-cli is designed to work well with AI agents and automation scripts.
 
 ### Automatic JSON output
 
-When stdout is not a terminal (piped or redirected), output switches to JSON automatically. No flags needed.
+When stdout is not a terminal (piped or redirected), output switches to JSON automatically:
 
 ```bash
-# Human at terminal: gets a formatted table
-unifi-cli clients list
+# Human at terminal: formatted table
+unifi clients list
 
-# Agent piping output: gets JSON automatically
-data=$(unifi-cli clients list)
-```
+# Agent piping output: JSON automatically
+data=$(unifi clients list)
 
-You can also force JSON mode explicitly:
-
-```bash
-unifi-cli --json clients list
+# Force JSON mode
+unifi --json clients list
 ```
 
 ### Clean stdout/stderr separation
 
-Data goes to stdout. Human messages (summaries, confirmations) go to stderr. This means piping and redirection always capture clean, parseable data.
+Data goes to stdout. Messages go to stderr. Piping always captures clean data:
 
 ```bash
-# stdout has only the JSON data, stderr has "12 clients"
-unifi-cli clients list > clients.json
-```
-
-### Quiet mode
-
-Suppress all non-data output with `--quiet`:
-
-```bash
-unifi-cli --quiet clients list    # No summary line on stderr
+unifi clients list > clients.json     # stdout: JSON, stderr: "66 clients"
+unifi --quiet clients list            # Suppress stderr messages
 ```
 
 ### Structured mutation responses
 
-Commands that change state (block, kick, restart, etc.) return structured JSON:
-
 ```bash
-unifi-cli --json clients block aa:bb:cc:dd:ee:ff
+unifi --json clients block aa:bb:cc:dd:ee:ff
 # {"action": "block", "mac": "AA:BB:CC:DD:EE:FF", "status": "ok"}
 ```
 
 ### Runtime schema introspection
 
-The `schema` command dumps all commands, arguments, output fields, and exit codes as JSON. Agents can discover capabilities at runtime without parsing `--help` text.
-
 ```bash
-unifi-cli schema
+unifi schema    # Dumps all commands, arguments, output fields as JSON
 ```
 
-This outputs the full command tree including which commands are mutating, what arguments they accept, and what fields appear in the JSON output.
-
 ### Distinct exit codes
-
-Agents can branch on specific failure modes without parsing error messages:
 
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
 | 1 | General error |
-| 2 | Configuration error (missing host or API key) |
+| 2 | Configuration error |
 | 3 | Authentication error (401/403) |
 | 4 | Not found (404) |
 | 5 | API error (server error) |
-
-### Why CLI over MCP?
-
-For AI agent integrations, a well-designed CLI has several advantages over an MCP server:
-
-- **Token efficiency** -- a CLI call uses ~35x fewer tokens than the MCP tool-call protocol
-- **Composability** -- pipe output to `jq`, `grep`, or other tools
-- **No server process** -- no sidecar to run, no port to manage
-- **Universal** -- works from any language, shell, or automation framework
 
 ## Development
 
 ```bash
 make check      # Lint and test
 make test       # Run tests
-make install    # Build and install to ~/.local/bin
+make install    # Build and install
 ```
 
 ## License
