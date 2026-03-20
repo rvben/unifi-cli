@@ -100,6 +100,9 @@ impl AppState {
 
     fn update_rates(&mut self) {
         let now = Instant::now();
+        // Smoothing factor: 0.0 = fully smooth (never changes), 1.0 = no smoothing.
+        // 0.4 gives a ~3-tick fade-out, avoiding flicker while staying responsive.
+        const ALPHA: f64 = 0.4;
 
         for client in &self.clients {
             let mac = match &client.mac {
@@ -112,12 +115,12 @@ impl AppState {
             if let Some((prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&mac) {
                 let elapsed = now.duration_since(*prev_time).as_secs_f64();
                 if elapsed > 0.1 {
-                    let tx_rate = if tx >= *prev_tx {
+                    let instant_tx = if tx >= *prev_tx {
                         (tx - prev_tx) as f64 / elapsed
                     } else {
                         0.0
                     };
-                    let rx_rate = if rx >= *prev_rx {
+                    let instant_rx = if rx >= *prev_rx {
                         (rx - prev_rx) as f64 / elapsed
                     } else {
                         0.0
@@ -127,8 +130,16 @@ impl AppState {
                         tx_rate: 0.0,
                         rx_rate: 0.0,
                     });
-                    rate.tx_rate = tx_rate;
-                    rate.rx_rate = rx_rate;
+                    rate.tx_rate = ALPHA * instant_tx + (1.0 - ALPHA) * rate.tx_rate;
+                    rate.rx_rate = ALPHA * instant_rx + (1.0 - ALPHA) * rate.rx_rate;
+
+                    // Snap to zero below 1 B/s to avoid lingering dust
+                    if rate.tx_rate < 1.0 {
+                        rate.tx_rate = 0.0;
+                    }
+                    if rate.rx_rate < 1.0 {
+                        rate.rx_rate = 0.0;
+                    }
                 }
             }
 
