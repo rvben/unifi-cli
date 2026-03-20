@@ -529,6 +529,17 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     // Calculate visible area (subtract borders + header)
     let inner_height = area.height.saturating_sub(4) as usize;
 
+    // Build device MAC -> name lookup for AP/switch resolution
+    let device_names: HashMap<String, &str> = state
+        .devices
+        .iter()
+        .filter_map(|d| {
+            let mac = crate::api::normalize_mac(d.mac.as_deref()?);
+            let name = d.name.as_deref()?;
+            Some((mac, name))
+        })
+        .collect();
+
     let rows: Vec<Row> = clients
         .iter()
         .enumerate()
@@ -572,17 +583,21 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::White)
             };
 
-            // Connection info: SSID + signal bar for wireless, "Wired" for wired
+            // Connection info: AP name + signal for wireless, "Wired" for wired
             let (conn_str, conn_color) = if c.is_wired {
                 ("Wired".to_string(), DIM_COLOR)
             } else {
-                let ssid = c.ssid.as_deref().unwrap_or("?");
+                let ap_name = c
+                    .ap_mac
+                    .as_deref()
+                    .and_then(|m| device_names.get(&crate::api::normalize_mac(m)).copied());
                 let signal_info = c
                     .signal
                     .map(|s| format!(" {}", signal_bar(s)))
                     .unwrap_or_default();
                 let color = c.signal.map(signal_color).unwrap_or(DIM_COLOR);
-                (format!("{ssid}{signal_info}"), color)
+                let label = ap_name.unwrap_or(c.ssid.as_deref().unwrap_or("?"));
+                (format!("{label}{signal_info}"), color)
             };
 
             Row::new(vec![
