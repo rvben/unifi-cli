@@ -829,14 +829,10 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     ])
     .height(1);
 
-    let inner_height = area.height.saturating_sub(4) as usize;
-
     let rows: Vec<Row> = state
         .devices
         .iter()
         .enumerate()
-        .skip(state.device_scroll)
-        .take(inner_height)
         .map(|(i, d)| {
             let (state_str, state_color) = device_state_str(d.state);
 
