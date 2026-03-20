@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-20
+
+### Added
+- Interactive TUI dashboard (`unifi-cli tui`) with real-time bandwidth monitoring, event feed, and device/client overview
+- Live port monitoring TUI (`devices ports <mac> --live`) with color-coded link speeds, TX/RX rates, and PoE power display
+- `events list` command showing recent controller events
+- `clients top` command ranking clients by bandwidth usage
+- `devices ports <mac>` command showing switch/router port details
+- `devices upgrade <mac>` command to trigger firmware upgrades
+- `config check` command to verify connectivity and API key validity
+- Shell completion installation (`completions <shell> --install`) for zsh, bash, and fish
+- Watch mode now uses alternate screen for flicker-free refresh (`clients list --watch`, `devices list --watch`)
+
+### Fixed
+- TUI dashboard: VecDeque ring buffer for O(1) event history instead of Vec::remove(0)
+- TUI dashboard: rounded borders, empty state messages, interval display in footer
+- Truncate helper hardened with proper Unicode boundary handling
+- Better error messages with contextual hints for connection, DNS, timeout, TLS, and auth errors
+
+### Changed
+- `init` command moved under `config` subcommand group (`config init`)
+
 ## [0.1.0] - 2026-03-19
 
 ### Added
@@ -70,7 +92,8 @@ All notable changes to this project will be documented in this file.
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
 
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rvben/unifi-cli/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rvben/unifi-cli/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/rvben/unifi-cli/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/rvben/unifi-cli/compare/v0.0.2...v0.0.3
