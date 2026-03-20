@@ -25,16 +25,34 @@ fn render_devices(devices: &[Device], out: &OutputConfig) {
         );
     } else {
         let color = use_color();
+
+        // Compute dynamic column widths from data
+        let col = |min: usize, label_len: usize, vals: Vec<usize>| -> usize {
+            vals.into_iter().max().unwrap_or(0).max(label_len).max(min) + 2
+        };
+        let names: Vec<&str> = devices
+            .iter()
+            .map(|d| d.name.as_deref().unwrap_or("-"))
+            .collect();
+        let models: Vec<&str> = devices
+            .iter()
+            .map(|d| d.model.as_deref().unwrap_or("-"))
+            .collect();
+
+        let name_w = col(4, 4, names.iter().map(|n| n.len()).collect());
+        let model_w = col(5, 5, models.iter().map(|m| m.len()).collect());
+        let total_w = name_w + model_w + 19 + 15 + 10 + 10;
+
         let header = format!(
-            "{:<24} {:<14} {:<19} {:<15} {:<10} {}",
+            "{:<name_w$} {:<model_w$} {:<19} {:<15} {:<10} {}",
             "Name", "Model", "MAC", "IP", "State", "Firmware"
         );
         if color {
             println!("{}", header.bold());
-            println!("{}", "-".repeat(95).dimmed());
+            println!("{}", "-".repeat(total_w).dimmed());
         } else {
             println!("{header}");
-            println!("{}", "-".repeat(95));
+            println!("{}", "-".repeat(total_w));
         }
 
         for d in devices {
@@ -48,10 +66,12 @@ fn render_devices(devices: &[Device], out: &OutputConfig) {
             let ip = d.ip_address.as_deref().unwrap_or("-");
             let state = d.state.as_deref().unwrap_or("-");
             let fw = d.firmware_version.as_deref().unwrap_or("-");
+            let name_pad = name_w - 1;
+            let model_pad = model_w;
 
             if color {
                 println!(
-                    " {:<23} {:<14} {:<19} {:<15} {:<10} {}",
+                    " {:<name_pad$} {:<model_pad$} {:<19} {:<15} {:<10} {}",
                     name.bold(),
                     model,
                     mac.dimmed(),
@@ -61,7 +81,7 @@ fn render_devices(devices: &[Device], out: &OutputConfig) {
                 );
             } else {
                 println!(
-                    " {:<23} {:<14} {:<19} {:<15} {:<10} {}",
+                    " {:<name_pad$} {:<model_pad$} {:<19} {:<15} {:<10} {}",
                     name, model, mac, ip, state, fw
                 );
             }
