@@ -915,94 +915,9 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Span::raw("")
     };
 
-    let line = if let Some(Overlay::Confirm { .. }) = &state.overlay {
-        Line::from(vec![
-            Span::styled(
-                " y",
-                Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" confirm ", dim),
-            Span::styled("n/esc", key_style),
-            Span::styled(" cancel", dim),
-            error_span,
-            status_span,
-        ])
-    } else if let Some(Overlay::ApPicker { .. }) = &state.overlay {
-        Line::from(vec![
-            Span::styled(" ↑↓", key_style),
-            Span::styled(" select ", dim),
-            Span::styled("enter", key_style),
-            Span::styled(" lock ", dim),
-            Span::styled("esc", key_style),
-            Span::styled(" back ", dim),
-            Span::styled("q", key_style),
-            Span::styled(" quit", dim),
-            error_span,
-            status_span,
-        ])
-    } else if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
-        let clients = state.sorted_clients();
-        let block_label = clients
-            .get(*idx)
-            .map(|c| if c.blocked { " unblock " } else { " block " })
-            .unwrap_or(" block ");
-        let is_wireless = clients.get(*idx).is_some_and(|c| !c.is_wired);
-        let ap_label = clients
-            .get(*idx)
-            .filter(|c| !c.is_wired)
-            .map(|c| {
-                if c.fixed_ap_enabled {
-                    " unlock AP "
-                } else {
-                    " lock to AP "
-                }
-            })
-            .unwrap_or("");
-        let mut spans = vec![
-            Span::styled(" esc", key_style),
-            Span::styled(" back ", dim),
-            Span::styled("k", key_style),
-            Span::styled(" kick ", dim),
-            Span::styled("b", key_style),
-            Span::styled(block_label, dim),
-        ];
-        if is_wireless {
-            spans.push(Span::styled("a", key_style));
-            spans.push(Span::styled(ap_label, dim));
-        }
-        spans.push(Span::styled("q", key_style));
-        spans.push(Span::styled(" quit", dim));
-        spans.push(error_span);
-        spans.push(status_span);
-        Line::from(spans)
-    } else if let Some(Overlay::DeviceDetail(idx)) = &state.overlay {
-        let locate_label = state
-            .devices
-            .get(*idx)
-            .and_then(|d| d.mac.as_ref())
-            .map(|mac| {
-                let normalized = crate::api::normalize_mac(mac);
-                if state.locating.get(&normalized).copied().unwrap_or(false) {
-                    " stop locate "
-                } else {
-                    " locate "
-                }
-            })
-            .unwrap_or(" locate ");
-        Line::from(vec![
-            Span::styled(" esc", key_style),
-            Span::styled(" back ", dim),
-            Span::styled("r", key_style),
-            Span::styled(" restart ", dim),
-            Span::styled("u", key_style),
-            Span::styled(" upgrade ", dim),
-            Span::styled("l", key_style),
-            Span::styled(locate_label, dim),
-            Span::styled("q", key_style),
-            Span::styled(" quit", dim),
-            error_span,
-            status_span,
-        ])
+    let line = if state.overlay.is_some() {
+        // Overlay hints are shown on the overlay itself
+        Line::from(vec![error_span, status_span])
     } else if state.filtering {
         Line::from(vec![
             Span::styled(" ", Style::default()),
@@ -1136,12 +1051,37 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
     let area = centered_rect_fixed(width, height, f.area());
     f.render_widget(Clear, area);
 
+    let hint_key = Style::default()
+        .fg(ACCENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let hint_dim = Style::default().fg(DIM_COLOR);
+
     match overlay {
         Overlay::ClientDetail(idx) => {
             let clients = state.sorted_clients();
             let Some(c) = clients.get(*idx) else { return };
 
             let title = format!(" {} ", c.display_name());
+
+            let block_label = if c.blocked { "unblock" } else { "block" };
+            let mut hints = vec![
+                Span::styled(" esc", hint_key),
+                Span::styled(" back ", hint_dim),
+                Span::styled("k", hint_key),
+                Span::styled(" kick ", hint_dim),
+                Span::styled("b", hint_key),
+                Span::styled(format!(" {block_label} "), hint_dim),
+            ];
+            if !c.is_wired {
+                let ap_label = if c.fixed_ap_enabled {
+                    "unlock AP"
+                } else {
+                    "lock to AP"
+                };
+                hints.push(Span::styled("a", hint_key));
+                hints.push(Span::styled(format!(" {ap_label} "), hint_dim));
+            }
+
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -1152,7 +1092,8 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
                     Style::default()
                         .fg(ACCENT_COLOR)
                         .add_modifier(Modifier::BOLD),
-                ));
+                ))
+                .title_bottom(Line::from(hints));
 
             let mut rows = vec![
                 detail_row(
@@ -1212,6 +1153,31 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
 
             let name = d.name.as_deref().unwrap_or("Device");
             let title = format!(" {name} ");
+
+            let locate_label = d
+                .mac
+                .as_ref()
+                .map(|mac| {
+                    let normalized = crate::api::normalize_mac(mac);
+                    if state.locating.get(&normalized).copied().unwrap_or(false) {
+                        "stop locate"
+                    } else {
+                        "locate"
+                    }
+                })
+                .unwrap_or("locate");
+
+            let hints = vec![
+                Span::styled(" esc", hint_key),
+                Span::styled(" back ", hint_dim),
+                Span::styled("r", hint_key),
+                Span::styled(" restart ", hint_dim),
+                Span::styled("u", hint_key),
+                Span::styled(" upgrade ", hint_dim),
+                Span::styled("l", hint_key),
+                Span::styled(format!(" {locate_label} "), hint_dim),
+            ];
+
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -1222,7 +1188,8 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
                     Style::default()
                         .fg(ACCENT_COLOR)
                         .add_modifier(Modifier::BOLD),
-                ));
+                ))
+                .title_bottom(Line::from(hints));
 
             let (state_str, _) = device_state_str(d.state);
             let mut rows = vec![
@@ -1269,9 +1236,23 @@ fn detail_row(field: &str, value: &str) -> Row<'static> {
 
 fn draw_confirm(f: &mut ratatui::Frame, message: &str) {
     let width = (message.len() as u16 + 6).min(f.area().width.saturating_sub(4));
-    let height = 5_u16;
+    let height = 3_u16;
     let area = centered_rect_fixed(width, height, f.area());
     f.render_widget(Clear, area);
+
+    let hint_key = Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD);
+    let hint_dim = Style::default().fg(DIM_COLOR);
+    let hints = vec![
+        Span::styled(" y", hint_key),
+        Span::styled(" confirm ", hint_dim),
+        Span::styled(
+            "n/esc",
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" cancel ", hint_dim),
+    ];
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1281,29 +1262,13 @@ fn draw_confirm(f: &mut ratatui::Frame, message: &str) {
         .title(Span::styled(
             " Confirm ",
             Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
-        ));
+        ))
+        .title_bottom(Line::from(hints));
 
-    let text = vec![
-        Line::from(Span::styled(
-            message.to_string(),
-            Style::default().fg(Color::White),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "y",
-                Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" confirm  ", Style::default().fg(DIM_COLOR)),
-            Span::styled(
-                "n/esc",
-                Style::default()
-                    .fg(ACCENT_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" cancel", Style::default().fg(DIM_COLOR)),
-        ]),
-    ];
+    let text = Line::from(Span::styled(
+        message.to_string(),
+        Style::default().fg(Color::White),
+    ));
     let paragraph = Paragraph::new(text)
         .block(block)
         .alignment(Alignment::Center);
@@ -1333,6 +1298,19 @@ fn draw_ap_picker(f: &mut ratatui::Frame, state: &AppState, client_idx: usize, a
     let area = centered_rect_fixed(width, height, f.area());
     f.render_widget(Clear, area);
 
+    let hint_key = Style::default()
+        .fg(ACCENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let hint_dim = Style::default().fg(DIM_COLOR);
+    let hints = vec![
+        Span::styled(" ↑↓", hint_key),
+        Span::styled(" select ", hint_dim),
+        Span::styled("enter", hint_key),
+        Span::styled(" lock ", hint_dim),
+        Span::styled("esc", hint_key),
+        Span::styled(" back ", hint_dim),
+    ];
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1343,7 +1321,8 @@ fn draw_ap_picker(f: &mut ratatui::Frame, state: &AppState, client_idx: usize, a
             Style::default()
                 .fg(ACCENT_COLOR)
                 .add_modifier(Modifier::BOLD),
-        ));
+        ))
+        .title_bottom(Line::from(hints));
 
     let rows: Vec<Row> =
         aps.iter()
