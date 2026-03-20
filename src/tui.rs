@@ -43,7 +43,7 @@ enum SortMode {
 impl SortMode {
     fn label(self) -> &'static str {
         match self {
-            SortMode::Bandwidth => "bandwidth ↓",
+            SortMode::Bandwidth => "total ↓",
             SortMode::Name => "name ↓",
             SortMode::Ip => "ip ↓",
         }
@@ -157,31 +157,9 @@ impl AppState {
         match self.sort {
             SortMode::Bandwidth => {
                 clients.sort_by(|a, b| {
-                    let rate_a = a
-                        .mac
-                        .as_deref()
-                        .map(|m| {
-                            let mac = normalize_mac(m);
-                            self.rates.get(&mac).map_or(0.0, |r| r.tx_rate + r.rx_rate)
-                        })
-                        .unwrap_or(0.0);
-                    let rate_b = b
-                        .mac
-                        .as_deref()
-                        .map(|m| {
-                            let mac = normalize_mac(m);
-                            self.rates.get(&mac).map_or(0.0, |r| r.tx_rate + r.rx_rate)
-                        })
-                        .unwrap_or(0.0);
-                    // Primary: active rate descending. Secondary: total bytes descending.
-                    rate_b
-                        .partial_cmp(&rate_a)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| {
-                            let total_a = a.tx_bytes.unwrap_or(0) + a.rx_bytes.unwrap_or(0);
-                            let total_b = b.tx_bytes.unwrap_or(0) + b.rx_bytes.unwrap_or(0);
-                            total_b.cmp(&total_a)
-                        })
+                    let total_a = a.tx_bytes.unwrap_or(0) + a.rx_bytes.unwrap_or(0);
+                    let total_b = b.tx_bytes.unwrap_or(0) + b.rx_bytes.unwrap_or(0);
+                    total_b.cmp(&total_a)
                 });
             }
             SortMode::Name => {
