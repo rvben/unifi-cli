@@ -53,6 +53,11 @@ impl Client {
             .or(self.hostname.as_deref())
             .unwrap_or("-")
     }
+
+    pub fn clean_name(&self) -> String {
+        let name = self.display_name();
+        strip_mac_suffix(name, self.mac_address.as_deref())
+    }
 }
 
 // Client from Legacy stat/sta endpoint (richer data)
@@ -86,6 +91,11 @@ impl LegacyClient {
             .as_deref()
             .or(self.hostname.as_deref())
             .unwrap_or("-")
+    }
+
+    pub fn clean_name(&self) -> String {
+        let name = self.display_name();
+        strip_mac_suffix(name, self.mac.as_deref())
     }
 }
 
@@ -178,6 +188,28 @@ impl HostSystem {
     pub fn update_available(&self) -> bool {
         self.device_state.as_deref() == Some("updateAvailable")
     }
+}
+
+/// Strip trailing MAC suffix from display names.
+/// UniFi appends " XX:XX" (last 2 bytes of MAC) to hostnames when no user name is set.
+pub fn strip_mac_suffix(name: &str, mac: Option<&str>) -> String {
+    if let Some(mac) = mac {
+        let clean_mac = normalize_mac(mac);
+        // Check for " XX:XX" suffix (last 4 hex chars of MAC with colon)
+        if clean_mac.len() >= 4 {
+            let last4 = &clean_mac[clean_mac.len() - 4..];
+            let suffix = format!(" {}:{}", &last4[..2], &last4[2..]);
+            if let Some(stripped) = name.strip_suffix(&suffix) {
+                return stripped.to_string();
+            }
+            // Also try without colon in suffix
+            let suffix_no_colon = format!(" {last4}");
+            if let Some(stripped) = name.strip_suffix(&suffix_no_colon) {
+                return stripped.to_string();
+            }
+        }
+    }
+    name.to_string()
 }
 
 pub fn normalize_mac(mac: &str) -> String {

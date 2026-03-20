@@ -41,7 +41,7 @@ fn render_clients(clients: &[Client], out: &OutputConfig) {
                     .iter()
                     .map(|c| {
                         serde_json::json!({
-                            "name": c.display_name(),
+                            "name": c.clean_name(),
                             "mac": c.mac_address.as_deref().map(|m| format_mac(&normalize_mac(m))),
                             "ip": c.ip_address,
                             "type": c.client_type,
@@ -53,17 +53,19 @@ fn render_clients(clients: &[Client], out: &OutputConfig) {
         );
     } else {
         let color = use_color();
-        let header = format!("{:<34} {:<19} {:<15} {}", "Name", "MAC", "IP", "Type");
+        let names: Vec<String> = clients.iter().map(|c| c.clean_name()).collect();
+        let name_w = names.iter().map(|n| n.len()).max().unwrap_or(4).max(4) + 2;
+        let total_w = name_w + 19 + 15 + 10;
+        let header = format!("{:<name_w$} {:<19} {:<15} {}", "Name", "MAC", "IP", "Type");
         if color {
             println!("{}", header.bold());
-            println!("{}", "-".repeat(78).dimmed());
+            println!("{}", "-".repeat(total_w).dimmed());
         } else {
             println!("{header}");
-            println!("{}", "-".repeat(78));
+            println!("{}", "-".repeat(total_w));
         }
 
-        for c in clients {
-            let name = c.display_name();
+        for (c, name) in clients.iter().zip(&names) {
             let mac = c
                 .mac_address
                 .as_deref()
@@ -71,17 +73,18 @@ fn render_clients(clients: &[Client], out: &OutputConfig) {
                 .unwrap_or_else(|| "-".into());
             let ip = c.ip_address.as_deref().unwrap_or("-");
             let ctype = c.client_type.as_deref().unwrap_or("-");
+            let pad = name_w - 1;
 
             if color {
                 println!(
-                    " {:<33} {:<19} {:<15} {}",
+                    " {:<pad$} {:<19} {:<15} {}",
                     name.bold(),
                     mac.dimmed(),
                     ip,
                     ctype,
                 );
             } else {
-                println!(" {:<33} {:<19} {:<15} {}", name, mac, ip, ctype);
+                println!(" {:<pad$} {:<19} {:<15} {}", name, mac, ip, ctype);
             }
         }
     }
@@ -292,7 +295,7 @@ pub async fn top(
                     .iter()
                     .map(|c| {
                         serde_json::json!({
-                            "name": c.display_name(),
+                            "name": c.clean_name(),
                             "mac": c.mac.as_deref().map(|m| format_mac(&normalize_mac(m))),
                             "ip": c.ip,
                             "tx_bytes": c.tx_bytes,
@@ -306,20 +309,22 @@ pub async fn top(
         );
     } else {
         let color = use_color();
+        let names: Vec<String> = top_clients.iter().map(|c| c.clean_name()).collect();
+        let name_w = names.iter().map(|n| n.len()).max().unwrap_or(4).max(4) + 2;
+        let total_w = name_w + 19 + 15 + 10 + 10 + 10;
         let header = format!(
-            "{:<34} {:<19} {:<15} {:>10} {:>10} {:>10}",
+            "{:<name_w$} {:<19} {:<15} {:>10} {:>10} {:>10}",
             "Name", "MAC", "IP", "TX", "RX", "Total"
         );
         if color {
             println!("{}", header.bold());
-            println!("{}", "-".repeat(102).dimmed());
+            println!("{}", "-".repeat(total_w).dimmed());
         } else {
             println!("{header}");
-            println!("{}", "-".repeat(102));
+            println!("{}", "-".repeat(total_w));
         }
 
-        for c in &top_clients {
-            let name = c.display_name();
+        for (c, name) in top_clients.iter().zip(&names) {
             let mac = c
                 .mac
                 .as_deref()
@@ -329,10 +334,11 @@ pub async fn top(
             let tx = format_bytes(c.tx_bytes.unwrap_or(0));
             let rx = format_bytes(c.rx_bytes.unwrap_or(0));
             let total = format_bytes(total_bytes(c));
+            let pad = name_w - 1;
 
             if color {
                 println!(
-                    " {:<33} {:<19} {:<15} {:>10} {:>10} {:>10}",
+                    " {:<pad$} {:<19} {:<15} {:>10} {:>10} {:>10}",
                     name.bold(),
                     mac.dimmed(),
                     ip,
@@ -342,7 +348,7 @@ pub async fn top(
                 );
             } else {
                 println!(
-                    " {:<33} {:<19} {:<15} {:>10} {:>10} {:>10}",
+                    " {:<pad$} {:<19} {:<15} {:>10} {:>10} {:>10}",
                     name, mac, ip, tx, rx, total
                 );
             }
