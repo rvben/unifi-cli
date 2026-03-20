@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-20
+
+### Added
+- TUI: AP lock/unlock from client overlay (`a` key) with AP picker to select target AP
+- TUI: confirmation dialogs before destructive actions (kick, block, restart, upgrade)
+- TUI: firmware upgrade availability shown in device overlay (`current → new` version)
+- TUI: `u` upgrade action only shown when device has update available
+- TUI: AP name displayed in client connection column (resolves MAC to device name)
+- TUI: proper viewport scrolling for client list with cursor tracking
+
+### Fixed
+- TUI: device panel shows all devices without scrolling, cursor moves through items
+- TUI: client list viewport follows cursor instead of cursor staying at top
+- CLI: dynamic column widths adapt to data instead of fixed widths causing misalignment
+- CLI: MAC suffixes stripped from display names (e.g., "garage-bluetooth-proxy" instead of "garage-bluetooth-proxy 43:3c")
+
+### Changed
+- TUI: overlay shortcut hints moved from footer to overlay bottom border
+- TUI: signal strength bars split into separate column for vertical alignment
+- CLI: replaced `tabled` box tables with clean borderless formatting using `owo-colors`
+- CLI: bold headers, dimmed MAC addresses and separators, colored status indicators
+- CLI: detail views (`show`, `info`) use labeled key-value format
+
 ## [0.1.2] - 2026-03-20
 
 ### Added
@@ -116,7 +139,8 @@ All notable changes to this project will be documented in this file.
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
 
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/rvben/unifi-cli/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rvben/unifi-cli/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rvben/unifi-cli/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rvben/unifi-cli/compare/v0.0.4...v0.1.0
