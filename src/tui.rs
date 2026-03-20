@@ -69,6 +69,12 @@ enum ClientAction {
     Unblock(String), // MAC
 }
 
+enum DeviceAction {
+    Restart(String),      // MAC
+    Upgrade(String),      // MAC
+    Locate(String, bool), // MAC, enable
+}
+
 struct AppState {
     sysinfo: Option<SysInfo>,
     host_system: Option<HostSystem>,
@@ -85,6 +91,7 @@ struct AppState {
     loading: bool,
     last_error: Option<String>,
     status_msg: Option<(String, Instant)>,
+    locating: HashMap<String, bool>, // MAC -> currently locating
 }
 
 impl AppState {
@@ -105,6 +112,7 @@ impl AppState {
             loading: true,
             last_error: None,
             status_msg: None,
+            locating: HashMap::new(),
         }
     }
 
@@ -352,6 +360,54 @@ async fn execute_client_action(
             )
             .await?;
             Ok(format!("Unblocked {formatted}"))
+        }
+    }
+}
+
+async fn execute_device_action(
+    http: &reqwest::Client,
+    base_url: &str,
+    action: DeviceAction,
+) -> Result<String, String> {
+    match action {
+        DeviceAction::Restart(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            legacy_post_cmd(
+                http,
+                base_url,
+                "devmgr",
+                serde_json::json!({"cmd": "restart", "mac": formatted}),
+            )
+            .await?;
+            Ok(format!("Restarting {formatted}"))
+        }
+        DeviceAction::Upgrade(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            legacy_post_cmd(
+                http,
+                base_url,
+                "devmgr",
+                serde_json::json!({"cmd": "upgrade", "mac": formatted}),
+            )
+            .await?;
+            Ok(format!("Upgrading {formatted}"))
+        }
+        DeviceAction::Locate(mac, enable) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            let cmd = if enable { "set-locate" } else { "unset-locate" };
+            legacy_post_cmd(
+                http,
+                base_url,
+                "devmgr",
+                serde_json::json!({"cmd": cmd, "mac": formatted}),
+            )
+            .await?;
+            let action_str = if enable {
+                "Locating"
+            } else {
+                "Stopped locating"
+            };
+            Ok(format!("{action_str} {formatted}"))
         }
     }
 }
@@ -728,10 +784,29 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
             error_span,
             status_span,
         ])
-    } else if state.overlay.is_some() {
+    } else if let Some(Overlay::DeviceDetail(idx)) = &state.overlay {
+        let locate_label = state
+            .devices
+            .get(*idx)
+            .and_then(|d| d.mac.as_ref())
+            .map(|mac| {
+                let normalized = crate::api::normalize_mac(mac);
+                if state.locating.get(&normalized).copied().unwrap_or(false) {
+                    " stop locate "
+                } else {
+                    " locate "
+                }
+            })
+            .unwrap_or(" locate ");
         Line::from(vec![
             Span::styled(" esc", key_style),
             Span::styled(" back ", dim),
+            Span::styled("r", key_style),
+            Span::styled(" restart ", dim),
+            Span::styled("u", key_style),
+            Span::styled(" upgrade ", dim),
+            Span::styled("l", key_style),
+            Span::styled(locate_label, dim),
             Span::styled("q", key_style),
             Span::styled(" quit", dim),
             error_span,
@@ -1130,7 +1205,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                 continue;
             }
 
-            // Overlay is open: Esc closes it, q quits, k/b for actions
+            // Overlay is open: Esc closes it, q quits, action keys
             if state.overlay.is_some() {
                 match key.code {
                     KeyCode::Esc => {
@@ -1165,6 +1240,36 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                                         execute_client_action(&http, &base_url, action).await;
                                     let _ = action_tx.send(result).await;
                                 });
+                                state.overlay = None;
+                            }
+                        }
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('u') | KeyCode::Char('l') => {
+                        if let Some(Overlay::DeviceDetail(idx)) = &state.overlay
+                            && let Some(d) = state.devices.get(*idx)
+                            && let Some(ref mac) = d.mac
+                        {
+                            let action = match key.code {
+                                KeyCode::Char('r') => DeviceAction::Restart(mac.clone()),
+                                KeyCode::Char('u') => DeviceAction::Upgrade(mac.clone()),
+                                KeyCode::Char('l') => {
+                                    let normalized = crate::api::normalize_mac(mac);
+                                    let currently_locating =
+                                        state.locating.get(&normalized).copied().unwrap_or(false);
+                                    state.locating.insert(normalized, !currently_locating);
+                                    DeviceAction::Locate(mac.clone(), !currently_locating)
+                                }
+                                _ => unreachable!(),
+                            };
+                            let close_overlay = !matches!(key.code, KeyCode::Char('l'));
+                            let http = api.clone_http();
+                            let base_url = api.base_url().to_string();
+                            let action_tx = action_tx.clone();
+                            tokio::spawn(async move {
+                                let result = execute_device_action(&http, &base_url, action).await;
+                                let _ = action_tx.send(result).await;
+                            });
+                            if close_overlay {
                                 state.overlay = None;
                             }
                         }
