@@ -10,6 +10,10 @@ homepage = "https://github.com/rvben/unifi-cli"
 keywords = ["unifi", "ubiquiti", "cli", "network"]
 categories = ["command-line-utilities"]
 
+[[bin]]
+name = "unifi"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

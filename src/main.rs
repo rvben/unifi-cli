@@ -6,11 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 #[derive(Parser)]
-#[command(
-    name = "unifi-cli",
-    version,
-    about = "CLI for UniFi Network controller"
-)]
+#[command(name = "unifi", version, about = "CLI for UniFi Network controller")]
 struct Cli {
     /// UniFi controller host (or set UNIFI_HOST env var)
     #[arg(long, env = "UNIFI_HOST")]
@@ -208,7 +204,7 @@ enum SystemCommand {
 
 fn print_schema() {
     let schema = serde_json::json!({
-        "name": "unifi-cli",
+        "name": "unifi",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "CLI for UniFi Network controller",
         "global_flags": {
@@ -385,7 +381,7 @@ fn load_config_from(
 }
 
 fn load_config(profile: Option<&str>) -> (Option<String>, Option<String>) {
-    let config_path = dirs::config_dir().map(|d| d.join("unifi-cli").join("config.toml"));
+    let config_path = dirs::config_dir().map(|d| d.join("unifi").join("config.toml"));
 
     if let Some(path) = config_path {
         return load_config_from(&path, profile);
@@ -396,7 +392,7 @@ fn load_config(profile: Option<&str>) -> (Option<String>, Option<String>) {
 
 fn default_config_path() -> Result<std::path::PathBuf, InitError> {
     dirs::config_dir()
-        .map(|d| d.join("unifi-cli").join("config.toml"))
+        .map(|d| d.join("unifi").join("config.toml"))
         .ok_or(InitError("Could not determine config directory".into()))
 }
 
@@ -569,7 +565,7 @@ fn run_init_with_io(
     writeln!(writer, "Config saved to {}{label}", config_path.display())?;
     writeln!(
         writer,
-        "\nRun 'unifi-cli system health' to verify your connection."
+        "\nRun 'unifi system health' to verify your connection."
     )?;
 
     Ok(InitOutcome::Saved {
@@ -617,7 +613,7 @@ fn install_completions(shell: Shell) {
             let dir = dirs::home_dir()
                 .map(|h| h.join(".zsh").join("completions"))
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
-            (dir, "_unifi-cli".to_string())
+            (dir, "_unifi".to_string())
         }
         Shell::Bash => {
             let dir = dirs::data_dir()
@@ -632,13 +628,13 @@ fn install_completions(shell: Shell) {
                         })
                         .unwrap_or_else(|| std::path::PathBuf::from("."))
                 });
-            (dir, "unifi-cli".to_string())
+            (dir, "unifi".to_string())
         }
         Shell::Fish => {
             let dir = dirs::config_dir()
                 .map(|d| d.join("fish").join("completions"))
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
-            (dir, "unifi-cli.fish".to_string())
+            (dir, "unifi.fish".to_string())
         }
         _ => {
             eprintln!(
@@ -662,7 +658,7 @@ fn install_completions(shell: Shell) {
         }
     };
 
-    clap_complete::generate(shell, &mut Cli::command(), "unifi-cli", &mut file);
+    clap_complete::generate(shell, &mut Cli::command(), "unifi", &mut file);
     eprintln!("Installed {shell} completions to {}", path.display());
 
     match shell {
@@ -744,7 +740,7 @@ async fn main() {
                 clap_complete::generate(
                     *shell,
                     &mut Cli::command(),
-                    "unifi-cli",
+                    "unifi",
                     &mut std::io::stdout(),
                 );
             }
@@ -885,7 +881,7 @@ mod tests {
 
     #[test]
     fn load_config_missing_file() {
-        let path = std::path::Path::new("/tmp/nonexistent-unifi-cli-test.toml");
+        let path = std::path::Path::new("/tmp/nonexistent-unifi-test.toml");
         let (host, api_key) = load_config_from(path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
@@ -1069,7 +1065,7 @@ api_key = "work_key"
         assert!(written.contains("host = \"https://unifi.local\""));
         assert!(written.contains("api_key = \"my-api-key\""));
         assert!(display.contains("Config saved to"));
-        assert!(display.contains("unifi-cli system health"));
+        assert!(display.contains("unifi system health"));
     }
 
     #[test]
@@ -1212,15 +1208,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_clients_list() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "clients",
-            "list",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "clients", "list"]);
         assert_eq!(cli.host.as_deref(), Some("h"));
         assert_eq!(cli.api_key.as_deref(), Some("k"));
         assert!(!cli.json);
@@ -1234,7 +1222,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_show() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1254,7 +1242,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_set_fixed_ip_with_name() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1279,7 +1267,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_set_fixed_ip_without_name() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1298,7 +1286,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_block() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1316,7 +1304,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_unblock() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1334,7 +1322,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_kick() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1351,15 +1339,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_devices_list() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "devices",
-            "list",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "devices", "list"]);
         assert!(matches!(
             cli.command,
             Command::Devices(DevicesCommand::List { .. })
@@ -1369,7 +1349,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_restart() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1389,7 +1369,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_locate_on() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1410,7 +1390,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_locate_off() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1428,21 +1408,13 @@ api_key = "work_key"
 
     #[test]
     fn cli_networks() {
-        let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "networks"]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks"]);
         assert!(matches!(cli.command, Command::Networks));
     }
 
     #[test]
     fn cli_system_health() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "system",
-            "health",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "system", "health"]);
         assert!(matches!(
             cli.command,
             Command::System(SystemCommand::Health)
@@ -1451,22 +1423,14 @@ api_key = "work_key"
 
     #[test]
     fn cli_system_info() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "system",
-            "info",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "system", "info"]);
         assert!(matches!(cli.command, Command::System(SystemCommand::Info)));
     }
 
     #[test]
     fn cli_json_flag() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1480,7 +1444,7 @@ api_key = "work_key"
     #[test]
     fn cli_json_flag_after_subcommand() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1494,7 +1458,7 @@ api_key = "work_key"
     #[test]
     fn cli_quiet_flag() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1507,25 +1471,25 @@ api_key = "work_key"
 
     #[test]
     fn cli_schema_command() {
-        let cli = parse(&["unifi-cli", "schema"]);
+        let cli = parse(&["unifi", "schema"]);
         assert!(matches!(cli.command, Command::Schema));
     }
 
     #[test]
     fn cli_schema_no_host_required() {
-        let cli = parse(&["unifi-cli", "schema"]);
+        let cli = parse(&["unifi", "schema"]);
         assert!(cli.host.is_none());
         assert!(cli.api_key.is_none());
     }
 
     #[test]
     fn cli_missing_subcommand_fails() {
-        assert!(Cli::try_parse_from(["unifi-cli", "--host", "h", "--api-key", "k"]).is_err());
+        assert!(Cli::try_parse_from(["unifi", "--host", "h", "--api-key", "k"]).is_err());
     }
 
     #[test]
     fn cli_host_and_key_optional() {
-        let cli = parse(&["unifi-cli", "networks"]);
+        let cli = parse(&["unifi", "networks"]);
         assert!(cli.host.is_none());
         assert!(cli.api_key.is_none());
     }
@@ -1533,7 +1497,7 @@ api_key = "work_key"
     #[test]
     fn cli_wired_and_wireless_conflict() {
         let result = Cli::try_parse_from([
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1549,7 +1513,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_list_wired_flag() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1577,7 +1541,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_list_name_filter() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1598,7 +1562,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_list_watch() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1619,7 +1583,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_show() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1638,13 +1602,13 @@ api_key = "work_key"
 
     #[test]
     fn cli_completions() {
-        let cli = parse(&["unifi-cli", "completions", "bash"]);
+        let cli = parse(&["unifi", "completions", "bash"]);
         assert!(matches!(cli.command, Command::Completions { .. }));
     }
 
     #[test]
     fn cli_completions_install() {
-        let cli = parse(&["unifi-cli", "completions", "zsh", "--install"]);
+        let cli = parse(&["unifi", "completions", "zsh", "--install"]);
         match cli.command {
             Command::Completions { shell, install } => {
                 assert_eq!(shell, Shell::Zsh);
@@ -1656,7 +1620,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_config_init() {
-        let cli = parse(&["unifi-cli", "config", "init"]);
+        let cli = parse(&["unifi", "config", "init"]);
         assert!(matches!(cli.command, Command::Config(ConfigCommand::Init)));
         assert!(cli.host.is_none());
         assert!(cli.api_key.is_none());
@@ -1664,22 +1628,14 @@ api_key = "work_key"
 
     #[test]
     fn cli_config_check() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "config",
-            "check",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "config", "check"]);
         assert!(matches!(cli.command, Command::Config(ConfigCommand::Check)));
     }
 
     #[test]
     fn cli_profile_flag() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--profile",
             "office",
             "--host",
@@ -1693,21 +1649,13 @@ api_key = "work_key"
 
     #[test]
     fn cli_profile_default_none() {
-        let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "networks"]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks"]);
         assert!(cli.profile.is_none());
     }
 
     #[test]
     fn cli_events_list() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "events",
-            "list",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "events", "list"]);
         match cli.command {
             Command::Events(EventsCommand::List { limit }) => {
                 assert_eq!(limit, 10); // default
@@ -1719,7 +1667,7 @@ api_key = "work_key"
     #[test]
     fn cli_events_list_custom_limit() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1739,15 +1687,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_clients_top() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "clients",
-            "top",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "clients", "top"]);
         match cli.command {
             Command::Clients(ClientsCommand::Top { limit }) => {
                 assert_eq!(limit, 10); // default
@@ -1759,7 +1699,7 @@ api_key = "work_key"
     #[test]
     fn cli_clients_top_custom_limit() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1779,7 +1719,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_top_default_interval() {
-        let cli = parse(&["unifi-cli", "--host", "h", "--api-key", "k", "top"]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "top"]);
         match cli.command {
             Command::Top { interval } => assert_eq!(interval, 2),
             _ => panic!("expected Top"),
@@ -1788,16 +1728,7 @@ api_key = "work_key"
 
     #[test]
     fn cli_top_custom_interval() {
-        let cli = parse(&[
-            "unifi-cli",
-            "--host",
-            "h",
-            "--api-key",
-            "k",
-            "top",
-            "-i",
-            "5",
-        ]);
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "top", "-i", "5"]);
         match cli.command {
             Command::Top { interval } => assert_eq!(interval, 5),
             _ => panic!("expected Top"),
@@ -1807,7 +1738,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_ports() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1828,7 +1759,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_ports_live() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
@@ -1857,7 +1788,7 @@ api_key = "work_key"
     #[test]
     fn cli_devices_upgrade() {
         let cli = parse(&[
-            "unifi-cli",
+            "unifi",
             "--host",
             "h",
             "--api-key",
