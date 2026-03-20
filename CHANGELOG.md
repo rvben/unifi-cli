@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-20
+
+### Added
+- `unifi tui` command (renamed from `top`, which remains as an alias)
+- Helpful onboarding errors guiding new users to `unifi config init`
+- API key generation hint in error messages
+
+### Changed
+- README rewritten with quick-start section, TUI documentation, and all commands
+- Fixed config path in README (`~/.config/unifi/` not `unifi-cli/`)
+- All README examples use `unifi` binary name (not `unifi-cli`)
+
 ## [0.1.3] - 2026-03-20
 
 ### Added
@@ -139,7 +151,8 @@ All notable changes to this project will be documented in this file.
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
 
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/rvben/unifi-cli/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/rvben/unifi-cli/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/rvben/unifi-cli/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rvben/unifi-cli/compare/v0.1.0...v0.1.1
