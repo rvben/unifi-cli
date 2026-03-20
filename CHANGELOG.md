@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-20
+
+### Added
+- Binary renamed from `unifi-cli` to `unifi` (both names still work via `uvx`)
+- TUI detail overlays: press Enter on a client or device to see full info popup
+- TUI client actions from overlay: kick (`k`), block/unblock (`b`)
+- TUI device actions from overlay: restart (`r`), upgrade firmware (`u`), locate/blink LEDs (`l`)
+- Connection column in client list showing SSID and signal strength bars for wireless clients
+- Non-blocking data fetch via background tasks (UI stays responsive during API calls)
+- Loading indicator on TUI startup while connecting to controller
+- Controller update availability shown in TUI header and `system info`
+- Contextual footer hints based on current mode (overlay, filter, normal)
+- `unifi-cli` binary alias for `uvx unifi-cli` compatibility
+
+### Fixed
+- TUI dashboard decluttered: removed noisy Rate column, simplified layout
+- Client list sorted by cumulative total bytes for stable ordering (no more flickering)
+- Device panel sized to content instead of fixed percentage
+- Firmware version no longer clipped in device table
+- Unnamed clients show full MAC address instead of `-`
+
+### Changed
+- Config directory changed from `unifi-cli` to `unifi`
+
 ## [0.1.1] - 2026-03-20
 
 ### Added
@@ -92,7 +116,8 @@ All notable changes to this project will be documented in this file.
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
 
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/rvben/unifi-cli/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rvben/unifi-cli/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rvben/unifi-cli/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/rvben/unifi-cli/compare/v0.0.3...v0.0.4
