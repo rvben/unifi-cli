@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,6 @@ use crate::api::{
     format_uptime, normalize_mac,
 };
 
-const SPARKLINE_HISTORY: usize = 60;
 const HEADER_COLOR: Color = Color::Cyan;
 const ONLINE_COLOR: Color = Color::Green;
 const OFFLINE_COLOR: Color = Color::Red;
@@ -62,7 +61,6 @@ impl SortMode {
 struct ClientRate {
     tx_rate: f64,
     rx_rate: f64,
-    history: VecDeque<u64>,
 }
 
 struct AppState {
@@ -130,16 +128,9 @@ impl AppState {
                     let rate = self.rates.entry(mac.clone()).or_insert(ClientRate {
                         tx_rate: 0.0,
                         rx_rate: 0.0,
-                        history: VecDeque::with_capacity(SPARKLINE_HISTORY),
                     });
                     rate.tx_rate = tx_rate;
                     rate.rx_rate = rx_rate;
-
-                    let combined = (tx_rate + rx_rate) as u64;
-                    rate.history.push_back(combined);
-                    if rate.history.len() > SPARKLINE_HISTORY {
-                        rate.history.pop_front();
-                    }
                 }
             }
 
@@ -182,9 +173,15 @@ impl AppState {
                             self.rates.get(&mac).map_or(0.0, |r| r.tx_rate + r.rx_rate)
                         })
                         .unwrap_or(0.0);
+                    // Primary: active rate descending. Secondary: total bytes descending.
                     rate_b
                         .partial_cmp(&rate_a)
                         .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| {
+                            let total_a = a.tx_bytes.unwrap_or(0) + a.rx_bytes.unwrap_or(0);
+                            let total_b = b.tx_bytes.unwrap_or(0) + b.rx_bytes.unwrap_or(0);
+                            total_b.cmp(&total_a)
+                        })
                 });
             }
             SortMode::Name => {
@@ -383,42 +380,16 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 .add_modifier(Modifier::BOLD),
         ));
 
+    let header_style = Style::default()
+        .fg(HEADER_COLOR)
+        .add_modifier(Modifier::BOLD);
+
     let header = Row::new(vec![
-        Cell::from("Name").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("IP").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Type").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("TX/s").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("RX/s").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Total").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Trend").style(
-            Style::default()
-                .fg(HEADER_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Cell::from("Name").style(header_style),
+        Cell::from("IP").style(header_style),
+        Cell::from("Type").style(header_style),
+        Cell::from("Rate").style(header_style),
+        Cell::from("Total").style(header_style),
     ])
     .height(1);
 
@@ -436,24 +407,59 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
             let tx_rate = rate.map_or(0.0, |r| r.tx_rate);
             let rx_rate = rate.map_or(0.0, |r| r.rx_rate);
             let total_rate = tx_rate + rx_rate;
+            let total_bytes = c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0);
+            let is_idle = total_rate < 1.0 && total_bytes == 0;
 
             let rate_color = if total_rate >= 1_048_576.0 {
                 Color::Green
             } else if total_rate >= 1024.0 {
                 Color::Yellow
-            } else {
+            } else if total_rate >= 1.0 {
                 Color::White
+            } else {
+                DIM_COLOR
             };
 
             let type_str = if c.is_wired { "⌐ wired" } else { "◦ wifi" };
-            let type_color = if c.is_wired {
+            let type_color = if is_idle {
+                DIM_COLOR
+            } else if c.is_wired {
                 Color::Blue
             } else {
                 Color::Magenta
             };
 
-            // Build sparkline string from history
-            let trend = rate.map_or(String::new(), |r| sparkline_str(&r.history));
+            // Show MAC for unnamed clients
+            let name = if c.display_name() == "-" {
+                c.mac
+                    .as_deref()
+                    .map(|m| {
+                        let clean = normalize_mac(m);
+                        if clean.len() == 12 {
+                            format!("{}:{}:{}", &clean[0..2], &clean[2..4], &clean[4..6])
+                        } else {
+                            m.to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "-".into())
+            } else {
+                c.display_name().to_string()
+            };
+
+            let name_style = if is_idle {
+                Style::default().fg(DIM_COLOR)
+            } else {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            };
+
+            // Combined rate string
+            let rate_str = if total_rate >= 1.0 {
+                format!("▲{} ▼{}", format_rate(tx_rate), format_rate(rx_rate))
+            } else {
+                "—".into()
+            };
 
             let is_selected = is_focused && i == state.client_scroll;
             let row_style = if is_selected {
@@ -462,22 +468,19 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Style::default()
             };
 
+            let total_style = if is_idle {
+                Style::default().fg(DIM_COLOR)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
             Row::new(vec![
-                Cell::from(c.display_name().to_string()).style(
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Cell::from(name).style(name_style),
                 Cell::from(c.ip.as_deref().unwrap_or("-").to_string())
                     .style(Style::default().fg(DIM_COLOR)),
                 Cell::from(type_str).style(Style::default().fg(type_color)),
-                Cell::from(format_rate(tx_rate)).style(Style::default().fg(rate_color)),
-                Cell::from(format_rate(rx_rate)).style(Style::default().fg(rate_color)),
-                Cell::from(format_bytes(
-                    c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0),
-                ))
-                .style(Style::default().fg(DIM_COLOR)),
-                Cell::from(trend).style(Style::default().fg(ACCENT_COLOR)),
+                Cell::from(rate_str).style(Style::default().fg(rate_color)),
+                Cell::from(format_bytes(total_bytes)).style(total_style),
             ])
             .style(row_style)
         })
@@ -487,10 +490,8 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Constraint::Min(18),
         Constraint::Length(16),
         Constraint::Length(9),
-        Constraint::Length(12),
-        Constraint::Length(12),
+        Constraint::Length(22),
         Constraint::Length(10),
-        Constraint::Min(20),
     ];
 
     if clients.is_empty() {
@@ -721,29 +722,14 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     f.render_widget(paragraph, area);
 }
 
-fn sparkline_str(history: &VecDeque<u64>) -> String {
-    if history.is_empty() {
-        return String::new();
-    }
-    let bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let max = history.iter().copied().max().unwrap_or(1).max(1);
-    history
-        .iter()
-        .map(|&v| {
-            let idx = ((v as f64 / max as f64) * 7.0) as usize;
-            bars[idx.min(7)]
-        })
-        .collect()
-}
-
 fn draw(f: &mut ratatui::Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // header
-            Constraint::Min(10),    // clients
-            Constraint::Length(12), // devices
-            Constraint::Length(1),  // footer
+            Constraint::Length(3),      // header
+            Constraint::Percentage(55), // clients
+            Constraint::Percentage(45), // devices
+            Constraint::Length(1),      // footer
         ])
         .split(f.area());
 
@@ -1241,30 +1227,6 @@ mod tests {
     #[test]
     fn format_rate_gigabytes() {
         assert_eq!(format_rate(1_073_741_824.0), "1.0 GB/s");
-    }
-
-    #[test]
-    fn sparkline_str_empty() {
-        assert_eq!(sparkline_str(&VecDeque::new()), "");
-    }
-
-    #[test]
-    fn sparkline_str_single() {
-        assert_eq!(sparkline_str(&VecDeque::from([100])), "█");
-    }
-
-    #[test]
-    fn sparkline_str_ascending() {
-        let result = sparkline_str(&VecDeque::from([0, 25, 50, 75, 100]));
-        assert_eq!(result.chars().count(), 5);
-        let chars: Vec<char> = result.chars().collect();
-        assert_eq!(chars[0], '▁');
-        assert_eq!(chars[4], '█');
-    }
-
-    #[test]
-    fn sparkline_str_all_zeros() {
-        assert_eq!(sparkline_str(&VecDeque::from([0, 0, 0])), "▁▁▁");
     }
 
     #[test]
