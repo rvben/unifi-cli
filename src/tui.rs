@@ -76,12 +76,11 @@ struct AppState {
     device_scroll: usize,
     filter: String,
     filtering: bool,
-    interval_secs: u64,
     last_error: Option<String>,
 }
 
 impl AppState {
-    fn new(interval_secs: u64) -> Self {
+    fn new() -> Self {
         Self {
             sysinfo: None,
             health: Vec::new(),
@@ -95,7 +94,6 @@ impl AppState {
             device_scroll: 0,
             filter: String::new(),
             filtering: false,
-            interval_secs,
             last_error: None,
         }
     }
@@ -365,7 +363,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let header = Row::new(vec![
         Cell::from("Name").style(header_style),
         Cell::from("IP").style(header_style),
-        Cell::from("Type").style(header_style),
         Cell::from("Rate").style(header_style),
         Cell::from("Total").style(header_style),
     ])
@@ -398,31 +395,18 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 DIM_COLOR
             };
 
-            let type_str = if c.is_wired { "⌐ wired" } else { "◦ wifi" };
-            let type_color = if is_idle {
-                DIM_COLOR
-            } else if c.is_wired {
-                Color::Blue
-            } else {
-                Color::Magenta
-            };
+            let type_icon = if c.is_wired { "⌐ " } else { "◦ " };
 
-            // Show MAC for unnamed clients
-            let name = if c.display_name() == "-" {
+            // Show full MAC for unnamed clients
+            let display = if c.display_name() == "-" {
                 c.mac
                     .as_deref()
-                    .map(|m| {
-                        let clean = normalize_mac(m);
-                        if clean.len() == 12 {
-                            format!("{}:{}:{}", &clean[0..2], &clean[2..4], &clean[4..6])
-                        } else {
-                            m.to_string()
-                        }
-                    })
+                    .map(crate::api::format_mac)
                     .unwrap_or_else(|| "-".into())
             } else {
                 c.display_name().to_string()
             };
+            let name = format!("{type_icon}{display}");
 
             let name_style = if is_idle {
                 Style::default().fg(DIM_COLOR)
@@ -455,7 +439,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Cell::from(name).style(name_style),
                 Cell::from(c.ip.as_deref().unwrap_or("-").to_string())
                     .style(Style::default().fg(DIM_COLOR)),
-                Cell::from(type_str).style(Style::default().fg(type_color)),
                 Cell::from(rate_str).style(Style::default().fg(rate_color)),
                 Cell::from(format_bytes(total_bytes)).style(total_style),
             ])
@@ -464,11 +447,10 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         .collect();
 
     let widths = [
-        Constraint::Min(18),
+        Constraint::Length(34),
         Constraint::Length(16),
-        Constraint::Length(9),
         Constraint::Length(22),
-        Constraint::Length(10),
+        Constraint::Min(10),
     ];
 
     if clients.is_empty() {
@@ -637,60 +619,30 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Span::raw("")
     };
 
+    let key_style = Style::default()
+        .fg(ACCENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(DIM_COLOR);
+
     let line = Line::from(vec![
-        Span::styled(
-            " q",
-            Style::default()
-                .fg(ACCENT_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" quit  ", Style::default().fg(DIM_COLOR)),
-        Span::styled(
-            "s",
-            Style::default()
-                .fg(ACCENT_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" sort  ", Style::default().fg(DIM_COLOR)),
-        Span::styled(
-            "tab",
-            Style::default()
-                .fg(ACCENT_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" focus  ", Style::default().fg(DIM_COLOR)),
-        Span::styled(
-            "/",
-            Style::default()
-                .fg(ACCENT_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" filter  ", Style::default().fg(DIM_COLOR)),
-        Span::styled(
-            "↑↓",
-            Style::default()
-                .fg(ACCENT_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" scroll", Style::default().fg(DIM_COLOR)),
+        Span::styled(" q", key_style),
+        Span::styled(" quit ", dim),
+        Span::styled("s", key_style),
+        Span::styled(" sort ", dim),
+        Span::styled("/", key_style),
+        Span::styled(" filter ", dim),
         filter_hint,
         error_span,
         Span::raw("  "),
         Span::styled(
-            format!("↻ {}s", state.interval_secs),
-            Style::default().fg(DIM_COLOR),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("▲ {} ▼ {} ", format_rate(total_tx), format_rate(total_rx)),
+            format!(
+                "▲ {} ▼ {} Σ {}",
+                format_rate(total_tx),
+                format_rate(total_rx),
+                format_rate(total)
+            ),
             Style::default()
                 .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("Σ {}", format_rate(total)),
-            Style::default()
-                .fg(ACCENT_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -726,7 +678,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(interval_secs);
+    let mut state = AppState::new();
     let tick_rate = Duration::from_secs(interval_secs);
     let mut last_tick = Instant::now() - tick_rate; // Force immediate first fetch
 
@@ -1227,7 +1179,7 @@ mod tests {
 
     #[test]
     fn app_state_scroll_bounds() {
-        let mut state = AppState::new(2);
+        let mut state = AppState::new();
         state.scroll_up();
         assert_eq!(state.client_scroll, 0);
 
