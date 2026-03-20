@@ -355,4 +355,15 @@ impl UnifiClient {
         data.pop()
             .ok_or_else(|| ApiError::Other("No sysinfo returned".into()))
     }
+
+    pub async fn get_host_system(&self) -> Result<HostSystem, ApiError> {
+        let url = format!("{}/api/system", self.base_url);
+        let resp = self.http.get(&url).send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::error_for_status(status, body));
+        }
+        Ok(resp.json().await?)
+    }
 }

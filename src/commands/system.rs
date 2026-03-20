@@ -101,6 +101,8 @@ pub async fn info(
     out: OutputConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sys = client.get_sysinfo().await?;
+    let host = client.get_host_system().await.ok();
+    let update_available = host.as_ref().is_some_and(|h| h.update_available());
 
     if out.json {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
@@ -108,6 +110,7 @@ pub async fn info(
             "version": sys.version,
             "timezone": sys.timezone,
             "uptime": sys.uptime,
+            "update_available": update_available,
         }))?);
         return Ok(());
     }
@@ -136,6 +139,12 @@ pub async fn info(
         rows.push(InfoRow {
             field: "Uptime".into(),
             value: format_uptime(uptime),
+        });
+    }
+    if update_available {
+        rows.push(InfoRow {
+            field: "Update".into(),
+            value: "Available".into(),
         });
     }
 

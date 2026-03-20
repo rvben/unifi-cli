@@ -158,6 +158,20 @@ pub struct SysInfo {
     pub uptime: Option<u64>,
 }
 
+// Host system info from /api/system (UniFi OS level)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostSystem {
+    pub device_state: Option<String>,
+    pub name: Option<String>,
+}
+
+impl HostSystem {
+    pub fn update_available(&self) -> bool {
+        self.device_state.as_deref() == Some("updateAvailable")
+    }
+}
+
 pub fn normalize_mac(mac: &str) -> String {
     mac.to_lowercase().replace([':', '-'], "")
 }

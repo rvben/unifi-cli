@@ -15,8 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
 
 use crate::api::{
-    ApiError, HealthSubsystem, LegacyClient, LegacyDevice, SysInfo, UnifiClient, format_bytes,
-    format_uptime,
+    ApiError, HealthSubsystem, HostSystem, LegacyClient, LegacyDevice, SysInfo, UnifiClient,
+    format_bytes, format_uptime,
 };
 
 const HEADER_COLOR: Color = Color::Cyan;
@@ -60,6 +60,7 @@ impl SortMode {
 
 struct AppState {
     sysinfo: Option<SysInfo>,
+    host_system: Option<HostSystem>,
     health: Vec<HealthSubsystem>,
     clients: Vec<LegacyClient>,
     devices: Vec<LegacyDevice>,
@@ -76,6 +77,7 @@ impl AppState {
     fn new() -> Self {
         Self {
             sysinfo: None,
+            host_system: None,
             health: Vec::new(),
             clients: Vec::new(),
             devices: Vec::new(),
@@ -199,6 +201,7 @@ async fn fetch_data(
 ) -> Result<
     (
         Option<SysInfo>,
+        Option<HostSystem>,
         Vec<HealthSubsystem>,
         Vec<LegacyClient>,
         Vec<LegacyDevice>,
@@ -206,10 +209,11 @@ async fn fetch_data(
     ApiError,
 > {
     let sysinfo = api.get_sysinfo().await.ok();
+    let host_system = api.get_host_system().await.ok();
     let health = api.get_health().await.unwrap_or_default();
     let clients = api.list_clients_legacy().await?;
     let devices: Vec<LegacyDevice> = api.get_legacy_devices().await.unwrap_or_default();
-    Ok((sysinfo, health, clients, devices))
+    Ok((sysinfo, host_system, health, clients, devices))
 }
 
 fn draw_header(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
@@ -255,6 +259,17 @@ fn draw_header(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
             Style::default().fg(Color::White),
         ));
         health_spans.push(Span::raw("  "));
+    }
+
+    if state
+        .host_system
+        .as_ref()
+        .is_some_and(|h| h.update_available())
+    {
+        health_spans.push(Span::styled(
+            "⬆ Update available",
+            Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+        ));
     }
 
     let block = Block::default()
@@ -594,8 +609,9 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
         // Fetch data if tick elapsed
         if last_tick.elapsed() >= tick_rate {
             match fetch_data(api).await {
-                Ok((sysinfo, health, clients, devices)) => {
+                Ok((sysinfo, host_system, health, clients, devices)) => {
                     state.sysinfo = sysinfo;
+                    state.host_system = host_system;
                     state.health = health;
                     state.clients = clients;
                     state.devices = devices;
