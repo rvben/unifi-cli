@@ -1824,4 +1824,211 @@ api_key = "work_key"
             _ => panic!("expected Devices Upgrade"),
         }
     }
+
+    // --- Config edge cases ---
+
+    #[test]
+    fn load_config_profile_only_no_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[profiles.office]
+host = "office.local"
+api_key = "office_key"
+"#,
+        )
+        .unwrap();
+
+        // No profile → returns default (no top-level host/key)
+        let (host, api_key) = load_config_from(&path, None);
+        assert!(host.is_none());
+        assert!(api_key.is_none());
+
+        // Named profile → returns profile
+        let (host, api_key) = load_config_from(&path, Some("office"));
+        assert_eq!(host.as_deref(), Some("office.local"));
+        assert_eq!(api_key.as_deref(), Some("office_key"));
+    }
+
+    #[test]
+    fn load_config_profile_partial_creds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[profiles.partial]
+host = "partial.local"
+"#,
+        )
+        .unwrap();
+
+        let (host, api_key) = load_config_from(&path, Some("partial"));
+        assert_eq!(host.as_deref(), Some("partial.local"));
+        assert!(api_key.is_none());
+    }
+
+    #[test]
+    fn load_config_profile_with_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[profiles.my-home]
+host = "home.local"
+api_key = "key-with-special=chars"
+"#,
+        )
+        .unwrap();
+
+        let (host, api_key) = load_config_from(&path, Some("my-home"));
+        assert_eq!(host.as_deref(), Some("home.local"));
+        assert_eq!(api_key.as_deref(), Some("key-with-special=chars"));
+    }
+
+    // --- resolve_profile_table ---
+
+    #[test]
+    fn resolve_profile_table_none_returns_root() {
+        let config: toml::Table = r#"
+host = "root.local"
+api_key = "root_key"
+"#
+        .parse()
+        .unwrap();
+
+        let table = resolve_profile_table(&config, None);
+        assert!(table.is_some());
+        assert_eq!(
+            table.unwrap().get("host").and_then(|v| v.as_str()),
+            Some("root.local")
+        );
+    }
+
+    #[test]
+    fn resolve_profile_table_named_returns_profile() {
+        let config: toml::Table = r#"
+[profiles.work]
+host = "work.local"
+"#
+        .parse()
+        .unwrap();
+
+        let table = resolve_profile_table(&config, Some("work"));
+        assert!(table.is_some());
+        assert_eq!(
+            table.unwrap().get("host").and_then(|v| v.as_str()),
+            Some("work.local")
+        );
+    }
+
+    #[test]
+    fn resolve_profile_table_missing_returns_none() {
+        let config: toml::Table = "host = \"h\"".parse().unwrap();
+        let table = resolve_profile_table(&config, Some("nope"));
+        assert!(table.is_none());
+    }
+
+    // --- extract_credentials ---
+
+    #[test]
+    fn extract_credentials_both() {
+        let table: toml::Table = r#"
+host = "h"
+api_key = "k"
+"#
+        .parse()
+        .unwrap();
+        let (host, key) = extract_credentials(&table);
+        assert_eq!(host.as_deref(), Some("h"));
+        assert_eq!(key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn extract_credentials_empty_table() {
+        let table = toml::Table::new();
+        let (host, key) = extract_credentials(&table);
+        assert!(host.is_none());
+        assert!(key.is_none());
+    }
+
+    #[test]
+    fn extract_credentials_non_string_values() {
+        let table: toml::Table = "host = 12345".parse().unwrap();
+        let (host, _) = extract_credentials(&table);
+        assert!(host.is_none()); // integer, not string
+    }
+
+    // --- UnifiClient::new base URL ---
+
+    #[test]
+    fn client_new_strips_trailing_slash() {
+        let client = api::UnifiClient::new("https://unifi.local/", "key").unwrap();
+        assert_eq!(client.base_url(), "https://unifi.local");
+    }
+
+    #[test]
+    fn client_new_preserves_https() {
+        let client = api::UnifiClient::new("https://unifi.local", "key").unwrap();
+        assert_eq!(client.base_url(), "https://unifi.local");
+    }
+
+    #[test]
+    fn client_new_preserves_http() {
+        let client = api::UnifiClient::new("http://unifi.local", "key").unwrap();
+        assert_eq!(client.base_url(), "http://unifi.local");
+    }
+
+    #[test]
+    fn client_new_adds_https_for_bare_host() {
+        let client = api::UnifiClient::new("unifi.local", "key").unwrap();
+        assert_eq!(client.base_url(), "https://unifi.local");
+    }
+
+    #[test]
+    fn client_new_adds_https_for_ip() {
+        let client = api::UnifiClient::new("192.168.1.1", "key").unwrap();
+        assert_eq!(client.base_url(), "https://192.168.1.1");
+    }
+
+    // --- error_for_status ---
+
+    #[test]
+    fn error_for_status_401_returns_auth() {
+        let err = api::UnifiClient::error_for_status_pub(401, "Unauthorized".into());
+        assert!(matches!(err, api::ApiError::Auth(_)));
+    }
+
+    #[test]
+    fn error_for_status_403_returns_auth() {
+        let err = api::UnifiClient::error_for_status_pub(403, "Forbidden".into());
+        assert!(matches!(err, api::ApiError::Auth(_)));
+    }
+
+    #[test]
+    fn error_for_status_404_returns_not_found() {
+        let err = api::UnifiClient::error_for_status_pub(404, "Not Found".into());
+        assert!(matches!(err, api::ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn error_for_status_500_returns_api_error() {
+        let err = api::UnifiClient::error_for_status_pub(500, "Server Error".into());
+        match err {
+            api::ApiError::Api { status, message } => {
+                assert_eq!(status, 500);
+                assert_eq!(message, "Server Error");
+            }
+            _ => panic!("expected Api error"),
+        }
+    }
+
+    #[test]
+    fn error_for_status_200_returns_api_error() {
+        let err = api::UnifiClient::error_for_status_pub(200, "unexpected".into());
+        assert!(matches!(err, api::ApiError::Api { status: 200, .. }));
+    }
 }

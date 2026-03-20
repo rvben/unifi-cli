@@ -2265,4 +2265,375 @@ mod tests {
         assert_eq!(device_state_str(Some(2)).0, "ADOPTING");
         assert_eq!(device_state_str(None).0, "UNKNOWN");
     }
+
+    // --- Panel focus ---
+
+    #[test]
+    fn default_focus_is_clients() {
+        let state = AppState::new();
+        assert_eq!(state.focus, Panel::Clients);
+    }
+
+    #[test]
+    fn tab_toggles_focus() {
+        let mut state = AppState::new();
+        assert_eq!(state.focus, Panel::Clients);
+        state.focus = Panel::Devices;
+        assert_eq!(state.focus, Panel::Devices);
+        state.focus = Panel::Clients;
+        assert_eq!(state.focus, Panel::Clients);
+    }
+
+    // --- Device cursor ---
+
+    #[test]
+    fn device_scroll_bounds() {
+        let mut state = AppState::new();
+        state.focus = Panel::Devices;
+        state.cursor_up();
+        assert_eq!(state.device_scroll, 0);
+
+        state.cursor_down(0, 3);
+        assert_eq!(state.device_scroll, 1);
+        state.cursor_down(0, 3);
+        assert_eq!(state.device_scroll, 2);
+        state.cursor_down(0, 3);
+        assert_eq!(state.device_scroll, 2); // capped
+
+        state.cursor_up();
+        assert_eq!(state.device_scroll, 1);
+    }
+
+    // --- Page up/down ---
+
+    #[test]
+    fn page_down_clients() {
+        let mut state = AppState::new();
+        state.page_down(100, 10, 20);
+        assert_eq!(state.client_cursor, 20);
+        state.page_down(100, 10, 20);
+        assert_eq!(state.client_cursor, 40);
+    }
+
+    #[test]
+    fn page_up_clients() {
+        let mut state = AppState::new();
+        state.client_cursor = 30;
+        state.page_up(20);
+        assert_eq!(state.client_cursor, 10);
+        state.page_up(20);
+        assert_eq!(state.client_cursor, 0);
+    }
+
+    #[test]
+    fn page_down_capped_at_max() {
+        let mut state = AppState::new();
+        state.page_down(5, 10, 20);
+        assert_eq!(state.client_cursor, 4); // 5 items, max index is 4
+    }
+
+    #[test]
+    fn page_down_devices() {
+        let mut state = AppState::new();
+        state.focus = Panel::Devices;
+        state.page_down(100, 10, 5);
+        assert_eq!(state.device_scroll, 5);
+    }
+
+    #[test]
+    fn page_up_devices() {
+        let mut state = AppState::new();
+        state.focus = Panel::Devices;
+        state.device_scroll = 8;
+        state.page_up(5);
+        assert_eq!(state.device_scroll, 3);
+    }
+
+    // --- Viewport scrolling ---
+
+    #[test]
+    fn ensure_client_visible_scrolls_down() {
+        let mut state = AppState::new();
+        state.client_cursor = 25;
+        state.client_offset = 0;
+        state.ensure_client_visible(10);
+        assert_eq!(state.client_offset, 16); // cursor 25 - height 10 + 1
+    }
+
+    #[test]
+    fn ensure_client_visible_scrolls_up() {
+        let mut state = AppState::new();
+        state.client_cursor = 3;
+        state.client_offset = 10;
+        state.ensure_client_visible(10);
+        assert_eq!(state.client_offset, 3);
+    }
+
+    #[test]
+    fn ensure_client_visible_no_scroll_needed() {
+        let mut state = AppState::new();
+        state.client_cursor = 5;
+        state.client_offset = 0;
+        state.ensure_client_visible(10);
+        assert_eq!(state.client_offset, 0);
+    }
+
+    #[test]
+    fn ensure_client_visible_zero_height() {
+        let mut state = AppState::new();
+        state.client_cursor = 5;
+        state.client_offset = 0;
+        state.ensure_client_visible(0);
+        assert_eq!(state.client_offset, 0); // no change
+    }
+
+    // --- Filter ---
+
+    #[test]
+    fn filter_starts_empty() {
+        let state = AppState::new();
+        assert!(state.filter.is_empty());
+        assert!(!state.filtering);
+    }
+
+    #[test]
+    fn filter_mode_toggle() {
+        let mut state = AppState::new();
+        state.filtering = true;
+        state.filter = "test".to_string();
+        assert!(state.filtering);
+        assert_eq!(state.filter, "test");
+        state.filtering = false;
+        assert!(!state.filtering);
+    }
+
+    // --- Overlay ---
+
+    #[test]
+    fn overlay_starts_none() {
+        let state = AppState::new();
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn overlay_client_detail() {
+        let mut state = AppState::new();
+        state.overlay = Some(Overlay::ClientDetail(5));
+        assert!(matches!(state.overlay, Some(Overlay::ClientDetail(5))));
+    }
+
+    #[test]
+    fn overlay_device_detail() {
+        let mut state = AppState::new();
+        state.overlay = Some(Overlay::DeviceDetail(2));
+        assert!(matches!(state.overlay, Some(Overlay::DeviceDetail(2))));
+    }
+
+    #[test]
+    fn overlay_confirm() {
+        let mut state = AppState::new();
+        state.overlay = Some(Overlay::Confirm {
+            message: "Kick client?".to_string(),
+            action: PendingAction::Client(ClientAction::Kick("aa:bb:cc:dd:ee:ff".to_string())),
+        });
+        assert!(matches!(state.overlay, Some(Overlay::Confirm { .. })));
+    }
+
+    #[test]
+    fn overlay_ap_picker() {
+        let mut state = AppState::new();
+        state.overlay = Some(Overlay::ApPicker {
+            client_idx: 3,
+            ap_cursor: 0,
+        });
+        assert!(matches!(state.overlay, Some(Overlay::ApPicker { .. })));
+    }
+
+    // --- Device name resolution ---
+
+    #[test]
+    fn rebuild_device_names_maps_mac_to_name() {
+        let mut state = AppState::new();
+        state.devices = vec![
+            serde_json::from_str(r#"{"mac": "aa:bb:cc:dd:ee:ff", "name": "Switch"}"#).unwrap(),
+            serde_json::from_str(r#"{"mac": "11:22:33:44:55:66", "name": "AP-LR"}"#).unwrap(),
+        ];
+        state.rebuild_device_names();
+        assert_eq!(
+            state.resolve_device_name("AA:BB:CC:DD:EE:FF"),
+            Some("Switch")
+        );
+        assert_eq!(
+            state.resolve_device_name("11:22:33:44:55:66"),
+            Some("AP-LR")
+        );
+        assert_eq!(state.resolve_device_name("00:00:00:00:00:00"), None);
+    }
+
+    #[test]
+    fn rebuild_device_names_skips_nameless() {
+        let mut state = AppState::new();
+        state.devices = vec![serde_json::from_str(r#"{"mac": "aa:bb:cc:dd:ee:ff"}"#).unwrap()];
+        state.rebuild_device_names();
+        assert_eq!(state.resolve_device_name("aa:bb:cc:dd:ee:ff"), None);
+    }
+
+    // --- Sorted clients ---
+
+    fn make_client(id: &str, name: &str, ip: &str, tx: u64, rx: u64) -> LegacyClient {
+        serde_json::from_str(&format!(
+            r#"{{"_id": "{id}", "name": "{name}", "ip": "{ip}", "tx_bytes": {tx}, "rx_bytes": {rx}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn sorted_clients_bandwidth_default() {
+        let mut state = AppState::new();
+        state.clients = vec![
+            make_client("1", "Low", "10.0.0.1", 100, 100),
+            make_client("2", "High", "10.0.0.2", 10000, 10000),
+            make_client("3", "Mid", "10.0.0.3", 1000, 1000),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted[0].display_name(), "High");
+        assert_eq!(sorted[1].display_name(), "Mid");
+        assert_eq!(sorted[2].display_name(), "Low");
+    }
+
+    #[test]
+    fn sorted_clients_by_name() {
+        let mut state = AppState::new();
+        state.sort = SortMode::Name;
+        state.clients = vec![
+            make_client("1", "Charlie", "10.0.0.1", 0, 0),
+            make_client("2", "Alice", "10.0.0.2", 0, 0),
+            make_client("3", "Bob", "10.0.0.3", 0, 0),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted[0].display_name(), "Alice");
+        assert_eq!(sorted[1].display_name(), "Bob");
+        assert_eq!(sorted[2].display_name(), "Charlie");
+    }
+
+    #[test]
+    fn sorted_clients_by_ip() {
+        let mut state = AppState::new();
+        state.sort = SortMode::Ip;
+        state.clients = vec![
+            make_client("1", "A", "10.0.0.10", 0, 0),
+            make_client("2", "B", "10.0.0.2", 0, 0),
+            make_client("3", "C", "10.0.0.1", 0, 0),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted[0].display_name(), "C"); // 10.0.0.1
+        assert_eq!(sorted[1].display_name(), "B"); // 10.0.0.2
+        assert_eq!(sorted[2].display_name(), "A"); // 10.0.0.10
+    }
+
+    #[test]
+    fn sorted_clients_filter_by_name() {
+        let mut state = AppState::new();
+        state.filter = "ali".to_string();
+        state.clients = vec![
+            make_client("1", "Alice", "10.0.0.1", 0, 0),
+            make_client("2", "Bob", "10.0.0.2", 0, 0),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].display_name(), "Alice");
+    }
+
+    #[test]
+    fn sorted_clients_filter_by_ip() {
+        let mut state = AppState::new();
+        state.filter = "10.0.0.2".to_string();
+        state.clients = vec![
+            make_client("1", "Alice", "10.0.0.1", 0, 0),
+            make_client("2", "Bob", "10.0.0.2", 0, 0),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].display_name(), "Bob");
+    }
+
+    #[test]
+    fn sorted_clients_filter_by_mac() {
+        let mut state = AppState::new();
+        state.filter = "aa:bb".to_string();
+        state.clients = vec![
+            serde_json::from_str(r#"{"_id": "1", "name": "Match", "mac": "aa:bb:cc:dd:ee:ff"}"#)
+                .unwrap(),
+            serde_json::from_str(r#"{"_id": "2", "name": "NoMatch", "mac": "11:22:33:44:55:66"}"#)
+                .unwrap(),
+        ];
+        let sorted = state.sorted_clients();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].display_name(), "Match");
+    }
+
+    #[test]
+    fn sorted_clients_empty_filter_returns_all() {
+        let mut state = AppState::new();
+        state.filter = String::new();
+        state.clients = vec![
+            make_client("1", "A", "10.0.0.1", 0, 0),
+            make_client("2", "B", "10.0.0.2", 0, 0),
+        ];
+        assert_eq!(state.sorted_clients().len(), 2);
+    }
+
+    // --- AP devices filter ---
+
+    #[test]
+    fn ap_devices_filters_by_type() {
+        let mut state = AppState::new();
+        state.devices = vec![
+            serde_json::from_str(r#"{"mac": "aa:bb:cc:dd:ee:ff", "type": "uap", "name": "AP"}"#)
+                .unwrap(),
+            serde_json::from_str(
+                r#"{"mac": "11:22:33:44:55:66", "type": "usw", "name": "Switch"}"#,
+            )
+            .unwrap(),
+        ];
+        let aps = state.ap_devices();
+        assert_eq!(aps.len(), 1);
+        assert_eq!(aps[0].name.as_deref(), Some("AP"));
+    }
+
+    // --- Loading state ---
+
+    #[test]
+    fn initial_state_is_loading() {
+        let state = AppState::new();
+        assert!(state.loading);
+        assert!(state.last_error.is_none());
+        assert!(state.status_msg.is_none());
+    }
+
+    // --- SortMode label ---
+
+    #[test]
+    fn sort_mode_labels() {
+        assert_eq!(SortMode::Bandwidth.label(), "total ↓");
+        assert_eq!(SortMode::Name.label(), "name ↓");
+        assert_eq!(SortMode::Ip.label(), "ip ↓");
+    }
+
+    // --- ip_sort_key edge cases ---
+
+    #[test]
+    fn ip_sort_key_empty() {
+        assert_eq!(ip_sort_key(""), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn ip_sort_key_non_ip() {
+        assert_eq!(ip_sort_key("not-an-ip"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn ip_sort_key_partial() {
+        assert_eq!(ip_sort_key("10.0"), vec![10, 0]);
+    }
 }

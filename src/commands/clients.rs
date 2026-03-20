@@ -11,7 +11,7 @@ pub struct ListFilter {
     pub name: Option<String>,
 }
 
-fn apply_filter(clients: Vec<Client>, filter: &ListFilter) -> Vec<Client> {
+pub(crate) fn apply_filter(clients: Vec<Client>, filter: &ListFilter) -> Vec<Client> {
     clients
         .into_iter()
         .filter(|c| {
@@ -275,7 +275,7 @@ pub async fn kick(
     Ok(())
 }
 
-fn total_bytes(c: &LegacyClient) -> u64 {
+pub(crate) fn total_bytes(c: &LegacyClient) -> u64 {
     c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0)
 }
 
@@ -360,4 +360,152 @@ pub async fn top(
         clients.len()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_client(name: &str, mac: &str, ip: &str, ctype: &str) -> Client {
+        serde_json::from_str(&format!(
+            r#"{{"name": "{name}", "macAddress": "{mac}", "ipAddress": "{ip}", "type": "{ctype}"}}"#
+        ))
+        .unwrap()
+    }
+
+    // --- total_bytes ---
+
+    #[test]
+    fn total_bytes_both_present() {
+        let c: LegacyClient =
+            serde_json::from_str(r#"{"_id": "x", "tx_bytes": 100, "rx_bytes": 200}"#).unwrap();
+        assert_eq!(total_bytes(&c), 300);
+    }
+
+    #[test]
+    fn total_bytes_none_values() {
+        let c: LegacyClient = serde_json::from_str(r#"{"_id": "x"}"#).unwrap();
+        assert_eq!(total_bytes(&c), 0);
+    }
+
+    #[test]
+    fn total_bytes_partial() {
+        let c: LegacyClient = serde_json::from_str(r#"{"_id": "x", "tx_bytes": 500}"#).unwrap();
+        assert_eq!(total_bytes(&c), 500);
+    }
+
+    // --- apply_filter ---
+
+    #[test]
+    fn filter_no_constraints() {
+        let clients = vec![
+            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+        ];
+        let filter = ListFilter {
+            wired: false,
+            wireless: false,
+            name: None,
+        };
+        assert_eq!(apply_filter(clients, &filter).len(), 2);
+    }
+
+    #[test]
+    fn filter_wired_only() {
+        let clients = vec![
+            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+        ];
+        let filter = ListFilter {
+            wired: true,
+            wireless: false,
+            name: None,
+        };
+        let result = apply_filter(clients, &filter);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].display_name(), "A");
+    }
+
+    #[test]
+    fn filter_wireless_only() {
+        let clients = vec![
+            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+        ];
+        let filter = ListFilter {
+            wired: false,
+            wireless: true,
+            name: None,
+        };
+        let result = apply_filter(clients, &filter);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].display_name(), "B");
+    }
+
+    #[test]
+    fn filter_by_name_case_insensitive() {
+        let clients = vec![
+            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
+            make_client("iPhone", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+        ];
+        let filter = ListFilter {
+            wired: false,
+            wireless: false,
+            name: Some("mac".to_string()),
+        };
+        let result = apply_filter(clients, &filter);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].display_name(), "Mac Mini");
+    }
+
+    #[test]
+    fn filter_by_name_no_match() {
+        let clients = vec![make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED")];
+        let filter = ListFilter {
+            wired: false,
+            wireless: false,
+            name: Some("zzz".to_string()),
+        };
+        assert!(apply_filter(clients, &filter).is_empty());
+    }
+
+    #[test]
+    fn filter_combined_type_and_name() {
+        let clients = vec![
+            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
+            make_client("MacBook", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+            make_client("iPhone", "22:33:44:55:66:77", "10.0.0.3", "WIRELESS"),
+        ];
+        let filter = ListFilter {
+            wired: false,
+            wireless: true,
+            name: Some("mac".to_string()),
+        };
+        let result = apply_filter(clients, &filter);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].display_name(), "MacBook");
+    }
+
+    #[test]
+    fn filter_empty_list() {
+        let filter = ListFilter {
+            wired: true,
+            wireless: false,
+            name: None,
+        };
+        assert!(apply_filter(vec![], &filter).is_empty());
+    }
+
+    #[test]
+    fn filter_name_matches_hostname_fallback() {
+        let client: Client =
+            serde_json::from_str(r#"{"hostname": "raspberrypi", "type": "WIRED"}"#).unwrap();
+        let filter = ListFilter {
+            wired: false,
+            wireless: false,
+            name: Some("raspberry".to_string()),
+        };
+        let result = apply_filter(vec![client], &filter);
+        assert_eq!(result.len(), 1);
+    }
 }

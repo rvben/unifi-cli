@@ -590,3 +590,207 @@ fn legacy_device_no_state() {
     assert_eq!(device.state_str(), "UNKNOWN");
     assert!(device.mac.is_none());
 }
+
+// --- LegacyDevice upgrade fields ---
+
+#[test]
+fn legacy_device_upgradable_true() {
+    let json = r#"{"upgradable": true, "upgrade_to_firmware": "7.1.68"}"#;
+    let device: LegacyDevice = serde_json::from_str(json).unwrap();
+    assert!(device.upgradable);
+    assert_eq!(device.upgrade_to_firmware.as_deref(), Some("7.1.68"));
+}
+
+#[test]
+fn legacy_device_upgradable_false_by_default() {
+    let device: LegacyDevice = serde_json::from_str(r#"{}"#).unwrap();
+    assert!(!device.upgradable);
+    assert!(device.upgrade_to_firmware.is_none());
+}
+
+#[test]
+fn legacy_device_upgradable_false_explicit() {
+    let json = r#"{"upgradable": false}"#;
+    let device: LegacyDevice = serde_json::from_str(json).unwrap();
+    assert!(!device.upgradable);
+}
+
+// --- HostSystem ---
+
+#[test]
+fn host_system_update_available() {
+    let json = r#"{"deviceState": "updateAvailable", "name": "UCG Ultra"}"#;
+    let host: HostSystem = serde_json::from_str(json).unwrap();
+    assert!(host.update_available());
+    assert_eq!(host.name.as_deref(), Some("UCG Ultra"));
+}
+
+#[test]
+fn host_system_no_update() {
+    let json = r#"{"deviceState": "online"}"#;
+    let host: HostSystem = serde_json::from_str(json).unwrap();
+    assert!(!host.update_available());
+}
+
+#[test]
+fn host_system_missing_state() {
+    let json = r#"{}"#;
+    let host: HostSystem = serde_json::from_str(json).unwrap();
+    assert!(!host.update_available());
+}
+
+// --- strip_mac_suffix ---
+
+#[test]
+fn strip_mac_suffix_removes_colon_suffix() {
+    // MAC aa:bb:cc:dd:ee:ff → suffix " ee:ff"
+    assert_eq!(
+        strip_mac_suffix("garage-bluetooth-proxy ee:ff", Some("aa:bb:cc:dd:ee:ff")),
+        "garage-bluetooth-proxy"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_removes_no_colon_suffix() {
+    // Also matches " eeff" without colon
+    assert_eq!(
+        strip_mac_suffix("garage-bluetooth-proxy eeff", Some("aa:bb:cc:dd:ee:ff")),
+        "garage-bluetooth-proxy"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_case_insensitive_mac() {
+    assert_eq!(
+        strip_mac_suffix("device 43:3c", Some("AA:BB:CC:DD:43:3C")),
+        "device"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_no_match_returns_original() {
+    assert_eq!(
+        strip_mac_suffix("my-device", Some("aa:bb:cc:dd:ee:ff")),
+        "my-device"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_none_mac_returns_original() {
+    assert_eq!(strip_mac_suffix("my-device ee:ff", None), "my-device ee:ff");
+}
+
+#[test]
+fn strip_mac_suffix_empty_name() {
+    assert_eq!(strip_mac_suffix("", Some("aa:bb:cc:dd:ee:ff")), "");
+}
+
+#[test]
+fn strip_mac_suffix_name_shorter_than_suffix() {
+    assert_eq!(strip_mac_suffix("ab", Some("aa:bb:cc:dd:ee:ff")), "ab");
+}
+
+#[test]
+fn strip_mac_suffix_name_is_just_the_suffix() {
+    // Name " ee:ff" (with leading space) should strip to ""
+    assert_eq!(strip_mac_suffix(" ee:ff", Some("aa:bb:cc:dd:ee:ff")), "");
+}
+
+#[test]
+fn strip_mac_suffix_dash_separated_mac() {
+    assert_eq!(
+        strip_mac_suffix("printer 43:3c", Some("AA-BB-CC-DD-43-3C")),
+        "printer"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_partial_hex_in_name_not_stripped() {
+    // Name ends in hex-like chars but they don't match the MAC
+    assert_eq!(
+        strip_mac_suffix("device ab:cd", Some("aa:bb:cc:dd:ee:ff")),
+        "device ab:cd"
+    );
+}
+
+#[test]
+fn strip_mac_suffix_short_mac() {
+    // MAC too short to have 4 hex chars → no stripping
+    assert_eq!(strip_mac_suffix("device ab", Some("ab")), "device ab");
+}
+
+// --- Client.clean_name ---
+
+#[test]
+fn client_clean_name_strips_suffix() {
+    let json = r#"{"name": "garage-proxy 43:3c", "macAddress": "aa:bb:cc:dd:43:3c"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "garage-proxy");
+}
+
+#[test]
+fn client_clean_name_no_suffix_to_strip() {
+    let json = r#"{"name": "Mac Mini", "macAddress": "aa:bb:cc:dd:ee:ff"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "Mac Mini");
+}
+
+#[test]
+fn client_clean_name_falls_back_to_hostname() {
+    let json = r#"{"hostname": "host 43:3c", "macAddress": "aa:bb:cc:dd:43:3c"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "host");
+}
+
+#[test]
+fn client_clean_name_hyphenated_not_stripped() {
+    // "host-ee:ff" has no space before the hex — it's part of the hostname, not a MAC suffix
+    let json = r#"{"hostname": "host-ee:ff", "macAddress": "aa:bb:cc:dd:ee:ff"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "host-ee:ff");
+}
+
+#[test]
+fn client_clean_name_no_name_no_hostname() {
+    let json = r#"{"macAddress": "aa:bb:cc:dd:ee:ff"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "-");
+}
+
+#[test]
+fn client_clean_name_no_mac() {
+    let json = r#"{"name": "My Device ee:ff"}"#;
+    let client: Client = serde_json::from_str(json).unwrap();
+    // No MAC → can't strip, returns name as-is
+    assert_eq!(client.clean_name(), "My Device ee:ff");
+}
+
+// --- LegacyClient.clean_name ---
+
+#[test]
+fn legacy_client_clean_name_strips_suffix() {
+    let json = r#"{"_id": "x", "name": "tasmota-plug 43:3c", "mac": "aa:bb:cc:dd:43:3c"}"#;
+    let client: LegacyClient = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "tasmota-plug");
+}
+
+#[test]
+fn legacy_client_clean_name_no_suffix() {
+    let json = r#"{"_id": "x", "name": "Mac Mini", "mac": "aa:bb:cc:dd:ee:ff"}"#;
+    let client: LegacyClient = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "Mac Mini");
+}
+
+#[test]
+fn legacy_client_clean_name_hostname_fallback() {
+    let json = r#"{"_id": "x", "hostname": "host ee:ff", "mac": "aa:bb:cc:dd:ee:ff"}"#;
+    let client: LegacyClient = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "host");
+}
+
+#[test]
+fn legacy_client_clean_name_no_mac() {
+    let json = r#"{"_id": "x", "name": "device ee:ff"}"#;
+    let client: LegacyClient = serde_json::from_str(json).unwrap();
+    assert_eq!(client.clean_name(), "device ee:ff");
+}
