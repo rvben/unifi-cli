@@ -68,6 +68,9 @@ pub struct LegacyClient {
     pub is_wired: bool,
     #[serde(default)]
     pub blocked: bool,
+    #[serde(default)]
+    pub fixed_ap_enabled: bool,
+    pub fixed_ap_mac: Option<String>,
     pub uptime: Option<u64>,
     pub tx_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,

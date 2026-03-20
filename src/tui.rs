@@ -59,14 +59,29 @@ impl SortMode {
 }
 
 enum Overlay {
-    ClientDetail(usize), // index into sorted_clients
-    DeviceDetail(usize), // index into devices
+    ClientDetail(usize),
+    DeviceDetail(usize),
+    ApPicker {
+        client_idx: usize,
+        ap_cursor: usize,
+    },
+    Confirm {
+        message: String,
+        action: PendingAction,
+    },
+}
+
+enum PendingAction {
+    Client(ClientAction),
+    Device(DeviceAction),
 }
 
 enum ClientAction {
-    Kick(String),    // MAC
-    Block(String),   // MAC
-    Unblock(String), // MAC
+    Kick(String),                             // MAC
+    Block(String),                            // MAC
+    Unblock(String),                          // MAC
+    LockToAp { mac: String, ap_mac: String }, // Lock client to AP
+    UnlockFromAp(String),                     // Unlock client from AP
 }
 
 enum DeviceAction {
@@ -81,6 +96,7 @@ struct AppState {
     health: Vec<HealthSubsystem>,
     clients: Vec<LegacyClient>,
     devices: Vec<LegacyDevice>,
+    device_names: HashMap<String, String>, // normalized MAC -> device name
     focus: Panel,
     sort: SortMode,
     client_scroll: usize,
@@ -91,7 +107,7 @@ struct AppState {
     loading: bool,
     last_error: Option<String>,
     status_msg: Option<(String, Instant)>,
-    locating: HashMap<String, bool>, // MAC -> currently locating
+    locating: HashMap<String, bool>,
 }
 
 impl AppState {
@@ -102,6 +118,7 @@ impl AppState {
             health: Vec::new(),
             clients: Vec::new(),
             devices: Vec::new(),
+            device_names: HashMap::new(),
             focus: Panel::Clients,
             sort: SortMode::Bandwidth,
             client_scroll: 0,
@@ -114,6 +131,24 @@ impl AppState {
             status_msg: None,
             locating: HashMap::new(),
         }
+    }
+
+    fn rebuild_device_names(&mut self) {
+        self.device_names = self
+            .devices
+            .iter()
+            .filter_map(|d| {
+                let mac = crate::api::normalize_mac(d.mac.as_deref()?);
+                let name = d.name.as_deref()?.to_string();
+                Some((mac, name))
+            })
+            .collect();
+    }
+
+    fn resolve_device_name(&self, mac: &str) -> Option<&str> {
+        self.device_names
+            .get(&crate::api::normalize_mac(mac))
+            .map(|s| s.as_str())
     }
 
     fn sorted_clients(&self) -> Vec<&LegacyClient> {
@@ -155,6 +190,13 @@ impl AppState {
         clients
     }
 
+    fn ap_devices(&self) -> Vec<&LegacyDevice> {
+        self.devices
+            .iter()
+            .filter(|d| d.device_type.as_deref().is_some_and(|t| t == "uap"))
+            .collect()
+    }
+
     fn scroll_up(&mut self) {
         match self.focus {
             Panel::Clients => {
@@ -177,6 +219,30 @@ impl AppState {
                 if self.device_scroll + 1 < max_devices {
                     self.device_scroll += 1;
                 }
+            }
+        }
+    }
+
+    fn page_up(&mut self, page_size: usize) {
+        match self.focus {
+            Panel::Clients => {
+                self.client_scroll = self.client_scroll.saturating_sub(page_size);
+            }
+            Panel::Devices => {
+                self.device_scroll = self.device_scroll.saturating_sub(page_size);
+            }
+        }
+    }
+
+    fn page_down(&mut self, max_clients: usize, max_devices: usize, page_size: usize) {
+        match self.focus {
+            Panel::Clients => {
+                let max = max_clients.saturating_sub(1);
+                self.client_scroll = (self.client_scroll + page_size).min(max);
+            }
+            Panel::Devices => {
+                let max = max_devices.saturating_sub(1);
+                self.device_scroll = (self.device_scroll + page_size).min(max);
             }
         }
     }
@@ -302,6 +368,47 @@ async fn legacy_get<T: serde::de::DeserializeOwned>(
     Ok(legacy.data)
 }
 
+async fn legacy_put(
+    http: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<(), String> {
+    let url = format!("{base_url}/proxy/network/api/s/default{path}");
+    let resp = http
+        .put(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("API error ({status}): {body}"));
+    }
+    Ok(())
+}
+
+async fn find_client_id(
+    http: &reqwest::Client,
+    base_url: &str,
+    mac: &str,
+) -> Result<String, String> {
+    let normalized = crate::api::normalize_mac(mac);
+    let clients: Vec<LegacyClient> = legacy_get(http, base_url, "/stat/sta")
+        .await
+        .map_err(|e| e.to_string())?;
+    clients
+        .into_iter()
+        .find(|c| {
+            c.mac
+                .as_deref()
+                .is_some_and(|m| crate::api::normalize_mac(m) == normalized)
+        })
+        .map(|c| c.id)
+        .ok_or_else(|| format!("Client {mac} not found"))
+}
+
 async fn legacy_post_cmd(
     http: &reqwest::Client,
     base_url: &str,
@@ -360,6 +467,28 @@ async fn execute_client_action(
             )
             .await?;
             Ok(format!("Unblocked {formatted}"))
+        }
+        ClientAction::LockToAp { mac, ap_mac } => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            let ap_formatted = crate::api::format_mac(&crate::api::normalize_mac(&ap_mac));
+            let client_id = find_client_id(http, base_url, &mac).await?;
+            let payload = serde_json::json!({
+                "mac": formatted,
+                "fixed_ap_enabled": true,
+                "fixed_ap_mac": ap_formatted,
+            });
+            legacy_put(http, base_url, &format!("/rest/user/{client_id}"), &payload).await?;
+            Ok(format!("Locked to AP {ap_formatted}"))
+        }
+        ClientAction::UnlockFromAp(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            let client_id = find_client_id(http, base_url, &mac).await?;
+            let payload = serde_json::json!({
+                "mac": formatted,
+                "fixed_ap_enabled": false,
+            });
+            legacy_put(http, base_url, &format!("/rest/user/{client_id}"), &payload).await?;
+            Ok("Unlocked from AP".to_string())
         }
     }
 }
@@ -496,9 +625,16 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         String::new()
     };
 
+    let pos_info = if !clients.is_empty() {
+        format!(" [{}/{}]", state.client_scroll + 1, clients.len())
+    } else {
+        String::new()
+    };
+
     let title = format!(
-        " Clients ({}) │ sort: {}{} ",
+        " Clients ({}){} │ sort: {}{} ",
         clients.len(),
+        pos_info,
         state.sort.label(),
         filter_info,
     );
@@ -521,6 +657,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let header = Row::new(vec![
         Cell::from("Name").style(header_style),
         Cell::from("Connection").style(header_style),
+        Cell::from("Signal").style(header_style),
         Cell::from("IP").style(header_style),
         Cell::from("Total").style(header_style),
     ])
@@ -528,17 +665,6 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     // Calculate visible area (subtract borders + header)
     let inner_height = area.height.saturating_sub(4) as usize;
-
-    // Build device MAC -> name lookup for AP/switch resolution
-    let device_names: HashMap<String, &str> = state
-        .devices
-        .iter()
-        .filter_map(|d| {
-            let mac = crate::api::normalize_mac(d.mac.as_deref()?);
-            let name = d.name.as_deref()?;
-            Some((mac, name))
-        })
-        .collect();
 
     let rows: Vec<Row> = clients
         .iter()
@@ -583,26 +709,28 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::White)
             };
 
-            // Connection info: AP name + signal for wireless, "Wired" for wired
-            let (conn_str, conn_color) = if c.is_wired {
-                ("Wired".to_string(), DIM_COLOR)
+            // Connection info: AP name for wireless, "Wired" for wired
+            // Signal bars in separate column for alignment
+            let (conn_str, conn_color, sig_str, sig_color) = if c.is_wired {
+                ("Wired".to_string(), DIM_COLOR, String::new(), DIM_COLOR)
             } else {
                 let ap_name = c
                     .ap_mac
                     .as_deref()
-                    .and_then(|m| device_names.get(&crate::api::normalize_mac(m)).copied());
-                let signal_info = c
+                    .and_then(|m| state.resolve_device_name(m));
+                let label = ap_name.unwrap_or(c.ssid.as_deref().unwrap_or("?"));
+                let sig = c
                     .signal
-                    .map(|s| format!(" {}", signal_bar(s)))
+                    .map(|s| signal_bar(s).to_string())
                     .unwrap_or_default();
                 let color = c.signal.map(signal_color).unwrap_or(DIM_COLOR);
-                let label = ap_name.unwrap_or(c.ssid.as_deref().unwrap_or("?"));
-                (format!("{label}{signal_info}"), color)
+                (label.to_string(), color, sig, color)
             };
 
             Row::new(vec![
                 Cell::from(name).style(name_style),
                 Cell::from(conn_str).style(Style::default().fg(conn_color)),
+                Cell::from(sig_str).style(Style::default().fg(sig_color)),
                 Cell::from(c.ip.as_deref().unwrap_or("-").to_string())
                     .style(Style::default().fg(DIM_COLOR)),
                 Cell::from(format_bytes(total_bytes)).style(total_style),
@@ -613,7 +741,8 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     let widths = [
         Constraint::Min(20),
-        Constraint::Length(22),
+        Constraint::Length(16),
+        Constraint::Length(6),
         Constraint::Length(16),
         Constraint::Length(10),
     ];
@@ -644,7 +773,12 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let is_focused = state.focus == Panel::Devices;
     let border_color = if is_focused { ACCENT_COLOR } else { DIM_COLOR };
 
-    let title = format!(" Devices ({}) ", state.devices.len());
+    let dev_pos = if !state.devices.is_empty() {
+        format!(" [{}/{}]", state.device_scroll + 1, state.devices.len())
+    } else {
+        String::new()
+    };
+    let title = format!(" Devices ({}){} ", state.devices.len(), dev_pos);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -781,24 +915,66 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Span::raw("")
     };
 
-    let line = if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
-        let block_label = state
-            .sorted_clients()
+    let line = if let Some(Overlay::Confirm { .. }) = &state.overlay {
+        Line::from(vec![
+            Span::styled(
+                " y",
+                Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" confirm ", dim),
+            Span::styled("n/esc", key_style),
+            Span::styled(" cancel", dim),
+            error_span,
+            status_span,
+        ])
+    } else if let Some(Overlay::ApPicker { .. }) = &state.overlay {
+        Line::from(vec![
+            Span::styled(" ↑↓", key_style),
+            Span::styled(" select ", dim),
+            Span::styled("enter", key_style),
+            Span::styled(" lock ", dim),
+            Span::styled("esc", key_style),
+            Span::styled(" back ", dim),
+            Span::styled("q", key_style),
+            Span::styled(" quit", dim),
+            error_span,
+            status_span,
+        ])
+    } else if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
+        let clients = state.sorted_clients();
+        let block_label = clients
             .get(*idx)
             .map(|c| if c.blocked { " unblock " } else { " block " })
             .unwrap_or(" block ");
-        Line::from(vec![
+        let is_wireless = clients.get(*idx).is_some_and(|c| !c.is_wired);
+        let ap_label = clients
+            .get(*idx)
+            .filter(|c| !c.is_wired)
+            .map(|c| {
+                if c.fixed_ap_enabled {
+                    " unlock AP "
+                } else {
+                    " lock to AP "
+                }
+            })
+            .unwrap_or("");
+        let mut spans = vec![
             Span::styled(" esc", key_style),
             Span::styled(" back ", dim),
             Span::styled("k", key_style),
             Span::styled(" kick ", dim),
             Span::styled("b", key_style),
             Span::styled(block_label, dim),
-            Span::styled("q", key_style),
-            Span::styled(" quit", dim),
-            error_span,
-            status_span,
-        ])
+        ];
+        if is_wireless {
+            spans.push(Span::styled("a", key_style));
+            spans.push(Span::styled(ap_label, dim));
+        }
+        spans.push(Span::styled("q", key_style));
+        spans.push(Span::styled(" quit", dim));
+        spans.push(error_span);
+        spans.push(status_span);
+        Line::from(spans)
     } else if let Some(Overlay::DeviceDetail(idx)) = &state.overlay {
         let locate_label = state
             .devices
@@ -888,6 +1064,20 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
         None => return,
     };
 
+    // Handle ApPicker and Confirm separately (different layout)
+    if let Overlay::ApPicker {
+        client_idx,
+        ap_cursor,
+    } = overlay
+    {
+        draw_ap_picker(f, state, *client_idx, *ap_cursor);
+        return;
+    }
+    if let Overlay::Confirm { message, .. } = overlay {
+        draw_confirm(f, message);
+        return;
+    }
+
     // Count rows to size the overlay
     let row_count = match overlay {
         Overlay::ClientDetail(idx) => {
@@ -916,6 +1106,7 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
                 if c.ap_mac.is_some() {
                     n += 1;
                 }
+                n += 1; // AP Lock row
             }
             n
         }
@@ -936,6 +1127,7 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
             }
             n
         }
+        Overlay::ApPicker { .. } | Overlay::Confirm { .. } => 0,
     };
 
     // 2 borders + 1 header row gap + data rows
@@ -991,8 +1183,22 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
                     rows.push(detail_row("SSID", ssid));
                 }
                 if let Some(ref ap) = c.ap_mac {
-                    rows.push(detail_row("AP", &crate::api::format_mac(ap)));
+                    let ap_label = state.resolve_device_name(ap).unwrap_or(ap.as_str());
+                    rows.push(detail_row("AP", ap_label));
                 }
+                // AP Lock status
+                let lock_value = if c.fixed_ap_enabled {
+                    let ap_name = c.fixed_ap_mac.as_deref().map(|m| {
+                        state
+                            .resolve_device_name(m)
+                            .map(String::from)
+                            .unwrap_or_else(|| crate::api::format_mac(m))
+                    });
+                    format!("🔒 {}", ap_name.unwrap_or_else(|| "Yes".into()))
+                } else {
+                    "Off  (a to lock)".into()
+                };
+                rows.push(detail_row("AP Lock", &lock_value));
             }
 
             let widths = [Constraint::Length(10), Constraint::Min(20)];
@@ -1046,6 +1252,7 @@ fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
             let table = Table::new(rows, widths).block(block);
             f.render_widget(table, area);
         }
+        Overlay::ApPicker { .. } | Overlay::Confirm { .. } => {}
     }
 }
 
@@ -1058,6 +1265,117 @@ fn detail_row(field: &str, value: &str) -> Row<'static> {
         ),
         Cell::from(value.to_string()).style(Style::default().fg(Color::White)),
     ])
+}
+
+fn draw_confirm(f: &mut ratatui::Frame, message: &str) {
+    let width = (message.len() as u16 + 6).min(f.area().width.saturating_sub(4));
+    let height = 5_u16;
+    let area = centered_rect_fixed(width, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(WARN_COLOR))
+        .style(Style::default().bg(Color::Black))
+        .title(Span::styled(
+            " Confirm ",
+            Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+        ));
+
+    let text = vec![
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "y",
+                Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" confirm  ", Style::default().fg(DIM_COLOR)),
+            Span::styled(
+                "n/esc",
+                Style::default()
+                    .fg(ACCENT_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel", Style::default().fg(DIM_COLOR)),
+        ]),
+    ];
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center);
+    f.render_widget(paragraph, area);
+}
+
+fn draw_ap_picker(f: &mut ratatui::Frame, state: &AppState, client_idx: usize, ap_cursor: usize) {
+    let clients = state.sorted_clients();
+    let client = match clients.get(client_idx) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let aps = state.ap_devices();
+    if aps.is_empty() {
+        return;
+    }
+
+    // Determine which AP the client is currently connected to
+    let current_ap_mac = client.ap_mac.as_deref().map(crate::api::normalize_mac);
+
+    let client_name = client.display_name();
+    let title = format!(" Lock {client_name} to AP ");
+    let row_count = aps.len();
+    let height = (row_count as u16 + 3).min(f.area().height.saturating_sub(4));
+    let width = 50_u16.min(f.area().width.saturating_sub(4));
+    let area = centered_rect_fixed(width, height, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_COLOR))
+        .style(Style::default().bg(Color::Black))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let rows: Vec<Row> =
+        aps.iter()
+            .enumerate()
+            .map(|(i, ap)| {
+                let name = ap.name.as_deref().unwrap_or("-");
+                let mac = ap
+                    .mac
+                    .as_deref()
+                    .map(crate::api::format_mac)
+                    .unwrap_or_else(|| "-".into());
+                let is_selected = i == ap_cursor;
+                let is_current = ap.mac.as_deref().is_some_and(|m| {
+                    current_ap_mac.as_deref() == Some(&crate::api::normalize_mac(m))
+                });
+                let style = if is_selected {
+                    Style::default().bg(SELECTED_BG).fg(Color::White)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if is_selected { "▸ " } else { "  " };
+                let suffix = if is_current { " ◂ connected" } else { "" };
+                Row::new(vec![
+                    Cell::from(format!("{prefix}{name}{suffix}")).style(style),
+                    Cell::from(mac).style(Style::default().fg(DIM_COLOR)),
+                ])
+            })
+            .collect();
+
+    let widths = [Constraint::Min(24), Constraint::Length(18)];
+    let table = Table::new(rows, widths).block(block);
+    f.render_widget(table, area);
 }
 
 fn draw(f: &mut ratatui::Frame, state: &AppState) {
@@ -1159,6 +1477,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.health = health;
                     state.clients = clients;
                     state.devices = devices;
+                    state.rebuild_device_names();
                     state.last_error = None;
                 }
                 Err(e) => {
@@ -1222,30 +1541,45 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
 
             // Overlay is open: Esc closes it, q quits, action keys
             if state.overlay.is_some() {
-                match key.code {
-                    KeyCode::Esc => {
-                        state.overlay = None;
-                    }
-                    KeyCode::Char('q') => break Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Ok(());
-                    }
-                    KeyCode::Char('k') | KeyCode::Char('b') => {
-                        if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
+                // ApPicker has its own key handling
+                if let Some(Overlay::ApPicker {
+                    client_idx,
+                    ap_cursor,
+                }) = &state.overlay
+                {
+                    let client_idx = *client_idx;
+                    let ap_cursor = *ap_cursor;
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.overlay = Some(Overlay::ClientDetail(client_idx));
+                        }
+                        KeyCode::Char('q') => break Ok(()),
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let new_cursor = ap_cursor.saturating_sub(1);
+                            state.overlay = Some(Overlay::ApPicker {
+                                client_idx,
+                                ap_cursor: new_cursor,
+                            });
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let max = state.ap_devices().len().saturating_sub(1);
+                            let new_cursor = (ap_cursor + 1).min(max);
+                            state.overlay = Some(Overlay::ApPicker {
+                                client_idx,
+                                ap_cursor: new_cursor,
+                            });
+                        }
+                        KeyCode::Enter => {
                             let clients = state.sorted_clients();
-                            if let Some(c) = clients.get(*idx)
+                            let aps = state.ap_devices();
+                            if let Some(c) = clients.get(client_idx)
                                 && let Some(ref mac) = c.mac
+                                && let Some(ap) = aps.get(ap_cursor)
+                                && let Some(ref ap_mac) = ap.mac
                             {
-                                let action = match key.code {
-                                    KeyCode::Char('k') => ClientAction::Kick(mac.clone()),
-                                    KeyCode::Char('b') => {
-                                        if c.blocked {
-                                            ClientAction::Unblock(mac.clone())
-                                        } else {
-                                            ClientAction::Block(mac.clone())
-                                        }
-                                    }
-                                    _ => unreachable!(),
+                                let action = ClientAction::LockToAp {
+                                    mac: mac.clone(),
+                                    ap_mac: ap_mac.clone(),
                                 };
                                 let http = api.clone_http();
                                 let base_url = api.base_url().to_string();
@@ -1258,34 +1592,144 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                                 state.overlay = None;
                             }
                         }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Confirm dialog handling
+                if matches!(&state.overlay, Some(Overlay::Confirm { .. })) {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            // Take ownership by replacing overlay
+                            let overlay = state.overlay.take();
+                            if let Some(Overlay::Confirm { action, .. }) = overlay {
+                                let http = api.clone_http();
+                                let base_url = api.base_url().to_string();
+                                let action_tx = action_tx.clone();
+                                match action {
+                                    PendingAction::Client(ca) => {
+                                        tokio::spawn(async move {
+                                            let result =
+                                                execute_client_action(&http, &base_url, ca).await;
+                                            let _ = action_tx.send(result).await;
+                                        });
+                                    }
+                                    PendingAction::Device(da) => {
+                                        tokio::spawn(async move {
+                                            let result =
+                                                execute_device_action(&http, &base_url, da).await;
+                                            let _ = action_tx.send(result).await;
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            state.overlay = None;
+                        }
+                        KeyCode::Char('q') => break Ok(()),
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                match key.code {
+                    KeyCode::Esc => {
+                        state.overlay = None;
+                    }
+                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Ok(());
+                    }
+                    KeyCode::Char('k') | KeyCode::Char('b') | KeyCode::Char('a') => {
+                        if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
+                            let clients = state.sorted_clients();
+                            if let Some(c) = clients.get(*idx)
+                                && let Some(ref mac) = c.mac
+                            {
+                                let name = c.display_name().to_string();
+                                match key.code {
+                                    KeyCode::Char('a') => {
+                                        if !c.is_wired {
+                                            if c.fixed_ap_enabled {
+                                                let action =
+                                                    ClientAction::UnlockFromAp(mac.clone());
+                                                state.overlay = Some(Overlay::Confirm {
+                                                    message: format!("Unlock {name} from AP?"),
+                                                    action: PendingAction::Client(action),
+                                                });
+                                            } else {
+                                                let idx = *idx;
+                                                state.overlay = Some(Overlay::ApPicker {
+                                                    client_idx: idx,
+                                                    ap_cursor: 0,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char('k') => {
+                                        let action = ClientAction::Kick(mac.clone());
+                                        state.overlay = Some(Overlay::Confirm {
+                                            message: format!("Kick {name}?"),
+                                            action: PendingAction::Client(action),
+                                        });
+                                    }
+                                    KeyCode::Char('b') => {
+                                        let (action, verb) = if c.blocked {
+                                            (ClientAction::Unblock(mac.clone()), "Unblock")
+                                        } else {
+                                            (ClientAction::Block(mac.clone()), "Block")
+                                        };
+                                        state.overlay = Some(Overlay::Confirm {
+                                            message: format!("{verb} {name}?"),
+                                            action: PendingAction::Client(action),
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
                     KeyCode::Char('r') | KeyCode::Char('u') | KeyCode::Char('l') => {
                         if let Some(Overlay::DeviceDetail(idx)) = &state.overlay
                             && let Some(d) = state.devices.get(*idx)
                             && let Some(ref mac) = d.mac
                         {
-                            let action = match key.code {
-                                KeyCode::Char('r') => DeviceAction::Restart(mac.clone()),
-                                KeyCode::Char('u') => DeviceAction::Upgrade(mac.clone()),
+                            let name = d.name.as_deref().unwrap_or("device").to_string();
+                            match key.code {
+                                KeyCode::Char('r') => {
+                                    let action = DeviceAction::Restart(mac.clone());
+                                    state.overlay = Some(Overlay::Confirm {
+                                        message: format!("Restart {name}?"),
+                                        action: PendingAction::Device(action),
+                                    });
+                                }
+                                KeyCode::Char('u') => {
+                                    let action = DeviceAction::Upgrade(mac.clone());
+                                    state.overlay = Some(Overlay::Confirm {
+                                        message: format!("Upgrade firmware on {name}?"),
+                                        action: PendingAction::Device(action),
+                                    });
+                                }
                                 KeyCode::Char('l') => {
+                                    // Locate is safe/reversible, no confirmation needed
                                     let normalized = crate::api::normalize_mac(mac);
                                     let currently_locating =
                                         state.locating.get(&normalized).copied().unwrap_or(false);
                                     state.locating.insert(normalized, !currently_locating);
-                                    DeviceAction::Locate(mac.clone(), !currently_locating)
+                                    let action =
+                                        DeviceAction::Locate(mac.clone(), !currently_locating);
+                                    let http = api.clone_http();
+                                    let base_url = api.base_url().to_string();
+                                    let action_tx = action_tx.clone();
+                                    tokio::spawn(async move {
+                                        let result =
+                                            execute_device_action(&http, &base_url, action).await;
+                                        let _ = action_tx.send(result).await;
+                                    });
                                 }
-                                _ => unreachable!(),
-                            };
-                            let close_overlay = !matches!(key.code, KeyCode::Char('l'));
-                            let http = api.clone_http();
-                            let base_url = api.base_url().to_string();
-                            let action_tx = action_tx.clone();
-                            tokio::spawn(async move {
-                                let result = execute_device_action(&http, &base_url, action).await;
-                                let _ = action_tx.send(result).await;
-                            });
-                            if close_overlay {
-                                state.overlay = None;
+                                _ => {}
                             }
                         }
                     }
@@ -1339,6 +1783,28 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     let max_d = state.devices.len();
                     state.scroll_down(max_c, max_d);
                 }
+                KeyCode::PageUp => {
+                    state.page_up(10);
+                }
+                KeyCode::PageDown => {
+                    let max_c = state.sorted_clients().len();
+                    let max_d = state.devices.len();
+                    state.page_down(max_c, max_d, 10);
+                }
+                KeyCode::Home => match state.focus {
+                    Panel::Clients => state.client_scroll = 0,
+                    Panel::Devices => state.device_scroll = 0,
+                },
+                KeyCode::End => match state.focus {
+                    Panel::Clients => {
+                        let max = state.sorted_clients().len().saturating_sub(1);
+                        state.client_scroll = max;
+                    }
+                    Panel::Devices => {
+                        let max = state.devices.len().saturating_sub(1);
+                        state.device_scroll = max;
+                    }
+                },
                 _ => {}
             }
         }
