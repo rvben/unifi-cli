@@ -69,8 +69,9 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
-    /// Live dashboard with real-time bandwidth and device status
-    Top {
+    /// Interactive TUI dashboard with real-time bandwidth and device status
+    #[command(alias = "top")]
+    Tui {
         /// Refresh interval in seconds
         #[arg(short = 'i', long, default_value = "2")]
         interval: u64,
@@ -756,12 +757,22 @@ async fn main() {
     let (config_host, config_api_key) = load_config(cli.profile.as_deref());
 
     let host = cli.host.or(config_host).unwrap_or_else(|| {
-        eprintln!("Error: No host specified. Set UNIFI_HOST or use --host");
+        eprintln!("Error: No host specified.");
+        eprintln!();
+        eprintln!("  Run 'unifi config init' for interactive setup, or:");
+        eprintln!("  - Set UNIFI_HOST environment variable");
+        eprintln!("  - Use --host flag");
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
     let api_key = cli.api_key.or(config_api_key).unwrap_or_else(|| {
-        eprintln!("Error: No API key specified. Set UNIFI_API_KEY or use --api-key");
+        eprintln!("Error: No API key specified.");
+        eprintln!();
+        eprintln!("  Run 'unifi config init' for interactive setup, or:");
+        eprintln!("  - Set UNIFI_API_KEY environment variable");
+        eprintln!("  - Use --api-key flag");
+        eprintln!();
+        eprintln!("  Generate an API key in UniFi Settings > API");
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
@@ -831,7 +842,7 @@ async fn main() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
-        Command::Top { interval } => unifi_cli::tui::run(&client, interval).await,
+        Command::Tui { interval } => unifi_cli::tui::run(&client, interval).await,
         Command::Config(ConfigCommand::Check) => {
             run_config_check(&client).await;
             return;
@@ -1718,20 +1729,29 @@ api_key = "work_key"
     }
 
     #[test]
-    fn cli_top_default_interval() {
-        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "top"]);
+    fn cli_tui_default_interval() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "tui"]);
         match cli.command {
-            Command::Top { interval } => assert_eq!(interval, 2),
-            _ => panic!("expected Top"),
+            Command::Tui { interval } => assert_eq!(interval, 2),
+            _ => panic!("expected Tui"),
         }
     }
 
     #[test]
-    fn cli_top_custom_interval() {
-        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "top", "-i", "5"]);
+    fn cli_tui_custom_interval() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "tui", "-i", "5"]);
         match cli.command {
-            Command::Top { interval } => assert_eq!(interval, 5),
-            _ => panic!("expected Top"),
+            Command::Tui { interval } => assert_eq!(interval, 5),
+            _ => panic!("expected Tui"),
+        }
+    }
+
+    #[test]
+    fn cli_top_alias_for_tui() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "top"]);
+        match cli.command {
+            Command::Tui { interval } => assert_eq!(interval, 2),
+            _ => panic!("expected Tui via top alias"),
         }
     }
 
