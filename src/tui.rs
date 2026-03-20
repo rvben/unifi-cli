@@ -595,12 +595,12 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     let widths = [
         Constraint::Min(18),
-        Constraint::Length(14),
-        Constraint::Length(16),
-        Constraint::Length(16),
-        Constraint::Length(8),
-        Constraint::Length(14),
         Constraint::Length(10),
+        Constraint::Length(16),
+        Constraint::Length(12),
+        Constraint::Length(8),
+        Constraint::Length(16),
+        Constraint::Length(12),
     ];
 
     if state.devices.is_empty() {
@@ -701,13 +701,15 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 }
 
 fn draw(f: &mut ratatui::Frame, state: &AppState) {
+    // Devices: header row + border top/bottom + 1 row per device, minimum 5
+    let device_rows = (state.devices.len() + 3).max(5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // header
-            Constraint::Percentage(55), // clients
-            Constraint::Percentage(45), // devices
-            Constraint::Length(1),      // footer
+            Constraint::Length(3),           // header
+            Constraint::Min(10),             // clients (takes remaining)
+            Constraint::Length(device_rows), // devices (sized to content)
+            Constraint::Length(1),           // footer
         ])
         .split(f.area());
 
