@@ -386,7 +386,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
             let rx_rate = rate.map_or(0.0, |r| r.rx_rate);
             let total_rate = tx_rate + rx_rate;
             let total_bytes = c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0);
-            let is_idle = total_rate < 1.0 && total_bytes == 0;
+            let is_idle = total_rate < 1.0;
 
             let rate_color = if total_rate >= 1_048_576.0 {
                 Color::Green
@@ -432,11 +432,10 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                     .add_modifier(Modifier::BOLD)
             };
 
-            // Combined rate string
             let rate_str = if total_rate >= 1.0 {
                 format!("▲{} ▼{}", format_rate(tx_rate), format_rate(rx_rate))
             } else {
-                "—".into()
+                String::new()
             };
 
             let is_selected = is_focused && i == state.client_scroll;
@@ -600,7 +599,7 @@ fn draw_devices(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Constraint::Length(12),
         Constraint::Length(8),
         Constraint::Length(16),
-        Constraint::Length(12),
+        Constraint::Length(14),
     ];
 
     if state.devices.is_empty() {
@@ -701,8 +700,8 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 }
 
 fn draw(f: &mut ratatui::Frame, state: &AppState) {
-    // Devices: header row + border top/bottom + 1 row per device, minimum 5
-    let device_rows = (state.devices.len() + 3).max(5) as u16;
+    // Devices: 2 borders + 1 header + 1 header gap + data rows, minimum 5
+    let device_rows = (state.devices.len() + 4).max(5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
