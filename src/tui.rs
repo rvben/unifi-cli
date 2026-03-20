@@ -99,7 +99,8 @@ struct AppState {
     device_names: HashMap<String, String>, // normalized MAC -> device name
     focus: Panel,
     sort: SortMode,
-    client_scroll: usize,
+    client_cursor: usize,
+    client_offset: usize,
     device_scroll: usize,
     filter: String,
     filtering: bool,
@@ -121,7 +122,8 @@ impl AppState {
             device_names: HashMap::new(),
             focus: Panel::Clients,
             sort: SortMode::Bandwidth,
-            client_scroll: 0,
+            client_cursor: 0,
+            client_offset: 0,
             device_scroll: 0,
             filter: String::new(),
             filtering: false,
@@ -197,10 +199,10 @@ impl AppState {
             .collect()
     }
 
-    fn scroll_up(&mut self) {
+    fn cursor_up(&mut self) {
         match self.focus {
             Panel::Clients => {
-                self.client_scroll = self.client_scroll.saturating_sub(1);
+                self.client_cursor = self.client_cursor.saturating_sub(1);
             }
             Panel::Devices => {
                 self.device_scroll = self.device_scroll.saturating_sub(1);
@@ -208,11 +210,11 @@ impl AppState {
         }
     }
 
-    fn scroll_down(&mut self, max_clients: usize, max_devices: usize) {
+    fn cursor_down(&mut self, max_clients: usize, max_devices: usize) {
         match self.focus {
             Panel::Clients => {
-                if self.client_scroll + 1 < max_clients {
-                    self.client_scroll += 1;
+                if self.client_cursor + 1 < max_clients {
+                    self.client_cursor += 1;
                 }
             }
             Panel::Devices => {
@@ -226,7 +228,7 @@ impl AppState {
     fn page_up(&mut self, page_size: usize) {
         match self.focus {
             Panel::Clients => {
-                self.client_scroll = self.client_scroll.saturating_sub(page_size);
+                self.client_cursor = self.client_cursor.saturating_sub(page_size);
             }
             Panel::Devices => {
                 self.device_scroll = self.device_scroll.saturating_sub(page_size);
@@ -238,12 +240,24 @@ impl AppState {
         match self.focus {
             Panel::Clients => {
                 let max = max_clients.saturating_sub(1);
-                self.client_scroll = (self.client_scroll + page_size).min(max);
+                self.client_cursor = (self.client_cursor + page_size).min(max);
             }
             Panel::Devices => {
                 let max = max_devices.saturating_sub(1);
                 self.device_scroll = (self.device_scroll + page_size).min(max);
             }
+        }
+    }
+
+    /// Adjust client_offset so that client_cursor is visible within visible_height rows
+    fn ensure_client_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        if self.client_cursor < self.client_offset {
+            self.client_offset = self.client_cursor;
+        } else if self.client_cursor >= self.client_offset + visible_height {
+            self.client_offset = self.client_cursor - visible_height + 1;
         }
     }
 }
@@ -626,7 +640,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     };
 
     let pos_info = if !clients.is_empty() {
-        format!(" [{}/{}]", state.client_scroll + 1, clients.len())
+        format!(" [{}/{}]", state.client_cursor + 1, clients.len())
     } else {
         String::new()
     };
@@ -669,7 +683,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let rows: Vec<Row> = clients
         .iter()
         .enumerate()
-        .skip(state.client_scroll)
+        .skip(state.client_offset)
         .take(inner_height)
         .map(|(i, c)| {
             let total_bytes = c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0);
@@ -696,7 +710,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                     .add_modifier(Modifier::BOLD)
             };
 
-            let is_selected = is_focused && i == state.client_scroll;
+            let is_selected = is_focused && i == state.client_cursor;
             let row_style = if is_selected {
                 Style::default().bg(SELECTED_BG)
             } else {
@@ -1482,6 +1496,17 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
             state.status_msg = None;
         }
 
+        // Adjust viewport so cursor stays visible
+        if !state.loading {
+            let term_height = terminal.size()?.height;
+            let device_rows = (state.devices.len() + 4).max(5) as u16;
+            // client area = total - header(3) - devices - footer(1), minus borders+header(4)
+            let client_visible = term_height
+                .saturating_sub(3 + device_rows + 1)
+                .saturating_sub(4) as usize;
+            state.ensure_client_visible(client_visible);
+        }
+
         // Draw
         terminal.draw(|f| draw(f, &state))?;
 
@@ -1507,7 +1532,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     }
                     KeyCode::Char(c) => {
                         state.filter.push(c);
-                        state.client_scroll = 0;
+                        state.client_cursor = 0;
                     }
                     _ => {}
                 }
@@ -1722,7 +1747,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                         Panel::Clients => {
                             let clients = state.sorted_clients();
                             if !clients.is_empty() {
-                                Some(Overlay::ClientDetail(state.client_scroll))
+                                Some(Overlay::ClientDetail(state.client_cursor))
                             } else {
                                 None
                             }
@@ -1751,12 +1776,12 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.filter.clear();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    state.scroll_up();
+                    state.cursor_up();
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     let max_c = state.sorted_clients().len();
                     let max_d = state.devices.len();
-                    state.scroll_down(max_c, max_d);
+                    state.cursor_down(max_c, max_d);
                 }
                 KeyCode::PageUp => {
                     state.page_up(10);
@@ -1767,13 +1792,13 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.page_down(max_c, max_d, 10);
                 }
                 KeyCode::Home => match state.focus {
-                    Panel::Clients => state.client_scroll = 0,
+                    Panel::Clients => state.client_cursor = 0,
                     Panel::Devices => state.device_scroll = 0,
                 },
                 KeyCode::End => match state.focus {
                     Panel::Clients => {
                         let max = state.sorted_clients().len().saturating_sub(1);
-                        state.client_scroll = max;
+                        state.client_cursor = max;
                     }
                     Panel::Devices => {
                         let max = state.devices.len().saturating_sub(1);
@@ -2203,18 +2228,18 @@ mod tests {
     #[test]
     fn app_state_scroll_bounds() {
         let mut state = AppState::new();
-        state.scroll_up();
-        assert_eq!(state.client_scroll, 0);
+        state.cursor_up();
+        assert_eq!(state.client_cursor, 0);
 
-        state.scroll_down(3, 2);
-        assert_eq!(state.client_scroll, 1);
-        state.scroll_down(3, 2);
-        assert_eq!(state.client_scroll, 2);
-        state.scroll_down(3, 2);
-        assert_eq!(state.client_scroll, 2); // capped
+        state.cursor_down(3, 2);
+        assert_eq!(state.client_cursor, 1);
+        state.cursor_down(3, 2);
+        assert_eq!(state.client_cursor, 2);
+        state.cursor_down(3, 2);
+        assert_eq!(state.client_cursor, 2); // capped
 
-        state.scroll_up();
-        assert_eq!(state.client_scroll, 1);
+        state.cursor_up();
+        assert_eq!(state.client_cursor, 1);
     }
 
     #[test]
