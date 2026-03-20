@@ -13,7 +13,7 @@ pub struct PaginatedResponse<T> {
     pub data: Vec<T>,
 }
 
-// Legacy API response wrapper
+// Legacy API response wrapper (pub for standalone fetch in TUI)
 #[derive(Debug, Deserialize)]
 pub struct LegacyResponse<T> {
     pub meta: LegacyMeta,
@@ -66,6 +66,8 @@ pub struct LegacyClient {
     pub name: Option<String>,
     #[serde(default)]
     pub is_wired: bool,
+    #[serde(default)]
+    pub blocked: bool,
     pub uptime: Option<u64>,
     pub tx_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,

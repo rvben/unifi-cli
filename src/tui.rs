@@ -12,7 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table};
 
 use crate::api::{
     ApiError, HealthSubsystem, HostSystem, LegacyClient, LegacyDevice, SysInfo, UnifiClient,
@@ -58,6 +58,17 @@ impl SortMode {
     }
 }
 
+enum Overlay {
+    ClientDetail(usize), // index into sorted_clients
+    DeviceDetail(usize), // index into devices
+}
+
+enum ClientAction {
+    Kick(String),    // MAC
+    Block(String),   // MAC
+    Unblock(String), // MAC
+}
+
 struct AppState {
     sysinfo: Option<SysInfo>,
     host_system: Option<HostSystem>,
@@ -70,7 +81,10 @@ struct AppState {
     device_scroll: usize,
     filter: String,
     filtering: bool,
+    overlay: Option<Overlay>,
+    loading: bool,
     last_error: Option<String>,
+    status_msg: Option<(String, Instant)>,
 }
 
 impl AppState {
@@ -87,7 +101,10 @@ impl AppState {
             device_scroll: 0,
             filter: String::new(),
             filtering: false,
+            overlay: None,
+            loading: true,
             last_error: None,
+            status_msg: None,
         }
     }
 
@@ -177,6 +194,25 @@ fn format_rate(bytes_per_sec: f64) -> String {
     }
 }
 
+fn signal_bar(dbm: i32) -> &'static str {
+    match dbm {
+        -50..=0 => "▂▄▆█",
+        -60..=-51 => "▂▄▆░",
+        -70..=-61 => "▂▄░░",
+        -80..=-71 => "▂░░░",
+        _ => "░░░░",
+    }
+}
+
+fn signal_color(dbm: i32) -> Color {
+    match dbm {
+        -50..=0 => ONLINE_COLOR,
+        -60..=-51 => ONLINE_COLOR,
+        -70..=-61 => WARN_COLOR,
+        _ => OFFLINE_COLOR,
+    }
+}
+
 fn status_color(status: &str) -> Color {
     match status {
         "ok" => ONLINE_COLOR,
@@ -196,8 +232,9 @@ fn device_state_str(state: Option<u32>) -> (&'static str, Color) {
     }
 }
 
-async fn fetch_data(
-    api: &UnifiClient,
+async fn fetch_data_standalone(
+    http: &reqwest::Client,
+    base_url: &str,
 ) -> Result<
     (
         Option<SysInfo>,
@@ -208,12 +245,115 @@ async fn fetch_data(
     ),
     ApiError,
 > {
-    let sysinfo = api.get_sysinfo().await.ok();
-    let host_system = api.get_host_system().await.ok();
-    let health = api.get_health().await.unwrap_or_default();
-    let clients = api.list_clients_legacy().await?;
-    let devices: Vec<LegacyDevice> = api.get_legacy_devices().await.unwrap_or_default();
+    let sysinfo: Option<SysInfo> = legacy_get(http, base_url, "/stat/sysinfo")
+        .await
+        .ok()
+        .and_then(|mut v: Vec<SysInfo>| v.pop());
+
+    let host_system: Option<HostSystem> = async {
+        let url = format!("{base_url}/api/system");
+        let resp = http.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.json::<HostSystem>().await.ok()
+    }
+    .await;
+
+    let health: Vec<HealthSubsystem> = legacy_get(http, base_url, "/stat/health")
+        .await
+        .unwrap_or_default();
+    let clients: Vec<LegacyClient> = legacy_get(http, base_url, "/stat/sta").await?;
+    let devices: Vec<LegacyDevice> = legacy_get(http, base_url, "/stat/device")
+        .await
+        .unwrap_or_default();
+
     Ok((sysinfo, host_system, health, clients, devices))
+}
+
+async fn legacy_get<T: serde::de::DeserializeOwned>(
+    http: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+) -> Result<Vec<T>, ApiError> {
+    use crate::api::types::LegacyResponse;
+    let url = format!("{base_url}/proxy/network/api/s/default{path}");
+    let resp = http.get(&url).send().await?;
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(UnifiClient::error_for_status_pub(status, body));
+    }
+    let legacy: LegacyResponse<T> = resp.json().await?;
+    if legacy.meta.rc != "ok" {
+        return Err(ApiError::Api {
+            status: 200,
+            message: legacy.meta.msg.unwrap_or_else(|| "unknown error".into()),
+        });
+    }
+    Ok(legacy.data)
+}
+
+async fn legacy_post_cmd(
+    http: &reqwest::Client,
+    base_url: &str,
+    manager: &str,
+    body: serde_json::Value,
+) -> Result<(), String> {
+    let url = format!("{base_url}/proxy/network/api/s/default/cmd/{manager}");
+    let resp = http
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("API error: {body}"));
+    }
+    Ok(())
+}
+
+async fn execute_client_action(
+    http: &reqwest::Client,
+    base_url: &str,
+    action: ClientAction,
+) -> Result<String, String> {
+    match action {
+        ClientAction::Kick(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            legacy_post_cmd(
+                http,
+                base_url,
+                "stamgr",
+                serde_json::json!({"cmd": "kick-sta", "mac": formatted}),
+            )
+            .await?;
+            Ok(format!("Kicked {formatted}"))
+        }
+        ClientAction::Block(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            legacy_post_cmd(
+                http,
+                base_url,
+                "stamgr",
+                serde_json::json!({"cmd": "block-sta", "mac": formatted}),
+            )
+            .await?;
+            Ok(format!("Blocked {formatted}"))
+        }
+        ClientAction::Unblock(mac) => {
+            let formatted = crate::api::format_mac(&crate::api::normalize_mac(&mac));
+            legacy_post_cmd(
+                http,
+                base_url,
+                "stamgr",
+                serde_json::json!({"cmd": "unblock-sta", "mac": formatted}),
+            )
+            .await?;
+            Ok(format!("Unblocked {formatted}"))
+        }
+    }
 }
 
 fn draw_header(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
@@ -324,6 +464,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     let header = Row::new(vec![
         Cell::from("Name").style(header_style),
+        Cell::from("Connection").style(header_style),
         Cell::from("IP").style(header_style),
         Cell::from("Total").style(header_style),
     ])
@@ -375,8 +516,22 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 Style::default().fg(Color::White)
             };
 
+            // Connection info: SSID + signal bar for wireless, "Wired" for wired
+            let (conn_str, conn_color) = if c.is_wired {
+                ("Wired".to_string(), DIM_COLOR)
+            } else {
+                let ssid = c.ssid.as_deref().unwrap_or("?");
+                let signal_info = c
+                    .signal
+                    .map(|s| format!(" {}", signal_bar(s)))
+                    .unwrap_or_default();
+                let color = c.signal.map(signal_color).unwrap_or(DIM_COLOR);
+                (format!("{ssid}{signal_info}"), color)
+            };
+
             Row::new(vec![
                 Cell::from(name).style(name_style),
+                Cell::from(conn_str).style(Style::default().fg(conn_color)),
                 Cell::from(c.ip.as_deref().unwrap_or("-").to_string())
                     .style(Style::default().fg(DIM_COLOR)),
                 Cell::from(format_bytes(total_bytes)).style(total_style),
@@ -387,6 +542,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
 
     let widths = [
         Constraint::Min(20),
+        Constraint::Length(22),
         Constraint::Length(16),
         Constraint::Length(10),
     ];
@@ -543,38 +699,304 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         Span::raw("")
     };
 
-    let filter_hint = if state.filtering {
-        Span::styled(
-            format!(" filter: {}▌ ", state.filter),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::raw("")
-    };
-
     let key_style = Style::default()
         .fg(ACCENT_COLOR)
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(DIM_COLOR);
 
-    let line = Line::from(vec![
-        Span::styled(" q", key_style),
-        Span::styled(" quit ", dim),
-        Span::styled("s", key_style),
-        Span::styled(" sort ", dim),
-        Span::styled("/", key_style),
-        Span::styled(" filter ", dim),
-        filter_hint,
-        error_span,
-    ]);
+    let status_span = if let Some((ref msg, _)) = state.status_msg {
+        Span::styled(format!(" ✓ {msg} "), Style::default().fg(ONLINE_COLOR))
+    } else {
+        Span::raw("")
+    };
+
+    let line = if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
+        let block_label = state
+            .sorted_clients()
+            .get(*idx)
+            .map(|c| if c.blocked { " unblock " } else { " block " })
+            .unwrap_or(" block ");
+        Line::from(vec![
+            Span::styled(" esc", key_style),
+            Span::styled(" back ", dim),
+            Span::styled("k", key_style),
+            Span::styled(" kick ", dim),
+            Span::styled("b", key_style),
+            Span::styled(block_label, dim),
+            Span::styled("q", key_style),
+            Span::styled(" quit", dim),
+            error_span,
+            status_span,
+        ])
+    } else if state.overlay.is_some() {
+        Line::from(vec![
+            Span::styled(" esc", key_style),
+            Span::styled(" back ", dim),
+            Span::styled("q", key_style),
+            Span::styled(" quit", dim),
+            error_span,
+            status_span,
+        ])
+    } else if state.filtering {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                format!("filter: {}▌", state.filter),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  esc", key_style),
+            Span::styled(" clear ", dim),
+            Span::styled("enter", key_style),
+            Span::styled(" apply", dim),
+            error_span,
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" q", key_style),
+            Span::styled(" quit ", dim),
+            Span::styled("s", key_style),
+            Span::styled(" sort ", dim),
+            Span::styled("/", key_style),
+            Span::styled(" filter ", dim),
+            Span::styled("enter", key_style),
+            Span::styled(" details ", dim),
+            Span::styled("tab", key_style),
+            Span::styled(" switch panel", dim),
+            error_span,
+            status_span,
+        ])
+    };
 
     let paragraph = Paragraph::new(line);
     f.render_widget(paragraph, area);
 }
 
+fn centered_rect_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(height),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(width),
+            Constraint::Min(0),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn draw_overlay(f: &mut ratatui::Frame, state: &AppState) {
+    let overlay = match &state.overlay {
+        Some(o) => o,
+        None => return,
+    };
+
+    // Count rows to size the overlay
+    let row_count = match overlay {
+        Overlay::ClientDetail(idx) => {
+            let clients = state.sorted_clients();
+            let c = match clients.get(*idx) {
+                Some(c) => c,
+                None => return,
+            };
+            let mut n = 3; // MAC, IP, Type
+            if c.uptime.is_some() {
+                n += 1;
+            }
+            if c.tx_bytes.is_some() {
+                n += 1;
+            }
+            if c.rx_bytes.is_some() {
+                n += 1;
+            }
+            if !c.is_wired {
+                if c.signal.is_some() {
+                    n += 1;
+                }
+                if c.ssid.is_some() {
+                    n += 1;
+                }
+                if c.ap_mac.is_some() {
+                    n += 1;
+                }
+            }
+            n
+        }
+        Overlay::DeviceDetail(idx) => {
+            let d = match state.devices.get(*idx) {
+                Some(d) => d,
+                None => return,
+            };
+            let mut n = 4; // Model, MAC, IP, State
+            if d.version.is_some() {
+                n += 1;
+            }
+            if d.uptime.is_some() {
+                n += 1;
+            }
+            if d.num_sta.is_some() {
+                n += 1;
+            }
+            n
+        }
+    };
+
+    // 2 borders + 1 header row gap + data rows
+    let height = (row_count as u16 + 3).min(f.area().height.saturating_sub(4));
+    let width = 44_u16.min(f.area().width.saturating_sub(4));
+    let area = centered_rect_fixed(width, height, f.area());
+    f.render_widget(Clear, area);
+
+    match overlay {
+        Overlay::ClientDetail(idx) => {
+            let clients = state.sorted_clients();
+            let Some(c) = clients.get(*idx) else { return };
+
+            let title = format!(" {} ", c.display_name());
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(ACCENT_COLOR))
+                .style(Style::default().bg(Color::Black))
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(ACCENT_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ));
+
+            let mut rows = vec![
+                detail_row(
+                    "MAC",
+                    &c.mac
+                        .as_deref()
+                        .map(crate::api::format_mac)
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                detail_row("IP", c.ip.as_deref().unwrap_or("-")),
+                detail_row("Type", if c.is_wired { "Wired" } else { "Wireless" }),
+            ];
+
+            if let Some(uptime) = c.uptime {
+                rows.push(detail_row("Uptime", &format_uptime(uptime)));
+            }
+            if let Some(tx) = c.tx_bytes {
+                rows.push(detail_row("TX", &format_bytes(tx)));
+            }
+            if let Some(rx) = c.rx_bytes {
+                rows.push(detail_row("RX", &format_bytes(rx)));
+            }
+            if !c.is_wired {
+                if let Some(signal) = c.signal {
+                    rows.push(detail_row("Signal", &format!("{signal} dBm")));
+                }
+                if let Some(ref ssid) = c.ssid {
+                    rows.push(detail_row("SSID", ssid));
+                }
+                if let Some(ref ap) = c.ap_mac {
+                    rows.push(detail_row("AP", &crate::api::format_mac(ap)));
+                }
+            }
+
+            let widths = [Constraint::Length(10), Constraint::Min(20)];
+            let table = Table::new(rows, widths).block(block);
+            f.render_widget(table, area);
+        }
+        Overlay::DeviceDetail(idx) => {
+            let Some(d) = state.devices.get(*idx) else {
+                return;
+            };
+
+            let name = d.name.as_deref().unwrap_or("Device");
+            let title = format!(" {name} ");
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(ACCENT_COLOR))
+                .style(Style::default().bg(Color::Black))
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(ACCENT_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ));
+
+            let (state_str, _) = device_state_str(d.state);
+            let mut rows = vec![
+                detail_row("Model", d.model.as_deref().unwrap_or("-")),
+                detail_row(
+                    "MAC",
+                    &d.mac
+                        .as_deref()
+                        .map(crate::api::format_mac)
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                detail_row("IP", d.ip.as_deref().unwrap_or("-")),
+                detail_row("State", state_str),
+            ];
+
+            if let Some(ref v) = d.version {
+                rows.push(detail_row("Firmware", v));
+            }
+            if let Some(uptime) = d.uptime {
+                rows.push(detail_row("Uptime", &format_uptime(uptime)));
+            }
+            if let Some(num_sta) = d.num_sta {
+                rows.push(detail_row("Clients", &num_sta.to_string()));
+            }
+
+            let widths = [Constraint::Length(10), Constraint::Min(20)];
+            let table = Table::new(rows, widths).block(block);
+            f.render_widget(table, area);
+        }
+    }
+}
+
+fn detail_row(field: &str, value: &str) -> Row<'static> {
+    Row::new(vec![
+        Cell::from(field.to_string()).style(
+            Style::default()
+                .fg(HEADER_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from(value.to_string()).style(Style::default().fg(Color::White)),
+    ])
+}
+
 fn draw(f: &mut ratatui::Frame, state: &AppState) {
+    if state.loading {
+        let area = f.area();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(ACCENT_COLOR));
+        let text = Paragraph::new(Line::from(Span::styled(
+            "Connecting to controller…",
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center)
+        .block(block);
+        let centered = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(area)[1];
+        f.render_widget(text, centered);
+        return;
+    }
+
     // Devices: 2 borders + 1 header + 1 header gap + data rows, minimum 5
     let device_rows = (state.devices.len() + 4).max(5) as u16;
     let chunks = Layout::default()
@@ -591,7 +1013,19 @@ fn draw(f: &mut ratatui::Frame, state: &AppState) {
     draw_clients(f, chunks[1], state);
     draw_devices(f, chunks[2], state);
     draw_footer(f, chunks[3], state);
+    draw_overlay(f, state);
 }
+
+type FetchResult = Result<
+    (
+        Option<SysInfo>,
+        Option<HostSystem>,
+        Vec<HealthSubsystem>,
+        Vec<LegacyClient>,
+        Vec<LegacyDevice>,
+    ),
+    String,
+>;
 
 pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
@@ -605,10 +1039,30 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
     let tick_rate = Duration::from_secs(interval_secs);
     let mut last_tick = Instant::now() - tick_rate; // Force immediate first fetch
 
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<FetchResult>(1);
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<Result<String, String>>(4);
+    let mut fetch_in_progress = false;
+
     let result = loop {
-        // Fetch data if tick elapsed
-        if last_tick.elapsed() >= tick_rate {
-            match fetch_data(api).await {
+        // Kick off background fetch if tick elapsed and no fetch is running
+        if !fetch_in_progress && last_tick.elapsed() >= tick_rate {
+            let tx = tx.clone();
+            let http = api.clone_http();
+            let base_url = api.base_url().to_string();
+            fetch_in_progress = true;
+            state.loading = state.clients.is_empty();
+            tokio::spawn(async move {
+                let result = fetch_data_standalone(&http, &base_url).await;
+                let _ = tx.send(result.map_err(|e| e.to_string())).await;
+            });
+        }
+
+        // Check for completed fetch (non-blocking)
+        if let Ok(result) = rx.try_recv() {
+            fetch_in_progress = false;
+            state.loading = false;
+            last_tick = Instant::now();
+            match result {
                 Ok((sysinfo, host_system, health, clients, devices)) => {
                     state.sysinfo = sysinfo;
                     state.host_system = host_system;
@@ -618,10 +1072,30 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     state.last_error = None;
                 }
                 Err(e) => {
-                    state.last_error = Some(e.to_string());
+                    state.last_error = Some(e);
                 }
             }
-            last_tick = Instant::now();
+        }
+
+        // Check for completed actions (non-blocking)
+        if let Ok(result) = action_rx.try_recv() {
+            match result {
+                Ok(msg) => {
+                    state.status_msg = Some((msg, Instant::now()));
+                    // Force refresh after action
+                    last_tick = Instant::now() - tick_rate;
+                }
+                Err(msg) => {
+                    state.last_error = Some(msg);
+                }
+            }
+        }
+
+        // Clear status message after 3 seconds
+        if let Some((_, t)) = &state.status_msg
+            && t.elapsed() >= Duration::from_secs(3)
+        {
+            state.status_msg = None;
         }
 
         // Draw
@@ -656,9 +1130,74 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                 continue;
             }
 
+            // Overlay is open: Esc closes it, q quits, k/b for actions
+            if state.overlay.is_some() {
+                match key.code {
+                    KeyCode::Esc => {
+                        state.overlay = None;
+                    }
+                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Ok(());
+                    }
+                    KeyCode::Char('k') | KeyCode::Char('b') => {
+                        if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
+                            let clients = state.sorted_clients();
+                            if let Some(c) = clients.get(*idx)
+                                && let Some(ref mac) = c.mac
+                            {
+                                let action = match key.code {
+                                    KeyCode::Char('k') => ClientAction::Kick(mac.clone()),
+                                    KeyCode::Char('b') => {
+                                        if c.blocked {
+                                            ClientAction::Unblock(mac.clone())
+                                        } else {
+                                            ClientAction::Block(mac.clone())
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let http = api.clone_http();
+                                let base_url = api.base_url().to_string();
+                                let action_tx = action_tx.clone();
+                                tokio::spawn(async move {
+                                    let result =
+                                        execute_client_action(&http, &base_url, action).await;
+                                    let _ = action_tx.send(result).await;
+                                });
+                                state.overlay = None;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                KeyCode::Char('q') => break Ok(()),
+                KeyCode::Esc => break Ok(()),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(()),
+                KeyCode::Enter => {
+                    let overlay = match state.focus {
+                        Panel::Clients => {
+                            let clients = state.sorted_clients();
+                            if !clients.is_empty() {
+                                Some(Overlay::ClientDetail(state.client_scroll))
+                            } else {
+                                None
+                            }
+                        }
+                        Panel::Devices => {
+                            if !state.devices.is_empty() {
+                                Some(Overlay::DeviceDetail(state.device_scroll))
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    state.overlay = overlay;
+                }
                 KeyCode::Tab => {
                     state.focus = match state.focus {
                         Panel::Clients => Panel::Devices,

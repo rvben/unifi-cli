@@ -37,12 +37,24 @@ impl UnifiClient {
         })
     }
 
+    pub fn clone_http(&self) -> reqwest::Client {
+        self.http.clone()
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     fn error_for_status(status: u16, message: String) -> ApiError {
         match status {
             401 | 403 => ApiError::Auth(message),
             404 => ApiError::NotFound(message),
             _ => ApiError::Api { status, message },
         }
+    }
+
+    pub fn error_for_status_pub(status: u16, message: String) -> ApiError {
+        Self::error_for_status(status, message)
     }
 
     // Auto-discover site UUID from Integration API
