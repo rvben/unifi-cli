@@ -1,4 +1,4 @@
-.PHONY: build release test lint fmt check clean install
+.PHONY: build release test lint fmt check clean install release-patch release-minor release-major
 
 build:
 	cargo build
@@ -23,3 +23,12 @@ clean:
 
 install: release
 	cp target/release/unifi-cli ~/.local/bin/unifi-cli
+
+release-patch:
+	vership bump patch
+
+release-minor:
+	vership bump minor
+
+release-major:
+	vership bump major
