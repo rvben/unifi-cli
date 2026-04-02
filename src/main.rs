@@ -540,6 +540,22 @@ fn prompt_line(
     Ok(line.trim().to_string())
 }
 
+fn prompt_secret(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    prompt: &str,
+    use_tty: bool,
+) -> Result<String, InitError> {
+    if use_tty {
+        write!(writer, "{prompt}")?;
+        writer.flush()?;
+        rpassword::read_password().map_err(|e| InitError(format!("Failed to read secret: {e}")))
+    } else {
+        // Fallback for tests (reader is not a real terminal)
+        prompt_line(reader, writer, prompt)
+    }
+}
+
 #[derive(Default)]
 struct ConfigValues {
     host: Option<String>,
@@ -585,6 +601,7 @@ fn run_init_with_io(
     reader: &mut dyn std::io::BufRead,
     writer: &mut dyn std::io::Write,
     config_path: &std::path::Path,
+    use_tty: bool,
 ) -> Result<InitOutcome, InitError> {
     // Load existing config, warn if file exists but is corrupt
     let existing = match std::fs::read_to_string(config_path) {
@@ -630,16 +647,45 @@ fn run_init_with_io(
         host_input
     };
 
-    // API key prompt
+    // API key prompt (masked input)
     let key_prompt = match current.api_key {
         Some(ref k) => format!("API key [{}]: ", mask_api_key(k)),
         None => "API key: ".to_string(),
     };
-    let key_input = prompt_line(reader, writer, &key_prompt)?;
+    let key_input = prompt_secret(reader, writer, &key_prompt, use_tty)?;
     let api_key = if key_input.is_empty() {
         current.api_key.ok_or(InitError("API key is required".into()))?
     } else {
         key_input
+    };
+
+    // Optional Protect credentials (username/password for --full commands)
+    writeln!(writer)?;
+    writeln!(writer, "Protect direct API credentials (optional, for --full camera details):")?;
+    let user_prompt = match current.username {
+        Some(ref u) => format!("Username [{u}]: "),
+        None => "Username (leave empty to skip): ".to_string(),
+    };
+    let user_input = prompt_line(reader, writer, &user_prompt)?;
+    let username = if user_input.is_empty() {
+        current.username.clone()
+    } else {
+        Some(user_input)
+    };
+
+    let password = if username.is_some() {
+        let pass_prompt = match current.password {
+            Some(_) => "Password [****]: ".to_string(),
+            None => "Password: ".to_string(),
+        };
+        let pass_input = prompt_secret(reader, writer, &pass_prompt, use_tty)?;
+        if pass_input.is_empty() {
+            current.password.clone()
+        } else {
+            Some(pass_input)
+        }
+    } else {
+        None
     };
 
     // Show summary and confirm
@@ -649,9 +695,13 @@ fn run_init_with_io(
         .unwrap_or_default();
     writeln!(writer)?;
     writeln!(writer, "Configuration{label}:")?;
-    writeln!(writer, "  host    = {host}")?;
-    writeln!(writer, "  api_key = {}", mask_api_key(&api_key))?;
-    writeln!(writer, "  path    = {}", config_path.display())?;
+    writeln!(writer, "  host     = {host}")?;
+    writeln!(writer, "  api_key  = {}", mask_api_key(&api_key))?;
+    if let Some(ref u) = username {
+        writeln!(writer, "  username = {u}")?;
+        writeln!(writer, "  password = ****")?;
+    }
+    writeln!(writer, "  path     = {}", config_path.display())?;
 
     let confirm = prompt_line(reader, writer, "\nSave? (y/n): ")?;
     if !matches!(confirm.to_lowercase().as_str(), "y" | "yes") {
@@ -671,10 +721,22 @@ fn run_init_with_io(
         let mut section = toml::Table::new();
         section.insert("host".into(), toml::Value::String(host));
         section.insert("api_key".into(), toml::Value::String(api_key));
+        if let Some(u) = username {
+            section.insert("username".into(), toml::Value::String(u));
+        }
+        if let Some(p) = password {
+            section.insert("password".into(), toml::Value::String(p));
+        }
         profiles.insert(name.clone(), toml::Value::Table(section));
     } else {
         config.insert("host".into(), toml::Value::String(host));
         config.insert("api_key".into(), toml::Value::String(api_key));
+        if let Some(u) = username {
+            config.insert("username".into(), toml::Value::String(u));
+        }
+        if let Some(p) = password {
+            config.insert("password".into(), toml::Value::String(p));
+        }
     }
 
     // Write config
@@ -686,6 +748,13 @@ fn run_init_with_io(
         .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
     std::fs::write(config_path, &toml_str)
         .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+
+    // Restrict config file permissions (contains secrets)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     writeln!(writer, "Config saved to {}{label}", config_path.display())?;
     writeln!(
@@ -712,7 +781,7 @@ fn run_init() {
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    match run_init_with_io(&mut reader, &mut writer, &path) {
+    match run_init_with_io(&mut reader, &mut writer, &path, true) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {e}");
@@ -1240,7 +1309,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path).unwrap();
+        let result = run_init_with_io(&mut reader, &mut output, &path, false).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap_or_default();
         let display = String::from_utf8(output).unwrap();
@@ -1250,7 +1319,7 @@ api_key = "work_key"
     #[test]
     fn init_fresh_default_profile() {
         let (result, written, display) =
-            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\ny\n");
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\n\ny\n");
 
         assert_eq!(result, InitOutcome::Saved { profile: None });
         assert!(written.contains("host = \"https://unifi.local\""));
@@ -1262,7 +1331,7 @@ api_key = "work_key"
     #[test]
     fn init_fresh_named_profile() {
         let (result, written, _) =
-            run_init_test(None, "office\nhttps://office.local\noffice-key\ny\n");
+            run_init_test(None, "office\nhttps://office.local\noffice-key\n\ny\n");
 
         assert_eq!(
             result,
@@ -1277,7 +1346,7 @@ api_key = "work_key"
     #[test]
     fn init_cancelled() {
         let (result, written, display) =
-            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\nn\n");
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\n\nn\n");
 
         assert_eq!(result, InitOutcome::Cancelled);
         assert!(written.is_empty());
@@ -1288,7 +1357,7 @@ api_key = "work_key"
     fn init_preserves_existing_default_when_adding_profile() {
         let existing = "host = \"default.local\"\napi_key = \"default-key\"\n";
         let (result, written, _) =
-            run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\ny\n");
+            run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\n\ny\n");
 
         assert_eq!(
             result,
@@ -1306,7 +1375,7 @@ api_key = "work_key"
     fn init_keeps_existing_value_on_empty_input() {
         let existing = "host = \"existing.local\"\napi_key = \"existing-key\"\n";
         // Empty host and key inputs → keep existing values
-        let (result, written, _) = run_init_test(Some(existing), "\n\n\ny\n");
+        let (result, written, _) = run_init_test(Some(existing), "\n\n\n\ny\n");
 
         assert_eq!(result, InitOutcome::Saved { profile: None });
         assert!(written.contains("host = \"existing.local\""));
@@ -1316,7 +1385,7 @@ api_key = "work_key"
     #[test]
     fn init_overwrites_existing_value() {
         let existing = "host = \"old.local\"\napi_key = \"old-key\"\n";
-        let (_, written, _) = run_init_test(Some(existing), "\nnew.local\nnew-key\ny\n");
+        let (_, written, _) = run_init_test(Some(existing), "\nnew.local\nnew-key\n\ny\n");
 
         assert!(written.contains("host = \"new.local\""));
         assert!(written.contains("api_key = \"new-key\""));
@@ -1326,18 +1395,18 @@ api_key = "work_key"
     #[test]
     fn init_shows_masked_key_in_prompt() {
         let existing = "host = \"h\"\napi_key = \"abcdefghij\"\n";
-        let (_, _, display) = run_init_test(Some(existing), "\n\n\ny\n");
+        let (_, _, display) = run_init_test(Some(existing), "\n\n\n\ny\n");
 
         assert!(display.contains("abcd…ghij"));
     }
 
     #[test]
     fn init_shows_summary_before_confirm() {
-        let (_, _, display) = run_init_test(None, "\nhttps://test.local\ntest-key-1234567890\ny\n");
+        let (_, _, display) = run_init_test(None, "\nhttps://test.local\ntest-key-1234567890\n\ny\n");
 
         assert!(display.contains("Configuration:"));
-        assert!(display.contains("host    = https://test.local"));
-        assert!(display.contains("api_key = test…7890"));
+        assert!(display.contains("host     = https://test.local"));
+        assert!(display.contains("api_key  = test…7890"));
         assert!(display.contains("Save? (y/n)"));
     }
 
@@ -1345,7 +1414,7 @@ api_key = "work_key"
     fn init_warns_on_corrupt_existing_config() {
         let (result, written, display) = run_init_test(
             Some("not valid {{{ toml"),
-            "\nhttps://new.local\nnew-key\ny\n",
+            "\nhttps://new.local\nnew-key\n\ny\n",
         );
 
         assert_eq!(result, InitOutcome::Saved { profile: None });
@@ -1356,7 +1425,7 @@ api_key = "work_key"
 
     #[test]
     fn init_accepts_mixed_case_yes() {
-        let (result, _, _) = run_init_test(None, "\nhttps://h\nk\nYes\n");
+        let (result, _, _) = run_init_test(None, "\nhttps://h\nk\n\nYes\n");
         assert_eq!(result, InitOutcome::Saved { profile: None });
     }
 
@@ -1368,7 +1437,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host is required"));
     }
@@ -1381,7 +1450,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false);
         assert!(result.is_err());
         assert!(
             result
