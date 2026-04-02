@@ -302,6 +302,147 @@ pub struct DeviceWithPorts {
     pub port_table: Vec<PortEntry>,
 }
 
+// --- Protect API types ---
+
+/// Camera from Protect Integration API
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectCamera {
+    pub id: String,
+    pub name: Option<String>,
+    pub mac: Option<String>,
+    pub state: Option<String>,
+    pub model_key: Option<String>,
+    #[serde(default)]
+    pub is_mic_enabled: bool,
+    pub video_mode: Option<String>,
+    pub feature_flags: Option<ProtectFeatureFlags>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectFeatureFlags {
+    #[serde(default)]
+    pub has_hdr: bool,
+    #[serde(default)]
+    pub has_mic: bool,
+    #[serde(default)]
+    pub has_speaker: bool,
+    #[serde(default)]
+    pub has_led_status: bool,
+    #[serde(default)]
+    pub smart_detect_types: Vec<String>,
+    #[serde(default)]
+    pub video_modes: Vec<String>,
+}
+
+/// Full camera from direct Protect API (cookie auth)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectCameraFull {
+    pub id: String,
+    pub name: Option<String>,
+    pub mac: Option<String>,
+    pub host: Option<String>,
+    pub state: Option<String>,
+    #[serde(rename = "type")]
+    pub camera_type: Option<String>,
+    pub market_name: Option<String>,
+    pub platform: Option<String>,
+    pub firmware_version: Option<String>,
+    pub hardware_revision: Option<String>,
+    pub uptime: Option<u64>,
+    pub up_since: Option<u64>,
+    pub last_seen: Option<u64>,
+    #[serde(default)]
+    pub is_recording: bool,
+    #[serde(default)]
+    pub is_motion_detected: bool,
+    #[serde(default)]
+    pub is_dark: bool,
+    pub video_codec: Option<String>,
+    pub current_resolution: Option<String>,
+    pub video_mode: Option<String>,
+    pub hdr_type: Option<String>,
+    pub phy_rate: Option<f64>,
+    #[serde(default)]
+    pub is_mic_enabled: bool,
+    #[serde(default)]
+    pub is_poor_network: bool,
+    pub last_motion: Option<u64>,
+    pub hq_bytes_per_day: Option<u64>,
+    pub lq_bytes_per_day: Option<u64>,
+    pub model_key: Option<String>,
+    #[serde(default)]
+    pub channels: Vec<CameraChannel>,
+    pub stats: Option<CameraStats>,
+    pub wifi_connection_state: Option<WifiConnectionState>,
+    pub feature_flags: Option<ProtectFeatureFlags>,
+    pub recording_settings: Option<RecordingSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraChannel {
+    pub id: u32,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<u32>,
+    pub bitrate: Option<u64>,
+    #[serde(default)]
+    pub is_rtsp_enabled: bool,
+    pub rtsp_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraStats {
+    pub wifi: Option<WifiStats>,
+    pub storage: Option<StorageStats>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiStats {
+    pub channel: Option<u32>,
+    pub frequency: Option<u32>,
+    pub signal_quality: Option<i32>,
+    pub signal_strength: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStats {
+    pub used: Option<u64>,
+    pub rate: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiConnectionState {
+    pub channel: Option<u32>,
+    pub frequency: Option<u32>,
+    pub signal_quality: Option<i32>,
+    pub signal_strength: Option<i32>,
+    pub ssid: Option<String>,
+    pub ap_name: Option<String>,
+    pub connectivity: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSettings {
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub enable_motion_detection: bool,
+}
+
+/// RTSPS stream URLs keyed by quality level
+pub type RtspsStreams = std::collections::HashMap<String, Option<String>>;
+
 // Error types
 #[derive(Debug)]
 pub enum ApiError {

@@ -3,6 +3,30 @@ use serde::de::DeserializeOwned;
 
 use super::types::*;
 
+pub fn error_for_status(status: u16, message: String) -> ApiError {
+    match status {
+        401 | 403 => ApiError::Auth(message),
+        404 => ApiError::NotFound(message),
+        _ => ApiError::Api { status, message },
+    }
+}
+
+/// Valid RTSPS quality levels accepted by the Protect API.
+const VALID_QUALITIES: &[&str] = &["high", "medium", "low", "package"];
+
+/// Validate quality values against the Protect API allowlist.
+pub fn validate_qualities(qualities: &[String]) -> Result<(), ApiError> {
+    for q in qualities {
+        if !VALID_QUALITIES.contains(&q.as_str()) {
+            return Err(ApiError::Other(format!(
+                "Invalid quality '{q}'. Valid values: {}",
+                VALID_QUALITIES.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub struct UnifiClient {
     http: reqwest::Client,
     base_url: String,
@@ -45,18 +69,6 @@ impl UnifiClient {
         &self.base_url
     }
 
-    fn error_for_status(status: u16, message: String) -> ApiError {
-        match status {
-            401 | 403 => ApiError::Auth(message),
-            404 => ApiError::NotFound(message),
-            _ => ApiError::Api { status, message },
-        }
-    }
-
-    pub fn error_for_status_pub(status: u16, message: String) -> ApiError {
-        Self::error_for_status(status, message)
-    }
-
     // Auto-discover site UUID from Integration API
     async fn ensure_site_id(&mut self) -> Result<&str, ApiError> {
         if self.site_id.is_none() {
@@ -77,7 +89,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -88,7 +100,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         let legacy: LegacyResponse<T> = resp.json().await?;
         if legacy.meta.rc != "ok" {
@@ -113,7 +125,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -128,7 +140,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -143,7 +155,7 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         Ok(resp.json().await?)
     }
@@ -357,6 +369,100 @@ impl UnifiClient {
         self.get_legacy("/stat/device").await
     }
 
+    // --- Protect API ---
+
+    /// List all cameras from the Protect Integration API.
+    pub async fn list_protect_cameras(&self) -> Result<Vec<ProtectCamera>, ApiError> {
+        let resp: Vec<ProtectCamera> = self
+            .get_integration("/proxy/protect/integration/v1/cameras")
+            .await?;
+        Ok(resp)
+    }
+
+    /// Get a single camera by ID from the Protect Integration API.
+    pub async fn get_protect_camera(&self, id: &str) -> Result<ProtectCamera, ApiError> {
+        self.get_integration(&format!(
+            "/proxy/protect/integration/v1/cameras/{id}"
+        ))
+        .await
+    }
+
+    /// Get existing RTSPS stream URLs for a camera.
+    pub async fn get_rtsps_streams(&self, camera_id: &str) -> Result<RtspsStreams, ApiError> {
+        self.get_integration(&format!(
+            "/proxy/protect/integration/v1/cameras/{camera_id}/rtsps-stream"
+        ))
+        .await
+    }
+
+    /// Create new RTSPS streams for a camera at the specified quality levels.
+    pub async fn create_rtsps_streams(
+        &self,
+        camera_id: &str,
+        qualities: &[String],
+    ) -> Result<RtspsStreams, ApiError> {
+        validate_qualities(qualities)?;
+        let url = format!(
+            "{}/proxy/protect/integration/v1/cameras/{camera_id}/rtsps-stream",
+            self.base_url
+        );
+        let body = serde_json::json!({ "qualities": qualities });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(error_for_status(status, body));
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Delete RTSPS streams for a camera at the specified quality levels.
+    pub async fn delete_rtsps_streams(
+        &self,
+        camera_id: &str,
+        qualities: &[String],
+    ) -> Result<(), ApiError> {
+        validate_qualities(qualities)?;
+        let query: String = qualities
+            .iter()
+            .map(|q| format!("qualities={q}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let url = format!(
+            "{}/proxy/protect/integration/v1/cameras/{camera_id}/rtsps-stream?{query}",
+            self.base_url
+        );
+        let resp = self.http.delete(&url).send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(error_for_status(status, body));
+        }
+        Ok(())
+    }
+
+    /// Resolve a camera identifier (ID or name) to a camera ID.
+    /// If the input is a 24-char hex string, treats it as an ID.
+    /// Otherwise, searches by name (case-insensitive).
+    pub async fn resolve_camera_id(&self, id_or_name: &str) -> Result<String, ApiError> {
+        // If it looks like a Protect camera ID (24 hex chars), use it directly
+        if id_or_name.len() == 24 && id_or_name.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(id_or_name.to_string());
+        }
+        // Otherwise, search by name
+        let cameras = self.list_protect_cameras().await?;
+        let needle = id_or_name.to_lowercase();
+        cameras
+            .into_iter()
+            .find(|c| {
+                c.name
+                    .as_deref()
+                    .is_some_and(|n| n.trim().to_lowercase() == needle)
+            })
+            .map(|c| c.id)
+            .ok_or_else(|| ApiError::NotFound(format!("Camera '{id_or_name}'")))
+    }
+
     // System
     pub async fn get_health(&self) -> Result<Vec<HealthSubsystem>, ApiError> {
         self.get_legacy("/stat/health").await
@@ -374,8 +480,115 @@ impl UnifiClient {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(Self::error_for_status(status, body));
+            return Err(error_for_status(status, body));
         }
         Ok(resp.json().await?)
+    }
+}
+
+/// Session-based client for the direct Protect API.
+///
+/// Uses username/password login to get a session cookie, then hits
+/// `/proxy/protect/api/` endpoints which return full camera objects
+/// (IP, firmware, channels, stats, WiFi, ISP settings, etc).
+pub struct ProtectSession {
+    http: reqwest::Client,
+    base_url: String,
+    token: String,
+    csrf_token: Option<String>,
+}
+
+impl ProtectSession {
+    /// Login to UniFi OS and return a session with cookie auth.
+    pub async fn login(host: &str, username: &str, password: &str) -> Result<Self, ApiError> {
+        let base_url = if host.starts_with("http") {
+            host.trim_end_matches('/').to_string()
+        } else {
+            format!("https://{host}")
+        };
+
+        // Don't use cookie_provider — the `partitioned` cookie attribute
+        // isn't handled by reqwest's jar. We extract the token manually.
+        let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(ApiError::Http)?;
+
+        let url = format!("{base_url}/api/auth/login");
+        let body = serde_json::json!({
+            "username": username,
+            "password": password,
+        });
+
+        let resp = http.post(&url).json(&body).send().await?;
+        let status = resp.status().as_u16();
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(error_for_status(status, body));
+        }
+
+        // Extract TOKEN from Set-Cookie header
+        let token = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                if s.starts_with("TOKEN=") {
+                    s.split(';').next()?.strip_prefix("TOKEN=").map(String::from)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ApiError::Auth("Login succeeded but no TOKEN cookie returned".into()))?;
+
+        // Extract CSRF token from response headers
+        let csrf_token = resp
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        // Consume body to finalize the response
+        let _ = resp.text().await;
+
+        Ok(Self {
+            http,
+            base_url,
+            token,
+            csrf_token,
+        })
+    }
+
+    /// GET from the direct Protect API (cookie-authenticated).
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let url = format!("{}/proxy/protect/api{path}", self.base_url);
+        let mut req = self.http.get(&url)
+            .header("cookie", format!("TOKEN={}", self.token));
+        if let Some(ref token) = self.csrf_token {
+            req = req.header("x-csrf-token", token);
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(error_for_status(status, body));
+        }
+        let bytes = resp.bytes().await.map_err(ApiError::Http)?;
+        serde_json::from_slice(&bytes).map_err(|e| {
+            ApiError::Other(format!("JSON parse error: {e}"))
+        })
+    }
+
+    /// List all cameras from the direct Protect API (full objects).
+    pub async fn list_cameras_full(&self) -> Result<Vec<ProtectCameraFull>, ApiError> {
+        self.get("/cameras").await
+    }
+
+    /// Get a single camera by ID (full object).
+    pub async fn get_camera_full(&self, id: &str) -> Result<ProtectCameraFull, ApiError> {
+        self.get(&format!("/cameras/{id}")).await
     }
 }
