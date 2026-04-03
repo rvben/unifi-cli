@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 
 
+
+## [0.1.6](https://github.com/rvben/unifi-cli/compare/v0.1.5...v0.1.6) - 2026-04-03
+
+### Added
+
+- **init**: add API key URL, credential validation, and next steps to config init ([e09bd0e](https://github.com/rvben/unifi-cli/commit/e09bd0e7d02a68345f1b67b60ef147f2a847ead2))
+
 ## [0.1.5](https://github.com/rvben/unifi-cli/compare/v0.1.4...v0.1.5) - 2026-04-03
 
 ## [Unreleased]
