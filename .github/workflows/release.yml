@@ -232,3 +232,83 @@ jobs:
           echo "Dry run complete. Artifacts built but nothing published."
           echo "Archives:"
           find artifacts/release-* -type f | sort
+
+  update-homebrew:
+    needs: release
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            sha=$(cat /tmp/artifacts/release-${target}/unifi-cli-${{ github.ref_name }}-${target}.tar.gz.sha256 | awk '{print $1}')
+            key=$(echo "${target}" | tr '-' '_')
+            echo "${key}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_NUM="${VERSION#v}"
+
+          cat > /tmp/unifi-cli.rb << 'FORMULA'
+          class UnifiCli < Formula
+            desc "CLI for UniFi Network controllers"
+            homepage "https://github.com/rvben/unifi-cli"
+            version "VERSION_NUM"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/rvben/unifi-cli/releases/download/VERSION/unifi-cli-VERSION-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_APPLE_DARWIN"
+              else
+                url "https://github.com/rvben/unifi-cli/releases/download/VERSION/unifi-cli-VERSION-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_APPLE_DARWIN"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/rvben/unifi-cli/releases/download/VERSION/unifi-cli-VERSION-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_AARCH64_UNKNOWN_LINUX_GNU"
+              else
+                url "https://github.com/rvben/unifi-cli/releases/download/VERSION/unifi-cli-VERSION-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_UNKNOWN_LINUX_GNU"
+              end
+            end
+
+            def install
+              bin.install "unifi"
+            end
+
+            test do
+              system "#{bin}/unifi", "--version"
+            end
+          end
+          FORMULA
+
+          sed -i "s/VERSION_NUM/${VERSION_NUM}/g" /tmp/unifi-cli.rb
+          sed -i "s/VERSION/${VERSION}/g" /tmp/unifi-cli.rb
+          sed -i "s/SHA_AARCH64_APPLE_DARWIN/${{ steps.hashes.outputs.aarch64_apple_darwin }}/g" /tmp/unifi-cli.rb
+          sed -i "s/SHA_X86_64_APPLE_DARWIN/${{ steps.hashes.outputs.x86_64_apple_darwin }}/g" /tmp/unifi-cli.rb
+          sed -i "s/SHA_AARCH64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.aarch64_unknown_linux_gnu }}/g" /tmp/unifi-cli.rb
+          sed -i "s/SHA_X86_64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.x86_64_unknown_linux_gnu }}/g" /tmp/unifi-cli.rb
+
+          # Clone tap repo, update formula, push
+          git clone https://x-access-token:${GH_TOKEN}@github.com/rvben/homebrew-tap.git /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/unifi-cli.rb /tmp/tap/Formula/unifi-cli.rb
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/unifi-cli.rb
+          git diff --cached --quiet || git commit -m "Update unifi-cli to ${VERSION}"
+          git push
