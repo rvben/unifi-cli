@@ -1,5 +1,7 @@
 # unifi-cli
 
+[![codecov](https://codecov.io/gh/rvben/unifi-cli/graph/badge.svg)](https://codecov.io/gh/rvben/unifi-cli)
+
 CLI for UniFi Network controller with an interactive TUI dashboard. Designed for both human operators and AI agents.
 
 ## Quick start
