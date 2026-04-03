@@ -1,6 +1,6 @@
 use unifi_cli::api;
 use unifi_cli::commands;
-use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes};
+use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes, use_color};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -416,7 +416,11 @@ impl From<std::io::Error> for InitError {
 
 #[derive(Debug, PartialEq)]
 enum InitOutcome {
-    Saved { profile: Option<String> },
+    Saved {
+        profile: Option<String>,
+        host: String,
+        api_key: String,
+    },
     Cancelled,
 }
 
@@ -454,6 +458,44 @@ fn resolve_profile_table<'a>(
             .and_then(|v| v.as_table())
     } else {
         Some(config)
+    }
+}
+
+// ── Color / symbol helpers for init flow ──────────────────────────────────
+
+fn sym_ok() -> String {
+    if use_color() {
+        use owo_colors::OwoColorize;
+        "\u{2714}".green().to_string()
+    } else {
+        "\u{2714}".to_owned()
+    }
+}
+
+fn sym_fail() -> String {
+    if use_color() {
+        use owo_colors::OwoColorize;
+        "\u{2718}".red().to_string()
+    } else {
+        "\u{2718}".to_owned()
+    }
+}
+
+fn sym_dim(s: &str) -> String {
+    if use_color() {
+        use owo_colors::OwoColorize;
+        s.dimmed().to_string()
+    } else {
+        s.to_owned()
+    }
+}
+
+fn sym_bold(s: &str) -> String {
+    if use_color() {
+        use owo_colors::OwoColorize;
+        s.bold().to_string()
+    } else {
+        s.to_owned()
     }
 }
 
@@ -512,11 +554,18 @@ fn run_init_with_io(
         None => "API key: ".to_string(),
     };
     let key_input = prompt_line(reader, writer, &key_prompt)?;
+    let show_key_hint = current_key.is_none();
     let api_key = if key_input.is_empty() {
         current_key.ok_or(InitError("API key is required".into()))?
     } else {
         key_input
     };
+    if show_key_hint {
+        writeln!(
+            writer,
+            "  Create API keys at: UniFi Network \u{2192} Settings \u{2192} API"
+        )?;
+    }
 
     // Show summary and confirm
     let label = profile_name
@@ -545,12 +594,12 @@ fn run_init_with_io(
             .ok_or(InitError("'profiles' key exists but is not a table".into()))?;
 
         let mut section = toml::Table::new();
-        section.insert("host".into(), toml::Value::String(host));
-        section.insert("api_key".into(), toml::Value::String(api_key));
+        section.insert("host".into(), toml::Value::String(host.clone()));
+        section.insert("api_key".into(), toml::Value::String(api_key.clone()));
         profiles.insert(name.clone(), toml::Value::Table(section));
     } else {
-        config.insert("host".into(), toml::Value::String(host));
-        config.insert("api_key".into(), toml::Value::String(api_key));
+        config.insert("host".into(), toml::Value::String(host.clone()));
+        config.insert("api_key".into(), toml::Value::String(api_key.clone()));
     }
 
     // Write config
@@ -563,18 +612,14 @@ fn run_init_with_io(
     std::fs::write(config_path, &toml_str)
         .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
 
-    writeln!(writer, "Config saved to {}{label}", config_path.display())?;
-    writeln!(
-        writer,
-        "\nRun 'unifi system health' to verify your connection."
-    )?;
-
     Ok(InitOutcome::Saved {
         profile: profile_name,
+        host,
+        api_key,
     })
 }
 
-fn run_init() {
+async fn run_init() {
     let path = match default_config_path() {
         Ok(p) => p,
         Err(e) => {
@@ -588,13 +633,97 @@ fn run_init() {
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    match run_init_with_io(&mut reader, &mut writer, &path) {
-        Ok(_) => {}
+    let outcome = match run_init_with_io(&mut reader, &mut writer, &path) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(exit_codes::CONFIG_ERROR);
         }
+    };
+
+    let (profile, host, api_key) = match outcome {
+        InitOutcome::Saved {
+            profile,
+            host,
+            api_key,
+        } => (profile, host, api_key),
+        InitOutcome::Cancelled => return,
+    };
+
+    // Validate credentials against the API
+    use std::io::Write;
+    eprint!("  Verifying credentials...");
+    std::io::stderr().flush().ok();
+
+    match api::UnifiClient::new(&host, &api_key) {
+        Ok(client) => match client.get_health().await {
+            Ok(_) => {
+                eprintln!(" {} Connected", sym_ok());
+            }
+            Err(api::ApiError::Auth(msg)) => {
+                eprintln!(" {} Authentication failed: {msg}", sym_fail());
+                eprintln!(
+                    "  {}",
+                    sym_dim("Config saved. Fix your API key and re-run 'unifi config init'.")
+                );
+            }
+            Err(e) => {
+                eprintln!(" {} Connection failed: {e}", sym_fail());
+                eprintln!(
+                    "  {}",
+                    sym_dim("Config saved. Check your host and re-run 'unifi config init'.")
+                );
+            }
+        },
+        Err(e) => {
+            eprintln!(" {} Failed to create client: {e}", sym_fail());
+            eprintln!(
+                "  {}",
+                sym_dim("Config saved. Check your settings and re-run 'unifi config init'.")
+            );
+        }
     }
+
+    // Next steps
+    let label = profile
+        .as_deref()
+        .map(|n| format!(" (profile: {n})"))
+        .unwrap_or_default();
+    eprintln!();
+    eprintln!(
+        "  {} Configuration saved to {}{}",
+        sym_ok(),
+        path.display(),
+        label
+    );
+    eprintln!();
+    eprintln!("  {}:", sym_bold("Next steps"));
+
+    let prefix = profile
+        .as_deref()
+        .map(|n| format!("unifi --profile {n}"))
+        .unwrap_or_else(|| "unifi".to_string());
+    eprintln!(
+        "    {}   {}",
+        sym_dim(&format!("{prefix} system health")),
+        sym_dim("# verify connectivity")
+    );
+    eprintln!(
+        "    {}   {}",
+        sym_dim(&format!("{prefix} clients list")),
+        sym_dim("# list connected clients")
+    );
+    eprintln!(
+        "    {}   {}",
+        sym_dim(&format!("{prefix} devices list")),
+        sym_dim("# list network devices")
+    );
+    eprintln!(
+        "    {}  {}",
+        sym_dim("unifi completions zsh"),
+        sym_dim("# shell completions")
+    );
+    eprintln!();
 }
 
 fn mask_api_key(key: &str) -> String {
@@ -748,7 +877,7 @@ async fn main() {
             return;
         }
         Command::Config(ConfigCommand::Init) => {
-            run_init();
+            run_init().await;
             return;
         }
         _ => {}
@@ -1072,11 +1201,10 @@ api_key = "work_key"
         let (result, written, display) =
             run_init_test(None, "\nhttps://unifi.local\nmy-api-key\ny\n");
 
-        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
         assert!(written.contains("host = \"https://unifi.local\""));
         assert!(written.contains("api_key = \"my-api-key\""));
-        assert!(display.contains("Config saved to"));
-        assert!(display.contains("unifi system health"));
+        assert!(display.contains("Create API keys at"));
     }
 
     #[test]
@@ -1084,12 +1212,13 @@ api_key = "work_key"
         let (result, written, _) =
             run_init_test(None, "office\nhttps://office.local\noffice-key\ny\n");
 
-        assert_eq!(
+        assert!(matches!(
             result,
             InitOutcome::Saved {
-                profile: Some("office".into())
-            }
-        );
+                profile: Some(ref p),
+                ..
+            } if p == "office"
+        ));
         assert!(written.contains("[profiles.office]"));
         assert!(written.contains("host = \"https://office.local\""));
     }
@@ -1110,12 +1239,13 @@ api_key = "work_key"
         let (result, written, _) =
             run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\ny\n");
 
-        assert_eq!(
+        assert!(matches!(
             result,
             InitOutcome::Saved {
-                profile: Some("work".into())
-            }
-        );
+                profile: Some(ref p),
+                ..
+            } if p == "work"
+        ));
         assert!(written.contains("host = \"default.local\""));
         assert!(written.contains("api_key = \"default-key\""));
         assert!(written.contains("[profiles.work]"));
@@ -1128,7 +1258,7 @@ api_key = "work_key"
         // Empty host and key inputs → keep existing values
         let (result, written, _) = run_init_test(Some(existing), "\n\n\ny\n");
 
-        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
         assert!(written.contains("host = \"existing.local\""));
         assert!(written.contains("api_key = \"existing-key\""));
     }
@@ -1168,7 +1298,7 @@ api_key = "work_key"
             "\nhttps://new.local\nnew-key\ny\n",
         );
 
-        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
         assert!(display.contains("Warning: Existing config"));
         assert!(display.contains("invalid TOML"));
         assert!(written.contains("host = \"https://new.local\""));
@@ -1177,7 +1307,7 @@ api_key = "work_key"
     #[test]
     fn init_accepts_mixed_case_yes() {
         let (result, _, _) = run_init_test(None, "\nhttps://h\nk\nYes\n");
-        assert_eq!(result, InitOutcome::Saved { profile: None });
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
     }
 
     #[test]
