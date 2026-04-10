@@ -46,12 +46,16 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: test
+    timeout-minutes: 30
+    # Guard: self-hosted runners only execute on trusted events (tag push,
+    # workflow_dispatch). Fork PRs must never dispatch jobs to self-hosted.
+    if: github.event_name != 'pull_request'
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+          - os: [self-hosted, Linux, ARM64]
             target: aarch64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -62,32 +66,85 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Preserve target/ between runs on self-hosted runners for cargo
+          # incremental rebuild. GitHub-hosted runners start clean each job
+          # regardless of this setting, so this only affects self-hosted.
+          clean: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
+      - name: Prepare cargo cache dirs (arm64 linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: mkdir -p "${RUNNER_TOOL_CACHE}/cargo-cache/registry" "${RUNNER_TOOL_CACHE}/cargo-cache/git"
+
+      - name: Clean stale dist
+        # Keep dist/ fresh each run so previous builds cannot leak artifacts
+        # into the upload. Self-hosted runners do not clean automatically.
+        # On the arm64 linux runner, maturin-action runs as root inside the
+        # manylinux container and leaves root-owned files in dist/; clean
+        # via docker so the unprivileged runner user can proceed.
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            docker run --rm -v "${GITHUB_WORKSPACE}:/io" alpine rm -rf /io/dist /io/target/wheels
+          else
+            rm -rf dist target/wheels
+          fi
+
+      - name: Install cross-compilation tools
+        # Only needed on GitHub-hosted linux where the arm64 toolchain must
+        # be cross-installed. The self-hosted arm64 runner is native.
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && runner.arch != 'ARM64'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Install maturin
+        # maturin-action provides its own maturin inside the manylinux
+        # container for the arm64 linux build, so skip the host install
+        # on the self-hosted runner.
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: pip install maturin
 
+      - name: Build wheel (arm64 linux via maturin-action)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64-unknown-linux-gnu
+          args: --release --out dist
+          manylinux: manylinux_2_28
+          # Mount persistent cargo cache into the manylinux container so
+          # dependency downloads survive between jobs on the self-hosted
+          # runner.
+          docker-options: -v ${{ runner.tool_cache }}/cargo-cache/registry:/root/.cargo/registry -v ${{ runner.tool_cache }}/cargo-cache/git:/root/.cargo/git
+
       - name: Build wheel
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
           case "${{ matrix.target }}" in
             *-gnu)
               pip install ziglang
-              maturin build --release --target ${{ matrix.target }} --compatibility manylinux_2_28 --zig
+              maturin build --release --target ${{ matrix.target }} --compatibility manylinux_2_28 --zig --out dist
               ;;
             *)
-              maturin build --release --target ${{ matrix.target }}
+              maturin build --release --target ${{ matrix.target }} --out dist
               ;;
           esac
 
+      - name: Build binary (arm64 linux via cargo-zigbuild)
+        # On the Pi runner build natively with cargo-zigbuild targeting
+        # glibc 2.28 for wide distro compatibility. Use a separate target
+        # directory so host cargo does not conflict with root-owned files
+        # left behind by the maturin-action container build in target/.
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        env:
+          CARGO_TARGET_DIR: target-host
+        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
+
       - name: Build binary
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
@@ -117,7 +174,12 @@ jobs:
             cd ..
             powershell -command "Get-FileHash -Path '${ARCHIVE_NAME}.zip' -Algorithm SHA256 | Select-Object -ExpandProperty Hash" > "${ARCHIVE_NAME}.zip.sha256"
           else
-            cp "target/${{ matrix.target }}/release/unifi-cli" release-package/unifi-cli
+            if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+              BIN_PATH="target-host/aarch64-unknown-linux-gnu/release/unifi-cli"
+            else
+              BIN_PATH="target/${{ matrix.target }}/release/unifi-cli"
+            fi
+            cp "$BIN_PATH" release-package/unifi-cli
             tar -czf "${ARCHIVE_NAME}.tar.gz" -C release-package unifi-cli
 
             if [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -132,7 +194,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          path: target/wheels/*
+          path: dist/*.whl
           name: wheel-${{ matrix.target }}
 
       - name: Upload release archives
