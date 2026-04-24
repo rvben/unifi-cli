@@ -100,12 +100,22 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu' && runner.arch != 'ARM64'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Install maturin
+      - name: Install uv
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install maturin and zig
         # maturin-action provides its own maturin inside the manylinux
         # container for the arm64 linux build, so skip the host install
         # on the self-hosted runner.
         if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: pip install maturin
+        shell: bash
+        run: |
+          uv venv "${RUNNER_TEMP}/build-venv"
+          VENV_BIN="${RUNNER_TEMP}/build-venv/bin"
+          [ -d "$VENV_BIN" ] || VENV_BIN="${RUNNER_TEMP}/build-venv/Scripts"
+          uv pip install --python "$VENV_BIN/python" maturin ziglang
+          echo "$VENV_BIN" >> "$GITHUB_PATH"
 
       - name: Build wheel (arm64 linux via maturin-action)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -125,7 +135,6 @@ jobs:
         run: |
           case "${{ matrix.target }}" in
             *-gnu)
-              pip install ziglang
               maturin build --release --target ${{ matrix.target }} --compatibility manylinux_2_28 --zig --out dist
               ;;
             *)
@@ -212,8 +221,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Install maturin
-        run: pip install maturin
+        shell: bash
+        run: |
+          uv venv "${RUNNER_TEMP}/build-venv"
+          uv pip install --python "${RUNNER_TEMP}/build-venv/bin/python" maturin
+          echo "${RUNNER_TEMP}/build-venv/bin" >> "$GITHUB_PATH"
 
       - name: Build sdist
         run: maturin sdist
