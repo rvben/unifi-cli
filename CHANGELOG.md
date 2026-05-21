@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 
 
+
+## [0.1.7](https://github.com/rvben/unifi-cli/compare/v0.1.6...v0.1.7) - 2026-05-21
+
+### Added
+
+- auto-generate schema from clap command tree ([d9fd5b8](https://github.com/rvben/unifi-cli/commit/d9fd5b8a4ea46dcc7cadeed7ab852283b5766bd6))
+- mask secrets in config init and add Protect credential prompts ([0a3474c](https://github.com/rvben/unifi-cli/commit/0a3474c9652cc733cf8e1eaf3c354bf262ff473e))
+- add Protect camera and RTSPS stream management ([2ea39e7](https://github.com/rvben/unifi-cli/commit/2ea39e795c8cf43a06e453f5b714cb5912a9333e))
+
+### Fixed
+
+- **init**: detect terminal for masked secret input ([1c02f3d](https://github.com/rvben/unifi-cli/commit/1c02f3d5d939e4002ce2b24e8a04ad0030963bfa))
+
 ## [0.1.6](https://github.com/rvben/unifi-cli/compare/v0.1.5...v0.1.6) - 2026-04-03
 
 ### Added
