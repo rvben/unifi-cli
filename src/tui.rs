@@ -1666,22 +1666,19 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                             {
                                 let name = c.display_name().to_string();
                                 match key.code {
-                                    KeyCode::Char('a') => {
-                                        if !c.is_wired {
-                                            if c.fixed_ap_enabled {
-                                                let action =
-                                                    ClientAction::UnlockFromAp(mac.clone());
-                                                state.overlay = Some(Overlay::Confirm {
-                                                    message: format!("Unlock {name} from AP?"),
-                                                    action: PendingAction::Client(action),
-                                                });
-                                            } else {
-                                                let idx = *idx;
-                                                state.overlay = Some(Overlay::ApPicker {
-                                                    client_idx: idx,
-                                                    ap_cursor: 0,
-                                                });
-                                            }
+                                    KeyCode::Char('a') if !c.is_wired => {
+                                        if c.fixed_ap_enabled {
+                                            let action = ClientAction::UnlockFromAp(mac.clone());
+                                            state.overlay = Some(Overlay::Confirm {
+                                                message: format!("Unlock {name} from AP?"),
+                                                action: PendingAction::Client(action),
+                                            });
+                                        } else {
+                                            let idx = *idx;
+                                            state.overlay = Some(Overlay::ApPicker {
+                                                client_idx: idx,
+                                                ap_cursor: 0,
+                                            });
                                         }
                                     }
                                     KeyCode::Char('k') => {
