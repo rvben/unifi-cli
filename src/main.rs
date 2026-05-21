@@ -628,10 +628,13 @@ async fn run_init() {
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
+    // Mask secrets only on an interactive terminal; piped input is read from
+    // stdin so non-interactive `config init` keeps working.
+    let use_tty = std::io::IsTerminal::is_terminal(&stdin);
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    let outcome = match run_init_with_io(&mut reader, &mut writer, &path, true) {
+    let outcome = match run_init_with_io(&mut reader, &mut writer, &path, use_tty) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Error: {e}");
