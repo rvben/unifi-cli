@@ -114,7 +114,7 @@ jobs:
           uv venv "${RUNNER_TEMP}/build-venv"
           VENV_BIN="${RUNNER_TEMP}/build-venv/bin"
           [ -d "$VENV_BIN" ] || VENV_BIN="${RUNNER_TEMP}/build-venv/Scripts"
-          uv pip install --python "$VENV_BIN/python" maturin ziglang
+          VIRTUAL_ENV="${RUNNER_TEMP}/build-venv" uv pip install maturin ziglang
           echo "$VENV_BIN" >> "$GITHUB_PATH"
 
       - name: Build wheel (arm64 linux via maturin-action)
@@ -227,8 +227,10 @@ jobs:
         shell: bash
         run: |
           uv venv "${RUNNER_TEMP}/build-venv"
-          uv pip install --python "${RUNNER_TEMP}/build-venv/bin/python" maturin
-          echo "${RUNNER_TEMP}/build-venv/bin" >> "$GITHUB_PATH"
+          VENV_BIN="${RUNNER_TEMP}/build-venv/bin"
+          [ -d "$VENV_BIN" ] || VENV_BIN="${RUNNER_TEMP}/build-venv/Scripts"
+          VIRTUAL_ENV="${RUNNER_TEMP}/build-venv" uv pip install maturin
+          echo "$VENV_BIN" >> "$GITHUB_PATH"
 
       - name: Build sdist
         run: maturin sdist
