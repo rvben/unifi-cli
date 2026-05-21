@@ -370,7 +370,7 @@ async fn legacy_get<T: serde::de::DeserializeOwned>(
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(UnifiClient::error_for_status_pub(status, body));
+        return Err(crate::api::error_for_status(status, body));
     }
     let legacy: LegacyResponse<T> = resp.json().await?;
     if legacy.meta.rc != "ok" {

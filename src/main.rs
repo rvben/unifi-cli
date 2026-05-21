@@ -2,6 +2,8 @@ use unifi_cli::api;
 use unifi_cli::commands;
 use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes, use_color};
 
+mod schema;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
@@ -15,6 +17,14 @@ struct Cli {
     /// API key (or set UNIFI_API_KEY env var)
     #[arg(long, env = "UNIFI_API_KEY")]
     api_key: Option<String>,
+
+    /// Username for Protect direct API (or set UNIFI_USERNAME env var)
+    #[arg(long, env = "UNIFI_USERNAME")]
+    username: Option<String>,
+
+    /// Password for Protect direct API (or set UNIFI_PASSWORD env var)
+    #[arg(long, env = "UNIFI_PASSWORD")]
+    password: Option<String>,
 
     /// Config profile to use (or set UNIFI_PROFILE env var)
     #[arg(long, env = "UNIFI_PROFILE")]
@@ -52,6 +62,10 @@ enum Command {
     /// System information
     #[command(subcommand)]
     System(SystemCommand),
+
+    /// Manage Protect cameras and RTSPS streams
+    #[command(subcommand)]
+    Protect(ProtectCommand),
 
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
@@ -203,171 +217,65 @@ enum SystemCommand {
     Info,
 }
 
-fn print_schema() {
-    let schema = serde_json::json!({
-        "name": "unifi",
-        "version": env!("CARGO_PKG_VERSION"),
-        "description": "CLI for UniFi Network controller",
-        "global_flags": {
-            "--json": "Output as JSON (auto-enabled when piped)",
-            "--quiet": "Suppress non-data output",
-            "--host <HOST>": "UniFi controller host (env: UNIFI_HOST)",
-            "--api-key <KEY>": "API key (env: UNIFI_API_KEY)",
-            "--profile <NAME>": "Config profile to use (env: UNIFI_PROFILE)",
-        },
-        "exit_codes": {
-            "0": "success",
-            "1": "general error",
-            "2": "configuration error (missing host/api-key)",
-            "3": "authentication error (401/403)",
-            "4": "not found (404)",
-            "5": "API error (server error)",
-        },
-        "commands": {
-            "clients list": {
-                "description": "List all connected clients",
-                "args": [
-                    {"name": "--wired", "required": false, "description": "Show only wired clients"},
-                    {"name": "--wireless", "required": false, "description": "Show only wireless clients"},
-                    {"name": "--name", "required": false, "description": "Filter by name (substring)"},
-                    {"name": "--watch", "required": false, "description": "Refresh every N seconds"},
-                ],
-                "output_fields": ["name", "mac", "ip", "type"],
-            },
-            "clients show": {
-                "description": "Show details for a client by MAC address",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["name", "mac", "ip", "wired", "uptime", "tx_bytes", "rx_bytes", "signal", "ssid", "ap_mac"],
-            },
-            "clients set-fixed-ip": {
-                "description": "Set a fixed IP (DHCP reservation) for a client",
-                "args": [
-                    {"name": "mac", "required": true, "description": "MAC address"},
-                    {"name": "ip", "required": true, "description": "Fixed IP address"},
-                    {"name": "--name", "required": false, "description": "Friendly name"},
-                ],
-                "output_fields": ["status", "action", "mac", "ip", "name"],
-                "mutating": true,
-            },
-            "clients block": {
-                "description": "Block a client",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "clients unblock": {
-                "description": "Unblock a client",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "clients kick": {
-                "description": "Kick (disconnect) a client",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "clients top": {
-                "description": "Show top clients by bandwidth usage",
-                "args": [
-                    {"name": "--limit", "required": false, "description": "Number of clients (default: 10)"},
-                ],
-                "output_fields": ["name", "mac", "ip", "tx_bytes", "rx_bytes", "total_bytes"],
-            },
-            "devices list": {
-                "description": "List all network devices",
-                "args": [
-                    {"name": "--watch", "required": false, "description": "Refresh every N seconds"},
-                ],
-                "output_fields": ["name", "model", "mac", "ip", "state", "firmware"],
-            },
-            "devices show": {
-                "description": "Show details for a device by MAC address",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["name", "model", "mac", "ip", "state", "firmware", "uptime", "num_sta", "version"],
-            },
-            "devices restart": {
-                "description": "Restart a device",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "devices locate": {
-                "description": "Toggle locate LED on a device",
-                "args": [
-                    {"name": "mac", "required": true, "description": "MAC address"},
-                    {"name": "--off", "required": false, "description": "Turn off locate LED"},
-                ],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "devices ports": {
-                "description": "Show switch/router port table",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["port_idx", "name", "media", "up", "speed", "full_duplex", "poe_enable", "poe_power", "tx_bytes", "rx_bytes"],
-            },
-            "networks": {
-                "description": "List networks",
-                "args": [],
-                "output_fields": ["name", "vlan_id", "enabled", "default"],
-            },
-            "events list": {
-                "description": "List recent controller events",
-                "args": [
-                    {"name": "--limit", "required": false, "description": "Number of events (default: 10)"},
-                ],
-                "output_fields": ["key", "msg", "subsystem", "time", "datetime"],
-            },
-            "devices upgrade": {
-                "description": "Trigger firmware upgrade on a device",
-                "args": [{"name": "mac", "required": true, "description": "MAC address"}],
-                "output_fields": ["status", "action", "mac"],
-                "mutating": true,
-            },
-            "system health": {
-                "description": "Show system health",
-                "args": [],
-                "output_fields": ["subsystem", "status", "num_sta", "num_ap", "num_switches", "wan_ip", "isp_name"],
-            },
-            "system info": {
-                "description": "Show system info",
-                "args": [],
-                "output_fields": ["hostname", "version", "timezone", "uptime"],
-            },
-            "completions": {
-                "description": "Generate shell completions",
-                "args": [{"name": "shell", "required": true, "description": "Shell (bash, zsh, fish, powershell)"}],
-                "note": "Does not require --host or --api-key",
-            },
-            "config init": {
-                "description": "Create or update config file interactively",
-                "args": [],
-                "note": "Does not require --host or --api-key. Supports named profiles.",
-            },
-            "config check": {
-                "description": "Verify configuration and test connectivity",
-                "args": [],
-                "note": "Requires --host and --api-key (or config file).",
-            },
-            "top": {
-                "description": "Live dashboard with real-time bandwidth and device status",
-                "args": [
-                    {"name": "--interval", "required": false, "description": "Refresh interval in seconds (default: 2)"},
-                ],
-                "note": "Interactive TUI. Keys: q quit, s sort, tab focus, / filter, ↑↓ scroll",
-            },
-        },
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&schema).expect("failed to serialize schema")
-    );
+#[derive(Subcommand)]
+enum ProtectCommand {
+    /// Manage cameras
+    #[command(subcommand)]
+    Cameras(ProtectCamerasCommand),
+
+    /// Manage RTSPS streams for cameras
+    #[command(subcommand)]
+    Rtsps(ProtectRtspsCommand),
 }
 
-fn load_config_from(
-    path: &std::path::Path,
-    profile: Option<&str>,
-) -> (Option<String>, Option<String>) {
+#[derive(Subcommand)]
+enum ProtectCamerasCommand {
+    /// List all Protect cameras
+    List {
+        /// Use direct Protect API for full details (requires --username/--password)
+        #[arg(long)]
+        full: bool,
+    },
+    /// Show details for a camera by ID or name
+    Show {
+        /// Camera ID (24-char hex) or name (case-insensitive)
+        camera: String,
+        /// Use direct Protect API for full details (requires --username/--password)
+        #[arg(long)]
+        full: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProtectRtspsCommand {
+    /// List existing RTSPS stream URLs for a camera
+    List {
+        /// Camera ID (24-char hex) or name (case-insensitive)
+        camera: String,
+    },
+    /// Create new RTSPS streams for a camera
+    Create {
+        /// Camera ID (24-char hex) or name (case-insensitive)
+        camera: String,
+        /// Quality levels to create (comma-separated: high,medium,low,package)
+        #[arg(short, long, value_delimiter = ',', default_value = "high,medium")]
+        quality: Vec<String>,
+    },
+    /// Delete RTSPS streams for a camera
+    Delete {
+        /// Camera ID (24-char hex) or name (case-insensitive)
+        camera: String,
+        /// Quality levels to delete (comma-separated: high,medium,low,package)
+        #[arg(short, long, value_delimiter = ',', default_value = "high,medium")]
+        quality: Vec<String>,
+    },
+}
+
+fn print_schema() {
+    schema::print_schema(Cli::command());
+}
+
+fn load_config_from(path: &std::path::Path, profile: Option<&str>) -> ConfigValues {
     if let Ok(contents) = std::fs::read_to_string(path)
         && let Ok(config) = contents.parse::<toml::Table>()
     {
@@ -378,17 +286,17 @@ fn load_config_from(
             eprintln!("Warning: Profile '{name}' not found in config");
         }
     }
-    (None, None)
+    ConfigValues::default()
 }
 
-fn load_config(profile: Option<&str>) -> (Option<String>, Option<String>) {
+fn load_config(profile: Option<&str>) -> ConfigValues {
     let config_path = dirs::config_dir().map(|d| d.join("unifi").join("config.toml"));
 
     if let Some(path) = config_path {
         return load_config_from(&path, profile);
     }
 
-    (None, None)
+    ConfigValues::default()
 }
 
 fn default_config_path() -> Result<std::path::PathBuf, InitError> {
@@ -436,14 +344,46 @@ fn prompt_line(
     Ok(line.trim().to_string())
 }
 
-fn extract_credentials(table: &toml::Table) -> (Option<String>, Option<String>) {
-    (
-        table.get("host").and_then(|v| v.as_str()).map(String::from),
-        table
+fn prompt_secret(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    prompt: &str,
+    use_tty: bool,
+) -> Result<String, InitError> {
+    if use_tty {
+        write!(writer, "{prompt}")?;
+        writer.flush()?;
+        rpassword::read_password().map_err(|e| InitError(format!("Failed to read secret: {e}")))
+    } else {
+        // Fallback for tests (reader is not a real terminal)
+        prompt_line(reader, writer, prompt)
+    }
+}
+
+#[derive(Default)]
+struct ConfigValues {
+    host: Option<String>,
+    api_key: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+fn extract_credentials(table: &toml::Table) -> ConfigValues {
+    ConfigValues {
+        host: table.get("host").and_then(|v| v.as_str()).map(String::from),
+        api_key: table
             .get("api_key")
             .and_then(|v| v.as_str())
             .map(String::from),
-    )
+        username: table
+            .get("username")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        password: table
+            .get("password")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
 }
 
 fn resolve_profile_table<'a>(
@@ -503,6 +443,7 @@ fn run_init_with_io(
     reader: &mut dyn std::io::BufRead,
     writer: &mut dyn std::io::Write,
     config_path: &std::path::Path,
+    use_tty: bool,
 ) -> Result<InitOutcome, InitError> {
     // Load existing config, warn if file exists but is corrupt
     let existing = match std::fs::read_to_string(config_path) {
@@ -530,33 +471,35 @@ fn run_init_with_io(
     };
 
     // Current values for this profile/default
-    let (current_host, current_key) = existing
+    let current = existing
         .as_ref()
         .and_then(|c| resolve_profile_table(c, profile_name.as_deref()))
         .map(extract_credentials)
-        .unwrap_or((None, None));
+        .unwrap_or_default();
 
     // Host prompt
-    let host_prompt = match current_host {
+    let host_prompt = match current.host {
         Some(ref h) => format!("Controller host [{h}]: "),
         None => "Controller host (e.g., https://unifi.local): ".to_string(),
     };
     let host_input = prompt_line(reader, writer, &host_prompt)?;
     let host = if host_input.is_empty() {
-        current_host.ok_or(InitError("Host is required".into()))?
+        current.host.ok_or(InitError("Host is required".into()))?
     } else {
         host_input
     };
 
-    // API key prompt
-    let key_prompt = match current_key {
+    // API key prompt (masked input)
+    let key_prompt = match current.api_key {
         Some(ref k) => format!("API key [{}]: ", mask_api_key(k)),
         None => "API key: ".to_string(),
     };
-    let key_input = prompt_line(reader, writer, &key_prompt)?;
-    let show_key_hint = current_key.is_none();
+    let key_input = prompt_secret(reader, writer, &key_prompt, use_tty)?;
+    let show_key_hint = current.api_key.is_none();
     let api_key = if key_input.is_empty() {
-        current_key.ok_or(InitError("API key is required".into()))?
+        current
+            .api_key
+            .ok_or(InitError("API key is required".into()))?
     } else {
         key_input
     };
@@ -567,6 +510,38 @@ fn run_init_with_io(
         )?;
     }
 
+    // Optional Protect credentials (username/password for --full commands)
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "Protect direct API credentials (optional, for --full camera details):"
+    )?;
+    let user_prompt = match current.username {
+        Some(ref u) => format!("Username [{u}]: "),
+        None => "Username (leave empty to skip): ".to_string(),
+    };
+    let user_input = prompt_line(reader, writer, &user_prompt)?;
+    let username = if user_input.is_empty() {
+        current.username.clone()
+    } else {
+        Some(user_input)
+    };
+
+    let password = if username.is_some() {
+        let pass_prompt = match current.password {
+            Some(_) => "Password [****]: ".to_string(),
+            None => "Password: ".to_string(),
+        };
+        let pass_input = prompt_secret(reader, writer, &pass_prompt, use_tty)?;
+        if pass_input.is_empty() {
+            current.password.clone()
+        } else {
+            Some(pass_input)
+        }
+    } else {
+        None
+    };
+
     // Show summary and confirm
     let label = profile_name
         .as_deref()
@@ -574,9 +549,13 @@ fn run_init_with_io(
         .unwrap_or_default();
     writeln!(writer)?;
     writeln!(writer, "Configuration{label}:")?;
-    writeln!(writer, "  host    = {host}")?;
-    writeln!(writer, "  api_key = {}", mask_api_key(&api_key))?;
-    writeln!(writer, "  path    = {}", config_path.display())?;
+    writeln!(writer, "  host     = {host}")?;
+    writeln!(writer, "  api_key  = {}", mask_api_key(&api_key))?;
+    if let Some(ref u) = username {
+        writeln!(writer, "  username = {u}")?;
+        writeln!(writer, "  password = ****")?;
+    }
+    writeln!(writer, "  path     = {}", config_path.display())?;
 
     let confirm = prompt_line(reader, writer, "\nSave? (y/n): ")?;
     if !matches!(confirm.to_lowercase().as_str(), "y" | "yes") {
@@ -596,10 +575,22 @@ fn run_init_with_io(
         let mut section = toml::Table::new();
         section.insert("host".into(), toml::Value::String(host.clone()));
         section.insert("api_key".into(), toml::Value::String(api_key.clone()));
+        if let Some(ref u) = username {
+            section.insert("username".into(), toml::Value::String(u.clone()));
+        }
+        if let Some(ref p) = password {
+            section.insert("password".into(), toml::Value::String(p.clone()));
+        }
         profiles.insert(name.clone(), toml::Value::Table(section));
     } else {
         config.insert("host".into(), toml::Value::String(host.clone()));
         config.insert("api_key".into(), toml::Value::String(api_key.clone()));
+        if let Some(ref u) = username {
+            config.insert("username".into(), toml::Value::String(u.clone()));
+        }
+        if let Some(ref p) = password {
+            config.insert("password".into(), toml::Value::String(p.clone()));
+        }
     }
 
     // Write config
@@ -611,6 +602,13 @@ fn run_init_with_io(
         .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
     std::fs::write(config_path, &toml_str)
         .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+
+    // Restrict config file permissions (contains secrets)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     Ok(InitOutcome::Saved {
         profile: profile_name,
@@ -633,7 +631,7 @@ async fn run_init() {
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    let outcome = match run_init_with_io(&mut reader, &mut writer, &path) {
+    let outcome = match run_init_with_io(&mut reader, &mut writer, &path, true) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -810,6 +808,32 @@ fn install_completions(shell: Shell) {
     }
 }
 
+async fn require_protect_session(
+    host: &str,
+    username: &Option<String>,
+    password: &Option<String>,
+) -> api::ProtectSession {
+    let user = username.as_deref().unwrap_or_else(|| {
+        eprintln!(
+            "Error: --full requires --username (or UNIFI_USERNAME env var, or username in config)"
+        );
+        std::process::exit(exit_codes::CONFIG_ERROR);
+    });
+    let pass = password.as_deref().unwrap_or_else(|| {
+        eprintln!(
+            "Error: --full requires --password (or UNIFI_PASSWORD env var, or password in config)"
+        );
+        std::process::exit(exit_codes::CONFIG_ERROR);
+    });
+    match api::ProtectSession::login(host, user, pass).await {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("Error: Protect login failed: {e}");
+            std::process::exit(exit_code_for_error(&e));
+        }
+    }
+}
+
 async fn run_config_check(client: &api::UnifiClient) {
     eprintln!("Checking connectivity...\n");
 
@@ -883,9 +907,9 @@ async fn main() {
         _ => {}
     }
 
-    let (config_host, config_api_key) = load_config(cli.profile.as_deref());
+    let config = load_config(cli.profile.as_deref());
 
-    let host = cli.host.or(config_host).unwrap_or_else(|| {
+    let host = cli.host.or(config.host).unwrap_or_else(|| {
         eprintln!("Error: No host specified.");
         eprintln!();
         eprintln!("  Run 'unifi config init' for interactive setup, or:");
@@ -894,7 +918,7 @@ async fn main() {
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
-    let api_key = cli.api_key.or(config_api_key).unwrap_or_else(|| {
+    let api_key = cli.api_key.or(config.api_key).unwrap_or_else(|| {
         eprintln!("Error: No API key specified.");
         eprintln!();
         eprintln!("  Run 'unifi config init' for interactive setup, or:");
@@ -904,6 +928,9 @@ async fn main() {
         eprintln!("  Generate an API key in UniFi Settings > API");
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
+
+    let username = cli.username.or(config.username);
+    let password = cli.password.or(config.password);
 
     let mut client = match api::UnifiClient::new(&host, &api_key) {
         Ok(c) => c,
@@ -971,6 +998,37 @@ async fn main() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
+        Command::Protect(cmd) => match cmd {
+            ProtectCommand::Cameras(cam_cmd) => match cam_cmd {
+                ProtectCamerasCommand::List { full } => {
+                    if full {
+                        let session = require_protect_session(&host, &username, &password).await;
+                        commands::protect::cameras_list_full(&session, out).await
+                    } else {
+                        commands::protect::cameras_list(&client, out).await
+                    }
+                }
+                ProtectCamerasCommand::Show { camera, full } => {
+                    if full {
+                        let session = require_protect_session(&host, &username, &password).await;
+                        commands::protect::cameras_show_full(&session, &client, &camera, out).await
+                    } else {
+                        commands::protect::cameras_show(&client, &camera, out).await
+                    }
+                }
+            },
+            ProtectCommand::Rtsps(rtsps_cmd) => match rtsps_cmd {
+                ProtectRtspsCommand::List { camera } => {
+                    commands::protect::rtsps_list(&client, &camera, out).await
+                }
+                ProtectRtspsCommand::Create { camera, quality } => {
+                    commands::protect::rtsps_create(&client, &camera, &quality, out).await
+                }
+                ProtectRtspsCommand::Delete { camera, quality } => {
+                    commands::protect::rtsps_delete(&client, &camera, &quality, out).await
+                }
+            },
+        },
         Command::Tui { interval } => unifi_cli::tui::run(&client, interval).await,
         Command::Config(ConfigCommand::Check) => {
             run_config_check(&client).await;
@@ -1003,7 +1061,7 @@ mod tests {
         writeln!(f, "host = \"unifi.example.com\"").unwrap();
         writeln!(f, "api_key = \"secret123\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("unifi.example.com"));
         assert_eq!(api_key.as_deref(), Some("secret123"));
     }
@@ -1014,7 +1072,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "host = \"unifi.local\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("unifi.local"));
         assert!(api_key.is_none());
     }
@@ -1022,7 +1080,7 @@ mod tests {
     #[test]
     fn load_config_missing_file() {
         let path = std::path::Path::new("/tmp/nonexistent-unifi-test.toml");
-        let (host, api_key) = load_config_from(path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -1033,7 +1091,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "not valid toml {{{{").unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -1044,7 +1102,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -1055,7 +1113,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "host = \"h\"\napi_key = \"k\"\nfoo = \"bar\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("h"));
         assert_eq!(api_key.as_deref(), Some("k"));
     }
@@ -1079,7 +1137,7 @@ api_key = "office_key"
         )
         .unwrap();
 
-        let (host, api_key) = load_config_from(&path, Some("office"));
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, Some("office"));
         assert_eq!(host.as_deref(), Some("office.local"));
         assert_eq!(api_key.as_deref(), Some("office_key"));
     }
@@ -1101,7 +1159,7 @@ api_key = "office_key"
         )
         .unwrap();
 
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert_eq!(host.as_deref(), Some("default.local"));
         assert_eq!(api_key.as_deref(), Some("default_key"));
     }
@@ -1112,7 +1170,7 @@ api_key = "office_key"
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "host = \"h\"\napi_key = \"k\"").unwrap();
 
-        let (host, api_key) = load_config_from(&path, Some("nonexistent"));
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, Some("nonexistent"));
         assert!(host.is_none());
         assert!(api_key.is_none());
     }
@@ -1138,10 +1196,10 @@ api_key = "work_key"
         )
         .unwrap();
 
-        let (host, _) = load_config_from(&path, Some("home"));
+        let ConfigValues { host, .. } = load_config_from(&path, Some("home"));
         assert_eq!(host.as_deref(), Some("home.local"));
 
-        let (host, _) = load_config_from(&path, Some("work"));
+        let ConfigValues { host, .. } = load_config_from(&path, Some("work"));
         assert_eq!(host.as_deref(), Some("work.example.com"));
     }
 
@@ -1189,7 +1247,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path).unwrap();
+        let result = run_init_with_io(&mut reader, &mut output, &path, false).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap_or_default();
         let display = String::from_utf8(output).unwrap();
@@ -1197,9 +1255,35 @@ api_key = "work_key"
     }
 
     #[test]
+    fn init_persists_protect_credentials() {
+        // profile, host, key, username, password, confirm
+        let (result, written, display) = run_init_test(
+            None,
+            "\nhttps://unifi.local\nmy-api-key\nadmin\nsecret\ny\n",
+        );
+
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
+        assert!(written.contains("username = \"admin\""));
+        assert!(written.contains("password = \"secret\""));
+        // The summary masks the password rather than echoing it.
+        assert!(display.contains("password = ****"));
+        assert!(!display.contains("secret"));
+    }
+
+    #[test]
+    fn init_skips_password_when_no_username() {
+        // Empty username means no Protect credentials are stored at all.
+        let (result, written, _) = run_init_test(None, "\nhttps://unifi.local\nmy-api-key\n\ny\n");
+
+        assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
+        assert!(!written.contains("username"));
+        assert!(!written.contains("password"));
+    }
+
+    #[test]
     fn init_fresh_default_profile() {
         let (result, written, display) =
-            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\ny\n");
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\n\ny\n");
 
         assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
         assert!(written.contains("host = \"https://unifi.local\""));
@@ -1210,7 +1294,7 @@ api_key = "work_key"
     #[test]
     fn init_fresh_named_profile() {
         let (result, written, _) =
-            run_init_test(None, "office\nhttps://office.local\noffice-key\ny\n");
+            run_init_test(None, "office\nhttps://office.local\noffice-key\n\ny\n");
 
         assert!(matches!(
             result,
@@ -1226,7 +1310,7 @@ api_key = "work_key"
     #[test]
     fn init_cancelled() {
         let (result, written, display) =
-            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\nn\n");
+            run_init_test(None, "\nhttps://unifi.local\nmy-api-key\n\nn\n");
 
         assert_eq!(result, InitOutcome::Cancelled);
         assert!(written.is_empty());
@@ -1237,7 +1321,7 @@ api_key = "work_key"
     fn init_preserves_existing_default_when_adding_profile() {
         let existing = "host = \"default.local\"\napi_key = \"default-key\"\n";
         let (result, written, _) =
-            run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\ny\n");
+            run_init_test(Some(existing), "work\nhttps://work.local\nwork-key\n\ny\n");
 
         assert!(matches!(
             result,
@@ -1256,7 +1340,7 @@ api_key = "work_key"
     fn init_keeps_existing_value_on_empty_input() {
         let existing = "host = \"existing.local\"\napi_key = \"existing-key\"\n";
         // Empty host and key inputs → keep existing values
-        let (result, written, _) = run_init_test(Some(existing), "\n\n\ny\n");
+        let (result, written, _) = run_init_test(Some(existing), "\n\n\n\ny\n");
 
         assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
         assert!(written.contains("host = \"existing.local\""));
@@ -1266,7 +1350,7 @@ api_key = "work_key"
     #[test]
     fn init_overwrites_existing_value() {
         let existing = "host = \"old.local\"\napi_key = \"old-key\"\n";
-        let (_, written, _) = run_init_test(Some(existing), "\nnew.local\nnew-key\ny\n");
+        let (_, written, _) = run_init_test(Some(existing), "\nnew.local\nnew-key\n\ny\n");
 
         assert!(written.contains("host = \"new.local\""));
         assert!(written.contains("api_key = \"new-key\""));
@@ -1276,18 +1360,19 @@ api_key = "work_key"
     #[test]
     fn init_shows_masked_key_in_prompt() {
         let existing = "host = \"h\"\napi_key = \"abcdefghij\"\n";
-        let (_, _, display) = run_init_test(Some(existing), "\n\n\ny\n");
+        let (_, _, display) = run_init_test(Some(existing), "\n\n\n\ny\n");
 
         assert!(display.contains("abcd…ghij"));
     }
 
     #[test]
     fn init_shows_summary_before_confirm() {
-        let (_, _, display) = run_init_test(None, "\nhttps://test.local\ntest-key-1234567890\ny\n");
+        let (_, _, display) =
+            run_init_test(None, "\nhttps://test.local\ntest-key-1234567890\n\ny\n");
 
         assert!(display.contains("Configuration:"));
-        assert!(display.contains("host    = https://test.local"));
-        assert!(display.contains("api_key = test…7890"));
+        assert!(display.contains("host     = https://test.local"));
+        assert!(display.contains("api_key  = test…7890"));
         assert!(display.contains("Save? (y/n)"));
     }
 
@@ -1295,7 +1380,7 @@ api_key = "work_key"
     fn init_warns_on_corrupt_existing_config() {
         let (result, written, display) = run_init_test(
             Some("not valid {{{ toml"),
-            "\nhttps://new.local\nnew-key\ny\n",
+            "\nhttps://new.local\nnew-key\n\ny\n",
         );
 
         assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
@@ -1306,7 +1391,7 @@ api_key = "work_key"
 
     #[test]
     fn init_accepts_mixed_case_yes() {
-        let (result, _, _) = run_init_test(None, "\nhttps://h\nk\nYes\n");
+        let (result, _, _) = run_init_test(None, "\nhttps://h\nk\n\nYes\n");
         assert!(matches!(result, InitOutcome::Saved { profile: None, .. }));
     }
 
@@ -1318,7 +1403,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host is required"));
     }
@@ -1331,7 +1416,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false);
         assert!(result.is_err());
         assert!(
             result
@@ -1972,12 +2057,12 @@ api_key = "office_key"
         .unwrap();
 
         // No profile → returns default (no top-level host/key)
-        let (host, api_key) = load_config_from(&path, None);
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, None);
         assert!(host.is_none());
         assert!(api_key.is_none());
 
         // Named profile → returns profile
-        let (host, api_key) = load_config_from(&path, Some("office"));
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, Some("office"));
         assert_eq!(host.as_deref(), Some("office.local"));
         assert_eq!(api_key.as_deref(), Some("office_key"));
     }
@@ -1995,7 +2080,7 @@ host = "partial.local"
         )
         .unwrap();
 
-        let (host, api_key) = load_config_from(&path, Some("partial"));
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, Some("partial"));
         assert_eq!(host.as_deref(), Some("partial.local"));
         assert!(api_key.is_none());
     }
@@ -2014,7 +2099,7 @@ api_key = "key-with-special=chars"
         )
         .unwrap();
 
-        let (host, api_key) = load_config_from(&path, Some("my-home"));
+        let ConfigValues { host, api_key, .. } = load_config_from(&path, Some("my-home"));
         assert_eq!(host.as_deref(), Some("home.local"));
         assert_eq!(api_key.as_deref(), Some("key-with-special=chars"));
     }
@@ -2072,7 +2157,9 @@ api_key = "k"
 "#
         .parse()
         .unwrap();
-        let (host, key) = extract_credentials(&table);
+        let ConfigValues {
+            host, api_key: key, ..
+        } = extract_credentials(&table);
         assert_eq!(host.as_deref(), Some("h"));
         assert_eq!(key.as_deref(), Some("k"));
     }
@@ -2080,7 +2167,9 @@ api_key = "k"
     #[test]
     fn extract_credentials_empty_table() {
         let table = toml::Table::new();
-        let (host, key) = extract_credentials(&table);
+        let ConfigValues {
+            host, api_key: key, ..
+        } = extract_credentials(&table);
         assert!(host.is_none());
         assert!(key.is_none());
     }
@@ -2088,7 +2177,7 @@ api_key = "k"
     #[test]
     fn extract_credentials_non_string_values() {
         let table: toml::Table = "host = 12345".parse().unwrap();
-        let (host, _) = extract_credentials(&table);
+        let ConfigValues { host, .. } = extract_credentials(&table);
         assert!(host.is_none()); // integer, not string
     }
 
@@ -2128,25 +2217,25 @@ api_key = "k"
 
     #[test]
     fn error_for_status_401_returns_auth() {
-        let err = api::UnifiClient::error_for_status_pub(401, "Unauthorized".into());
+        let err = api::error_for_status(401, "Unauthorized".into());
         assert!(matches!(err, api::ApiError::Auth(_)));
     }
 
     #[test]
     fn error_for_status_403_returns_auth() {
-        let err = api::UnifiClient::error_for_status_pub(403, "Forbidden".into());
+        let err = api::error_for_status(403, "Forbidden".into());
         assert!(matches!(err, api::ApiError::Auth(_)));
     }
 
     #[test]
     fn error_for_status_404_returns_not_found() {
-        let err = api::UnifiClient::error_for_status_pub(404, "Not Found".into());
+        let err = api::error_for_status(404, "Not Found".into());
         assert!(matches!(err, api::ApiError::NotFound(_)));
     }
 
     #[test]
     fn error_for_status_500_returns_api_error() {
-        let err = api::UnifiClient::error_for_status_pub(500, "Server Error".into());
+        let err = api::error_for_status(500, "Server Error".into());
         match err {
             api::ApiError::Api { status, message } => {
                 assert_eq!(status, 500);
@@ -2158,7 +2247,7 @@ api_key = "k"
 
     #[test]
     fn error_for_status_200_returns_api_error() {
-        let err = api::UnifiClient::error_for_status_pub(200, "unexpected".into());
+        let err = api::error_for_status(200, "unexpected".into());
         assert!(matches!(err, api::ApiError::Api { status: 200, .. }));
     }
 }
