@@ -2475,6 +2475,13 @@ accept_invalid_certs = true
         assert!(err.to_string().contains("Invalid controller host"));
     }
 
+    #[test]
+    fn client_new_accepts_uppercase_scheme() {
+        // URL schemes are case-insensitive; the scheme is normalized to lowercase.
+        let client = api::UnifiClient::new("HTTPS://unifi.local", "key").unwrap();
+        assert_eq!(client.base_url(), "HTTPS://unifi.local");
+    }
+
     // --- error_for_status ---
 
     #[test]

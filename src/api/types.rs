@@ -453,26 +453,22 @@ pub enum ApiError {
     Other(String),
 }
 
-/// Scan a single error string for TLS certificate failure markers. The rustls
-/// cause surfaces in different forms depending on the layer (Display vs Debug),
-/// so several spellings are matched.
+/// Scan a single error string for TLS certificate failure markers. rustls
+/// reports these as "invalid peer certificate: <reason>", so "certificate" is
+/// the reliable marker; "self-signed" is matched defensively.
 fn text_indicates_cert_failure(s: &str) -> bool {
     let s = s.to_lowercase();
-    s.contains("certificate")
-        || s.contains("self-signed")
-        || s.contains("self signed")
-        || s.contains("unknownissuer")
-        || s.contains("invalidcertificate")
+    s.contains("certificate") || s.contains("self-signed")
 }
 
-/// Walk a reqwest error's Debug form and full source chain looking for a TLS
-/// certificate failure. reqwest's own Display is only "error sending request",
-/// so the cert cause must be read from the nested chain.
+/// Walk a reqwest error's source chain looking for a TLS certificate failure.
+/// reqwest's own Display is only "error sending request for url (...)", so the
+/// cert cause must be read from the nested chain. The top-level Display and the
+/// Debug form are deliberately not scanned: both embed the request URL, so a
+/// controller hostname containing a word like "certificate" would otherwise be
+/// misread as a certificate failure on any unrelated network error.
 fn reqwest_is_cert_failure(e: &reqwest::Error) -> bool {
     use std::error::Error;
-    if text_indicates_cert_failure(&format!("{e:?}")) {
-        return true;
-    }
     let mut source: Option<&dyn std::error::Error> = e.source();
     while let Some(err) = source {
         if text_indicates_cert_failure(&err.to_string()) {

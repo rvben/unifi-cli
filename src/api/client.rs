@@ -33,12 +33,11 @@ pub struct ClientOptions {
 }
 
 fn normalize_base_url(host: &str) -> Result<String, ApiError> {
-    let candidate = if host.starts_with("http://") || host.starts_with("https://") {
+    // A bare host (no scheme) defaults to https; an explicit scheme is kept and
+    // validated after parsing so only http/https are accepted. Parsing also
+    // rejects an empty host, since the url crate requires one for http/https.
+    let candidate = if host.contains("://") {
         host.trim_end_matches('/').to_string()
-    } else if host.contains("://") {
-        return Err(ApiError::Other(
-            "Controller host must use http:// or https://".into(),
-        ));
     } else {
         format!("https://{}", host.trim_end_matches('/'))
     };
@@ -48,11 +47,6 @@ fn normalize_base_url(host: &str) -> Result<String, ApiError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(ApiError::Other(
             "Controller host must use http:// or https://".into(),
-        ));
-    }
-    if url.host_str().is_none() {
-        return Err(ApiError::Other(
-            "Controller host must include a hostname or IP address".into(),
         ));
     }
     Ok(candidate)
