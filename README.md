@@ -52,6 +52,8 @@ Run `unifi config init` for interactive setup, or configure manually:
 ```bash
 export UNIFI_HOST=https://unifi.example.com
 export UNIFI_API_KEY=YOUR_KEY
+# Optional for lab controllers with self-signed or otherwise invalid TLS certs:
+export UNIFI_ACCEPT_INVALID_CERTS=true
 ```
 
 ### Config file
@@ -61,6 +63,8 @@ export UNIFI_API_KEY=YOUR_KEY
 ```toml
 host = "https://unifi.example.com"
 api_key = "YOUR_KEY"
+# Optional; defaults to false.
+accept_invalid_certs = false
 ```
 
 ### Multi-controller profiles
@@ -87,6 +91,12 @@ unifi --host https://unifi.example.com --api-key YOUR_KEY clients list
 ```
 
 Priority: CLI flags > environment variables > config file.
+
+TLS certificates are verified by default. For a local controller with a
+self-signed certificate, pass `--accept-invalid-certs`, set
+`UNIFI_ACCEPT_INVALID_CERTS=true`, or set `accept_invalid_certs = true` in the
+config file. Only use this on trusted networks because it weakens protection for
+API keys, passwords, session cookies, and stream URLs.
 
 ## TUI dashboard
 

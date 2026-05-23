@@ -474,7 +474,9 @@ impl fmt::Display for ApiError {
                 } else if msg.contains("certificate") || msg.contains("SSL") {
                     write!(
                         f,
-                        "\n  Hint: TLS/certificate error. The CLI accepts self-signed certs by default"
+                        "\n  Hint: TLS certificate verification failed. For a trusted controller \
+                         with a self-signed cert, pass --accept-invalid-certs (or set \
+                         UNIFI_ACCEPT_INVALID_CERTS=true or accept_invalid_certs = true in config)"
                     )?;
                 }
                 Ok(())
