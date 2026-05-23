@@ -26,6 +26,10 @@ struct Cli {
     #[arg(long, env = "UNIFI_PASSWORD")]
     password: Option<String>,
 
+    /// Accept invalid TLS certificates from the controller (or set UNIFI_ACCEPT_INVALID_CERTS=true)
+    #[arg(long, env = "UNIFI_ACCEPT_INVALID_CERTS")]
+    accept_invalid_certs: bool,
+
     /// Config profile to use (or set UNIFI_PROFILE env var)
     #[arg(long, env = "UNIFI_PROFILE")]
     profile: Option<String>,
@@ -366,6 +370,7 @@ struct ConfigValues {
     api_key: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    accept_invalid_certs: bool,
 }
 
 fn extract_credentials(table: &toml::Table) -> ConfigValues {
@@ -383,6 +388,10 @@ fn extract_credentials(table: &toml::Table) -> ConfigValues {
             .get("password")
             .and_then(|v| v.as_str())
             .map(String::from),
+        accept_invalid_certs: table
+            .get("accept_invalid_certs")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -444,6 +453,7 @@ fn run_init_with_io(
     writer: &mut dyn std::io::Write,
     config_path: &std::path::Path,
     use_tty: bool,
+    accept_invalid_certs: bool,
 ) -> Result<InitOutcome, InitError> {
     // Load existing config, warn if file exists but is corrupt
     let existing = match std::fs::read_to_string(config_path) {
@@ -541,6 +551,7 @@ fn run_init_with_io(
     } else {
         None
     };
+    let accept_invalid_certs = accept_invalid_certs || current.accept_invalid_certs;
 
     // Show summary and confirm
     let label = profile_name
@@ -554,6 +565,9 @@ fn run_init_with_io(
     if let Some(ref u) = username {
         writeln!(writer, "  username = {u}")?;
         writeln!(writer, "  password = ****")?;
+    }
+    if accept_invalid_certs {
+        writeln!(writer, "  accept_invalid_certs = true")?;
     }
     writeln!(writer, "  path     = {}", config_path.display())?;
 
@@ -581,6 +595,9 @@ fn run_init_with_io(
         if let Some(ref p) = password {
             section.insert("password".into(), toml::Value::String(p.clone()));
         }
+        if accept_invalid_certs {
+            section.insert("accept_invalid_certs".into(), toml::Value::Boolean(true));
+        }
         profiles.insert(name.clone(), toml::Value::Table(section));
     } else {
         config.insert("host".into(), toml::Value::String(host.clone()));
@@ -590,6 +607,11 @@ fn run_init_with_io(
         }
         if let Some(ref p) = password {
             config.insert("password".into(), toml::Value::String(p.clone()));
+        }
+        if accept_invalid_certs {
+            config.insert("accept_invalid_certs".into(), toml::Value::Boolean(true));
+        } else {
+            config.remove("accept_invalid_certs");
         }
     }
 
@@ -617,7 +639,7 @@ fn run_init_with_io(
     })
 }
 
-async fn run_init() {
+async fn run_init(accept_invalid_certs: bool) {
     let path = match default_config_path() {
         Ok(p) => p,
         Err(e) => {
@@ -634,7 +656,13 @@ async fn run_init() {
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    let outcome = match run_init_with_io(&mut reader, &mut writer, &path, use_tty) {
+    let outcome = match run_init_with_io(
+        &mut reader,
+        &mut writer,
+        &path,
+        use_tty,
+        accept_invalid_certs,
+    ) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -656,7 +684,13 @@ async fn run_init() {
     eprint!("  Verifying credentials...");
     std::io::stderr().flush().ok();
 
-    match api::UnifiClient::new(&host, &api_key) {
+    match api::UnifiClient::new_with_options(
+        &host,
+        &api_key,
+        api::ClientOptions {
+            accept_invalid_certs,
+        },
+    ) {
         Ok(client) => match client.get_health().await {
             Ok(_) => {
                 eprintln!(" {} Connected", sym_ok());
@@ -815,6 +849,7 @@ async fn require_protect_session(
     host: &str,
     username: &Option<String>,
     password: &Option<String>,
+    client_options: api::ClientOptions,
 ) -> api::ProtectSession {
     let user = username.as_deref().unwrap_or_else(|| {
         eprintln!(
@@ -828,7 +863,7 @@ async fn require_protect_session(
         );
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
-    match api::ProtectSession::login(host, user, pass).await {
+    match api::ProtectSession::login_with_options(host, user, pass, client_options).await {
         Ok(session) => session,
         Err(e) => {
             eprintln!("Error: Protect login failed: {e}");
@@ -904,7 +939,7 @@ async fn main() {
             return;
         }
         Command::Config(ConfigCommand::Init) => {
-            run_init().await;
+            run_init(cli.accept_invalid_certs).await;
             return;
         }
         _ => {}
@@ -934,8 +969,11 @@ async fn main() {
 
     let username = cli.username.or(config.username);
     let password = cli.password.or(config.password);
+    let client_options = api::ClientOptions {
+        accept_invalid_certs: cli.accept_invalid_certs || config.accept_invalid_certs,
+    };
 
-    let mut client = match api::UnifiClient::new(&host, &api_key) {
+    let mut client = match api::UnifiClient::new_with_options(&host, &api_key, client_options) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error creating client: {e}");
@@ -1005,7 +1043,9 @@ async fn main() {
             ProtectCommand::Cameras(cam_cmd) => match cam_cmd {
                 ProtectCamerasCommand::List { full } => {
                     if full {
-                        let session = require_protect_session(&host, &username, &password).await;
+                        let session =
+                            require_protect_session(&host, &username, &password, client_options)
+                                .await;
                         commands::protect::cameras_list_full(&session, out).await
                     } else {
                         commands::protect::cameras_list(&client, out).await
@@ -1013,7 +1053,9 @@ async fn main() {
                 }
                 ProtectCamerasCommand::Show { camera, full } => {
                     if full {
-                        let session = require_protect_session(&host, &username, &password).await;
+                        let session =
+                            require_protect_session(&host, &username, &password, client_options)
+                                .await;
                         commands::protect::cameras_show_full(&session, &client, &camera, out).await
                     } else {
                         commands::protect::cameras_show(&client, &camera, out).await
@@ -1250,7 +1292,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false).unwrap();
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap_or_default();
         let display = String::from_utf8(output).unwrap();
@@ -1271,6 +1313,22 @@ api_key = "work_key"
         // The summary masks the password rather than echoing it.
         assert!(display.contains("password = ****"));
         assert!(!display.contains("secret"));
+    }
+
+    #[test]
+    fn init_persists_explicit_invalid_cert_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let input = "\nhttps://unifi.local\nmy-api-key\n\ny\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+
+        run_init_with_io(&mut reader, &mut output, &path, false, true).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        let display = String::from_utf8(output).unwrap();
+        assert!(written.contains("accept_invalid_certs = true"));
+        assert!(display.contains("accept_invalid_certs = true"));
     }
 
     #[test]
@@ -1406,7 +1464,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host is required"));
     }
@@ -1419,7 +1477,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false);
         assert!(result.is_err());
         assert!(
             result
@@ -1877,6 +1935,26 @@ api_key = "work_key"
     }
 
     #[test]
+    fn cli_accept_invalid_certs_default_false() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks"]);
+        assert!(!cli.accept_invalid_certs);
+    }
+
+    #[test]
+    fn cli_accept_invalid_certs_flag() {
+        let cli = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "--accept-invalid-certs",
+            "networks",
+        ]);
+        assert!(cli.accept_invalid_certs);
+    }
+
+    #[test]
     fn cli_profile_default_none() {
         let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks"]);
         assert!(cli.profile.is_none());
@@ -2184,6 +2262,22 @@ api_key = "k"
         assert!(host.is_none()); // integer, not string
     }
 
+    #[test]
+    fn extract_credentials_accept_invalid_certs() {
+        let table: toml::Table = r#"
+host = "h"
+api_key = "k"
+accept_invalid_certs = true
+"#
+        .parse()
+        .unwrap();
+        let ConfigValues {
+            accept_invalid_certs,
+            ..
+        } = extract_credentials(&table);
+        assert!(accept_invalid_certs);
+    }
+
     // --- UnifiClient::new base URL ---
 
     #[test]
@@ -2214,6 +2308,24 @@ api_key = "k"
     fn client_new_adds_https_for_ip() {
         let client = api::UnifiClient::new("192.168.1.1", "key").unwrap();
         assert_eq!(client.base_url(), "https://192.168.1.1");
+    }
+
+    #[test]
+    fn client_new_rejects_unsupported_scheme() {
+        let err = match api::UnifiClient::new("file:///tmp/controller", "key") {
+            Ok(_) => panic!("expected unsupported scheme error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("http:// or https://"));
+    }
+
+    #[test]
+    fn client_new_rejects_missing_host() {
+        let err = match api::UnifiClient::new("https://", "key") {
+            Ok(_) => panic!("expected invalid host error"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Invalid controller host"));
     }
 
     // --- error_for_status ---

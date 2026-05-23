@@ -27,6 +27,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Verify controller TLS certificates by default and require explicit
+  `--accept-invalid-certs`, `UNIFI_ACCEPT_INVALID_CERTS=true`, or
+  `accept_invalid_certs = true` for lab controllers with invalid certificates.
+- Reject controller hosts with unsupported URL schemes.
+
 ## [0.1.4] - 2026-03-20
 
 ### Added

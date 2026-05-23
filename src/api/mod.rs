@@ -1,6 +1,7 @@
 mod client;
 pub mod types;
 
+pub use client::ClientOptions;
 pub use client::ProtectSession;
 pub use client::UnifiClient;
 pub use client::error_for_status;

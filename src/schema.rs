@@ -10,7 +10,16 @@ struct CommandMeta {
 /// Arg IDs that are global — excluded from per-command arg lists.
 /// Includes both Cli-level args and per-command OutputConfig args (json, quiet).
 const GLOBAL_ARG_IDS: &[&str] = &[
-    "host", "api_key", "username", "password", "profile", "json", "quiet", "help", "version",
+    "host",
+    "api_key",
+    "username",
+    "password",
+    "accept_invalid_certs",
+    "profile",
+    "json",
+    "quiet",
+    "help",
+    "version",
 ];
 
 fn command_metadata() -> HashMap<&'static str, CommandMeta> {

@@ -27,6 +27,37 @@ pub fn validate_qualities(qualities: &[String]) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientOptions {
+    pub accept_invalid_certs: bool,
+}
+
+fn normalize_base_url(host: &str) -> Result<String, ApiError> {
+    let candidate = if host.starts_with("http://") || host.starts_with("https://") {
+        host.trim_end_matches('/').to_string()
+    } else if host.contains("://") {
+        return Err(ApiError::Other(
+            "Controller host must use http:// or https://".into(),
+        ));
+    } else {
+        format!("https://{}", host.trim_end_matches('/'))
+    };
+
+    let url = reqwest::Url::parse(&candidate)
+        .map_err(|e| ApiError::Other(format!("Invalid controller host: {e}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ApiError::Other(
+            "Controller host must use http:// or https://".into(),
+        ));
+    }
+    if url.host_str().is_none() {
+        return Err(ApiError::Other(
+            "Controller host must include a hostname or IP address".into(),
+        ));
+    }
+    Ok(candidate)
+}
+
 pub struct UnifiClient {
     http: reqwest::Client,
     base_url: String,
@@ -35,6 +66,14 @@ pub struct UnifiClient {
 
 impl UnifiClient {
     pub fn new(host: &str, api_key: &str) -> Result<Self, ApiError> {
+        Self::new_with_options(host, api_key, ClientOptions::default())
+    }
+
+    pub fn new_with_options(
+        host: &str,
+        api_key: &str,
+        options: ClientOptions,
+    ) -> Result<Self, ApiError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-API-KEY",
@@ -42,17 +81,13 @@ impl UnifiClient {
         );
 
         let http = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(options.accept_invalid_certs)
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(ApiError::Http)?;
 
-        let base_url = if host.starts_with("http") {
-            host.trim_end_matches('/').to_string()
-        } else {
-            format!("https://{host}")
-        };
+        let base_url = normalize_base_url(host)?;
 
         Ok(Self {
             http,
@@ -499,16 +534,21 @@ pub struct ProtectSession {
 impl ProtectSession {
     /// Login to UniFi OS and return a session with cookie auth.
     pub async fn login(host: &str, username: &str, password: &str) -> Result<Self, ApiError> {
-        let base_url = if host.starts_with("http") {
-            host.trim_end_matches('/').to_string()
-        } else {
-            format!("https://{host}")
-        };
+        Self::login_with_options(host, username, password, ClientOptions::default()).await
+    }
+
+    pub async fn login_with_options(
+        host: &str,
+        username: &str,
+        password: &str,
+        options: ClientOptions,
+    ) -> Result<Self, ApiError> {
+        let base_url = normalize_base_url(host)?;
 
         // Don't use cookie_provider — the `partitioned` cookie attribute
         // isn't handled by reqwest's jar. We extract the token manually.
         let http = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(options.accept_invalid_certs)
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(ApiError::Http)?;
