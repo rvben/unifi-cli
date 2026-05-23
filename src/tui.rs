@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -88,6 +88,15 @@ enum DeviceAction {
     Restart(String),      // MAC
     Upgrade(String),      // MAC
     Locate(String, bool), // MAC, enable
+}
+
+/// Outcome of handling a key press. The pure `handle_key` reports side effects
+/// here rather than performing them, so the event loop owns quitting and task
+/// spawning while the input logic stays testable without a terminal.
+enum InputOutcome {
+    Continue,
+    Quit,
+    Spawn(PendingAction),
 }
 
 struct AppState {
@@ -259,6 +268,274 @@ impl AppState {
         } else if self.client_cursor >= self.client_offset + visible_height {
             self.client_offset = self.client_cursor - visible_height + 1;
         }
+    }
+
+    /// Apply a key press to the state and report what the event loop should do.
+    /// This is the pure half of the TUI: it mutates state and describes side
+    /// effects (quit, spawn an async action) without performing them, so the
+    /// full input behavior can be exercised in tests without a terminal.
+    fn handle_key(&mut self, key: KeyEvent) -> InputOutcome {
+        if self.filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    self.filtering = false;
+                    self.filter.clear();
+                }
+                KeyCode::Enter => {
+                    self.filtering = false;
+                }
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.filter.push(c);
+                    self.client_cursor = 0;
+                }
+                _ => {}
+            }
+            return InputOutcome::Continue;
+        }
+
+        if self.overlay.is_some() {
+            // ApPicker has its own navigation and selection handling.
+            if let Some(Overlay::ApPicker {
+                client_idx,
+                ap_cursor,
+            }) = &self.overlay
+            {
+                let client_idx = *client_idx;
+                let ap_cursor = *ap_cursor;
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = Some(Overlay::ClientDetail(client_idx));
+                    }
+                    KeyCode::Char('q') => return InputOutcome::Quit,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::ApPicker {
+                            client_idx,
+                            ap_cursor: ap_cursor.saturating_sub(1),
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max = self.ap_devices().len().saturating_sub(1);
+                        self.overlay = Some(Overlay::ApPicker {
+                            client_idx,
+                            ap_cursor: (ap_cursor + 1).min(max),
+                        });
+                    }
+                    KeyCode::Enter => {
+                        let macs = {
+                            let clients = self.sorted_clients();
+                            let aps = self.ap_devices();
+                            clients
+                                .get(client_idx)
+                                .and_then(|c| c.mac.clone())
+                                .zip(aps.get(ap_cursor).and_then(|ap| ap.mac.clone()))
+                        };
+                        if let Some((mac, ap_mac)) = macs {
+                            self.overlay = None;
+                            return InputOutcome::Spawn(PendingAction::Client(
+                                ClientAction::LockToAp { mac, ap_mac },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+                return InputOutcome::Continue;
+            }
+
+            // Confirm dialog: y/Y runs the pending action, n/N/Esc cancels.
+            if matches!(&self.overlay, Some(Overlay::Confirm { .. })) {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        if let Some(Overlay::Confirm { action, .. }) = self.overlay.take() {
+                            return InputOutcome::Spawn(action);
+                        }
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        self.overlay = None;
+                    }
+                    KeyCode::Char('q') => return InputOutcome::Quit,
+                    _ => {}
+                }
+                return InputOutcome::Continue;
+            }
+
+            match key.code {
+                KeyCode::Esc => {
+                    self.overlay = None;
+                }
+                KeyCode::Char('q') => return InputOutcome::Quit,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return InputOutcome::Quit;
+                }
+                KeyCode::Char('k') | KeyCode::Char('b') | KeyCode::Char('a') => {
+                    if let Some(Overlay::ClientDetail(idx)) = &self.overlay {
+                        let idx = *idx;
+                        let info = self.sorted_clients().get(idx).and_then(|c| {
+                            c.mac.clone().map(|mac| {
+                                (
+                                    mac,
+                                    c.display_name().to_string(),
+                                    c.is_wired,
+                                    c.fixed_ap_enabled,
+                                    c.blocked,
+                                )
+                            })
+                        });
+                        if let Some((mac, name, is_wired, fixed_ap_enabled, blocked)) = info {
+                            match key.code {
+                                KeyCode::Char('a') if !is_wired => {
+                                    if fixed_ap_enabled {
+                                        self.overlay = Some(Overlay::Confirm {
+                                            message: format!("Unlock {name} from AP?"),
+                                            action: PendingAction::Client(
+                                                ClientAction::UnlockFromAp(mac),
+                                            ),
+                                        });
+                                    } else {
+                                        self.overlay = Some(Overlay::ApPicker {
+                                            client_idx: idx,
+                                            ap_cursor: 0,
+                                        });
+                                    }
+                                }
+                                KeyCode::Char('k') => {
+                                    self.overlay = Some(Overlay::Confirm {
+                                        message: format!("Kick {name}?"),
+                                        action: PendingAction::Client(ClientAction::Kick(mac)),
+                                    });
+                                }
+                                KeyCode::Char('b') => {
+                                    let (action, verb) = if blocked {
+                                        (ClientAction::Unblock(mac), "Unblock")
+                                    } else {
+                                        (ClientAction::Block(mac), "Block")
+                                    };
+                                    self.overlay = Some(Overlay::Confirm {
+                                        message: format!("{verb} {name}?"),
+                                        action: PendingAction::Client(action),
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('r') | KeyCode::Char('u') | KeyCode::Char('l') => {
+                    if let Some(Overlay::DeviceDetail(idx)) = &self.overlay {
+                        let idx = *idx;
+                        let info = self.devices.get(idx).and_then(|d| {
+                            d.mac.clone().map(|mac| {
+                                (
+                                    mac,
+                                    d.name.as_deref().unwrap_or("device").to_string(),
+                                    d.upgradable,
+                                )
+                            })
+                        });
+                        if let Some((mac, name, upgradable)) = info {
+                            match key.code {
+                                KeyCode::Char('r') => {
+                                    self.overlay = Some(Overlay::Confirm {
+                                        message: format!("Restart {name}?"),
+                                        action: PendingAction::Device(DeviceAction::Restart(mac)),
+                                    });
+                                }
+                                KeyCode::Char('u') if upgradable => {
+                                    self.overlay = Some(Overlay::Confirm {
+                                        message: format!("Upgrade firmware on {name}?"),
+                                        action: PendingAction::Device(DeviceAction::Upgrade(mac)),
+                                    });
+                                }
+                                KeyCode::Char('l') => {
+                                    // Locate is safe/reversible, so no confirmation is needed.
+                                    let normalized = crate::api::normalize_mac(&mac);
+                                    let currently_locating =
+                                        self.locating.get(&normalized).copied().unwrap_or(false);
+                                    self.locating.insert(normalized, !currently_locating);
+                                    return InputOutcome::Spawn(PendingAction::Device(
+                                        DeviceAction::Locate(mac, !currently_locating),
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return InputOutcome::Continue;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => return InputOutcome::Quit,
+            KeyCode::Esc => return InputOutcome::Quit,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return InputOutcome::Quit;
+            }
+            KeyCode::Enter => {
+                self.overlay = match self.focus {
+                    Panel::Clients => {
+                        if self.sorted_clients().is_empty() {
+                            None
+                        } else {
+                            Some(Overlay::ClientDetail(self.client_cursor))
+                        }
+                    }
+                    Panel::Devices => {
+                        if self.devices.is_empty() {
+                            None
+                        } else {
+                            Some(Overlay::DeviceDetail(self.device_scroll))
+                        }
+                    }
+                };
+            }
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    Panel::Clients => Panel::Devices,
+                    Panel::Devices => Panel::Clients,
+                };
+            }
+            KeyCode::Char('s') => {
+                self.sort = self.sort.next();
+            }
+            KeyCode::Char('/') => {
+                self.filtering = true;
+                self.filter.clear();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max_c = self.sorted_clients().len();
+                let max_d = self.devices.len();
+                self.cursor_down(max_c, max_d);
+            }
+            KeyCode::PageUp => {
+                self.page_up(10);
+            }
+            KeyCode::PageDown => {
+                let max_c = self.sorted_clients().len();
+                let max_d = self.devices.len();
+                self.page_down(max_c, max_d, 10);
+            }
+            KeyCode::Home => match self.focus {
+                Panel::Clients => self.client_cursor = 0,
+                Panel::Devices => self.device_scroll = 0,
+            },
+            KeyCode::End => match self.focus {
+                Panel::Clients => {
+                    self.client_cursor = self.sorted_clients().len().saturating_sub(1);
+                }
+                Panel::Devices => {
+                    self.device_scroll = self.devices.len().saturating_sub(1);
+                }
+            },
+            _ => {}
+        }
+        InputOutcome::Continue
     }
 }
 
@@ -1534,291 +1811,28 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                 continue;
             }
 
-            if state.filtering {
-                match key.code {
-                    KeyCode::Esc => {
-                        state.filtering = false;
-                        state.filter.clear();
-                    }
-                    KeyCode::Enter => {
-                        state.filtering = false;
-                    }
-                    KeyCode::Backspace => {
-                        state.filter.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        state.filter.push(c);
-                        state.client_cursor = 0;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Overlay is open: Esc closes it, q quits, action keys
-            if state.overlay.is_some() {
-                // ApPicker has its own key handling
-                if let Some(Overlay::ApPicker {
-                    client_idx,
-                    ap_cursor,
-                }) = &state.overlay
-                {
-                    let client_idx = *client_idx;
-                    let ap_cursor = *ap_cursor;
-                    match key.code {
-                        KeyCode::Esc => {
-                            state.overlay = Some(Overlay::ClientDetail(client_idx));
-                        }
-                        KeyCode::Char('q') => break Ok(()),
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let new_cursor = ap_cursor.saturating_sub(1);
-                            state.overlay = Some(Overlay::ApPicker {
-                                client_idx,
-                                ap_cursor: new_cursor,
+            match state.handle_key(key) {
+                InputOutcome::Continue => {}
+                InputOutcome::Quit => break Ok(()),
+                InputOutcome::Spawn(action) => {
+                    let http = api.clone_http();
+                    let base_url = api.base_url().to_string();
+                    let action_tx = action_tx.clone();
+                    match action {
+                        PendingAction::Client(ca) => {
+                            tokio::spawn(async move {
+                                let result = execute_client_action(&http, &base_url, ca).await;
+                                let _ = action_tx.send(result).await;
                             });
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let max = state.ap_devices().len().saturating_sub(1);
-                            let new_cursor = (ap_cursor + 1).min(max);
-                            state.overlay = Some(Overlay::ApPicker {
-                                client_idx,
-                                ap_cursor: new_cursor,
+                        PendingAction::Device(da) => {
+                            tokio::spawn(async move {
+                                let result = execute_device_action(&http, &base_url, da).await;
+                                let _ = action_tx.send(result).await;
                             });
                         }
-                        KeyCode::Enter => {
-                            let clients = state.sorted_clients();
-                            let aps = state.ap_devices();
-                            if let Some(c) = clients.get(client_idx)
-                                && let Some(ref mac) = c.mac
-                                && let Some(ap) = aps.get(ap_cursor)
-                                && let Some(ref ap_mac) = ap.mac
-                            {
-                                let action = ClientAction::LockToAp {
-                                    mac: mac.clone(),
-                                    ap_mac: ap_mac.clone(),
-                                };
-                                let http = api.clone_http();
-                                let base_url = api.base_url().to_string();
-                                let action_tx = action_tx.clone();
-                                tokio::spawn(async move {
-                                    let result =
-                                        execute_client_action(&http, &base_url, action).await;
-                                    let _ = action_tx.send(result).await;
-                                });
-                                state.overlay = None;
-                            }
-                        }
-                        _ => {}
                     }
-                    continue;
                 }
-
-                // Confirm dialog handling
-                if matches!(&state.overlay, Some(Overlay::Confirm { .. })) {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            // Take ownership by replacing overlay
-                            let overlay = state.overlay.take();
-                            if let Some(Overlay::Confirm { action, .. }) = overlay {
-                                let http = api.clone_http();
-                                let base_url = api.base_url().to_string();
-                                let action_tx = action_tx.clone();
-                                match action {
-                                    PendingAction::Client(ca) => {
-                                        tokio::spawn(async move {
-                                            let result =
-                                                execute_client_action(&http, &base_url, ca).await;
-                                            let _ = action_tx.send(result).await;
-                                        });
-                                    }
-                                    PendingAction::Device(da) => {
-                                        tokio::spawn(async move {
-                                            let result =
-                                                execute_device_action(&http, &base_url, da).await;
-                                            let _ = action_tx.send(result).await;
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            state.overlay = None;
-                        }
-                        KeyCode::Char('q') => break Ok(()),
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                match key.code {
-                    KeyCode::Esc => {
-                        state.overlay = None;
-                    }
-                    KeyCode::Char('q') => break Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Ok(());
-                    }
-                    KeyCode::Char('k') | KeyCode::Char('b') | KeyCode::Char('a') => {
-                        if let Some(Overlay::ClientDetail(idx)) = &state.overlay {
-                            let clients = state.sorted_clients();
-                            if let Some(c) = clients.get(*idx)
-                                && let Some(ref mac) = c.mac
-                            {
-                                let name = c.display_name().to_string();
-                                match key.code {
-                                    KeyCode::Char('a') if !c.is_wired => {
-                                        if c.fixed_ap_enabled {
-                                            let action = ClientAction::UnlockFromAp(mac.clone());
-                                            state.overlay = Some(Overlay::Confirm {
-                                                message: format!("Unlock {name} from AP?"),
-                                                action: PendingAction::Client(action),
-                                            });
-                                        } else {
-                                            let idx = *idx;
-                                            state.overlay = Some(Overlay::ApPicker {
-                                                client_idx: idx,
-                                                ap_cursor: 0,
-                                            });
-                                        }
-                                    }
-                                    KeyCode::Char('k') => {
-                                        let action = ClientAction::Kick(mac.clone());
-                                        state.overlay = Some(Overlay::Confirm {
-                                            message: format!("Kick {name}?"),
-                                            action: PendingAction::Client(action),
-                                        });
-                                    }
-                                    KeyCode::Char('b') => {
-                                        let (action, verb) = if c.blocked {
-                                            (ClientAction::Unblock(mac.clone()), "Unblock")
-                                        } else {
-                                            (ClientAction::Block(mac.clone()), "Block")
-                                        };
-                                        state.overlay = Some(Overlay::Confirm {
-                                            message: format!("{verb} {name}?"),
-                                            action: PendingAction::Client(action),
-                                        });
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char('r') | KeyCode::Char('u') | KeyCode::Char('l') => {
-                        if let Some(Overlay::DeviceDetail(idx)) = &state.overlay
-                            && let Some(d) = state.devices.get(*idx)
-                            && let Some(ref mac) = d.mac
-                        {
-                            let name = d.name.as_deref().unwrap_or("device").to_string();
-                            match key.code {
-                                KeyCode::Char('r') => {
-                                    let action = DeviceAction::Restart(mac.clone());
-                                    state.overlay = Some(Overlay::Confirm {
-                                        message: format!("Restart {name}?"),
-                                        action: PendingAction::Device(action),
-                                    });
-                                }
-                                KeyCode::Char('u') if d.upgradable => {
-                                    let action = DeviceAction::Upgrade(mac.clone());
-                                    state.overlay = Some(Overlay::Confirm {
-                                        message: format!("Upgrade firmware on {name}?"),
-                                        action: PendingAction::Device(action),
-                                    });
-                                }
-                                KeyCode::Char('l') => {
-                                    // Locate is safe/reversible, no confirmation needed
-                                    let normalized = crate::api::normalize_mac(mac);
-                                    let currently_locating =
-                                        state.locating.get(&normalized).copied().unwrap_or(false);
-                                    state.locating.insert(normalized, !currently_locating);
-                                    let action =
-                                        DeviceAction::Locate(mac.clone(), !currently_locating);
-                                    let http = api.clone_http();
-                                    let base_url = api.base_url().to_string();
-                                    let action_tx = action_tx.clone();
-                                    tokio::spawn(async move {
-                                        let result =
-                                            execute_device_action(&http, &base_url, action).await;
-                                        let _ = action_tx.send(result).await;
-                                    });
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            match key.code {
-                KeyCode::Char('q') => break Ok(()),
-                KeyCode::Esc => break Ok(()),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(()),
-                KeyCode::Enter => {
-                    let overlay = match state.focus {
-                        Panel::Clients => {
-                            let clients = state.sorted_clients();
-                            if !clients.is_empty() {
-                                Some(Overlay::ClientDetail(state.client_cursor))
-                            } else {
-                                None
-                            }
-                        }
-                        Panel::Devices => {
-                            if !state.devices.is_empty() {
-                                Some(Overlay::DeviceDetail(state.device_scroll))
-                            } else {
-                                None
-                            }
-                        }
-                    };
-                    state.overlay = overlay;
-                }
-                KeyCode::Tab => {
-                    state.focus = match state.focus {
-                        Panel::Clients => Panel::Devices,
-                        Panel::Devices => Panel::Clients,
-                    };
-                }
-                KeyCode::Char('s') => {
-                    state.sort = state.sort.next();
-                }
-                KeyCode::Char('/') => {
-                    state.filtering = true;
-                    state.filter.clear();
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    state.cursor_up();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let max_c = state.sorted_clients().len();
-                    let max_d = state.devices.len();
-                    state.cursor_down(max_c, max_d);
-                }
-                KeyCode::PageUp => {
-                    state.page_up(10);
-                }
-                KeyCode::PageDown => {
-                    let max_c = state.sorted_clients().len();
-                    let max_d = state.devices.len();
-                    state.page_down(max_c, max_d, 10);
-                }
-                KeyCode::Home => match state.focus {
-                    Panel::Clients => state.client_cursor = 0,
-                    Panel::Devices => state.device_scroll = 0,
-                },
-                KeyCode::End => match state.focus {
-                    Panel::Clients => {
-                        let max = state.sorted_clients().len().saturating_sub(1);
-                        state.client_cursor = max;
-                    }
-                    Panel::Devices => {
-                        let max = state.devices.len().saturating_sub(1);
-                        state.device_scroll = max;
-                    }
-                },
-                _ => {}
             }
         }
     };
@@ -2632,5 +2646,344 @@ mod tests {
     #[test]
     fn ip_sort_key_partial() {
         assert_eq!(ip_sort_key("10.0"), vec![10, 0]);
+    }
+
+    // --- Input handling and rendering ---
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn client_with_mac(id: &str, name: &str, mac: &str, total: u64) -> LegacyClient {
+        serde_json::from_str(&format!(
+            r#"{{"_id":"{id}","name":"{name}","mac":"{mac}","tx_bytes":{total},"rx_bytes":0}}"#
+        ))
+        .unwrap()
+    }
+
+    fn make_device(mac: &str, name: &str, dtype: &str) -> LegacyDevice {
+        serde_json::from_str(&format!(
+            r#"{{"mac":"{mac}","name":"{name}","type":"{dtype}","state":1}}"#
+        ))
+        .unwrap()
+    }
+
+    /// A populated, non-loading dashboard. Clients carry MACs so action keys
+    /// (kick/block/lock) produce real pending actions. Bandwidth order is
+    /// Laptop, Phone, Tablet.
+    fn dashboard() -> AppState {
+        let mut state = AppState::new();
+        state.loading = false;
+        state.clients = vec![
+            client_with_mac("1", "Laptop", "aa:bb:cc:00:00:01", 10_000),
+            client_with_mac("2", "Phone", "aa:bb:cc:00:00:02", 200),
+            client_with_mac("3", "Tablet", "aa:bb:cc:00:00:03", 100),
+        ];
+        state.devices = vec![
+            make_device("dd:ee:ff:00:00:01", "AP-Office", "uap"),
+            make_device("dd:ee:ff:00:00:02", "Switch-01", "usw"),
+        ];
+        state
+    }
+
+    /// Render the dashboard into an in-memory buffer and return its text.
+    fn render(state: &AppState, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, state)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn render_shows_loading_screen() {
+        let state = AppState::new();
+        let text = render(&state, 80, 24);
+        assert!(text.contains("Connecting to controller"), "{text}");
+    }
+
+    #[test]
+    fn render_dashboard_shows_clients_and_devices() {
+        let text = render(&dashboard(), 120, 30);
+        assert!(text.contains("Clients (3)"), "{text}");
+        assert!(text.contains("Laptop"), "{text}");
+        assert!(text.contains("Phone"), "{text}");
+        assert!(text.contains("AP-Office"), "{text}");
+    }
+
+    #[test]
+    fn render_confirm_overlay_shows_message() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::Confirm {
+            message: "Kick Laptop?".into(),
+            action: PendingAction::Client(ClientAction::Kick("aa:bb:cc:00:00:01".into())),
+        });
+        let text = render(&state, 120, 30);
+        assert!(text.contains("Confirm"), "{text}");
+        assert!(text.contains("Kick Laptop?"), "{text}");
+    }
+
+    #[test]
+    fn render_every_overlay_without_panicking() {
+        let mut state = dashboard();
+        state
+            .devices
+            .push(make_device("dd:ee:ff:00:00:03", "AP-Garage", "uap"));
+        for overlay in [
+            Overlay::ClientDetail(0),
+            Overlay::DeviceDetail(0),
+            Overlay::ApPicker {
+                client_idx: 0,
+                ap_cursor: 1,
+            },
+            Overlay::Confirm {
+                message: "Restart AP-Office?".into(),
+                action: PendingAction::Device(DeviceAction::Restart("dd:ee:ff:00:00:01".into())),
+            },
+        ] {
+            state.overlay = Some(overlay);
+            // The assertion is simply that rendering does not panic.
+            let _ = render(&state, 120, 30);
+        }
+    }
+
+    #[test]
+    fn handle_key_quit_keys() {
+        let mut state = dashboard();
+        assert!(matches!(
+            state.handle_key(press(KeyCode::Char('q'))),
+            InputOutcome::Quit
+        ));
+        assert!(matches!(
+            state.handle_key(press(KeyCode::Esc)),
+            InputOutcome::Quit
+        ));
+        assert!(matches!(
+            state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            InputOutcome::Quit
+        ));
+    }
+
+    #[test]
+    fn handle_key_navigation_moves_and_clamps_cursor() {
+        let mut state = dashboard();
+        assert_eq!(state.client_cursor, 0);
+        state.handle_key(press(KeyCode::Down));
+        assert_eq!(state.client_cursor, 1);
+        state.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(state.client_cursor, 2);
+        state.handle_key(press(KeyCode::Down)); // already at last of three
+        assert_eq!(state.client_cursor, 2);
+        state.handle_key(press(KeyCode::Up));
+        assert_eq!(state.client_cursor, 1);
+    }
+
+    #[test]
+    fn handle_key_tab_toggles_focus() {
+        let mut state = dashboard();
+        assert_eq!(state.focus, Panel::Clients);
+        state.handle_key(press(KeyCode::Tab));
+        assert_eq!(state.focus, Panel::Devices);
+        state.handle_key(press(KeyCode::Tab));
+        assert_eq!(state.focus, Panel::Clients);
+    }
+
+    #[test]
+    fn handle_key_s_cycles_sort() {
+        let mut state = dashboard();
+        assert_eq!(state.sort, SortMode::Bandwidth);
+        state.handle_key(press(KeyCode::Char('s')));
+        assert_eq!(state.sort, SortMode::Name);
+    }
+
+    #[test]
+    fn handle_key_filter_typing_appends_and_resets_cursor() {
+        let mut state = dashboard();
+        state.client_cursor = 2;
+        state.handle_key(press(KeyCode::Char('/')));
+        assert!(state.filtering);
+        state.handle_key(press(KeyCode::Char('a')));
+        assert_eq!(state.filter, "a");
+        assert_eq!(state.client_cursor, 0);
+        state.handle_key(press(KeyCode::Char('b')));
+        state.handle_key(press(KeyCode::Backspace));
+        assert_eq!(state.filter, "a");
+        state.handle_key(press(KeyCode::Enter));
+        assert!(!state.filtering);
+        assert_eq!(state.filter, "a", "Enter keeps the filter");
+    }
+
+    #[test]
+    fn handle_key_filter_esc_clears() {
+        let mut state = dashboard();
+        state.handle_key(press(KeyCode::Char('/')));
+        state.handle_key(press(KeyCode::Char('x')));
+        assert_eq!(state.filter, "x");
+        state.handle_key(press(KeyCode::Esc));
+        assert!(!state.filtering);
+        assert_eq!(state.filter, "");
+    }
+
+    #[test]
+    fn handle_key_enter_opens_and_esc_closes_client_detail() {
+        let mut state = dashboard();
+        state.client_cursor = 1;
+        state.handle_key(press(KeyCode::Enter));
+        assert!(matches!(state.overlay, Some(Overlay::ClientDetail(1))));
+        state.handle_key(press(KeyCode::Esc));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn handle_key_enter_opens_device_detail_when_focused() {
+        let mut state = dashboard();
+        state.focus = Panel::Devices;
+        state.device_scroll = 1;
+        state.handle_key(press(KeyCode::Enter));
+        assert!(matches!(state.overlay, Some(Overlay::DeviceDetail(1))));
+    }
+
+    #[test]
+    fn handle_key_enter_noop_when_empty() {
+        let mut state = AppState::new();
+        state.loading = false;
+        state.handle_key(press(KeyCode::Enter));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn client_detail_kick_opens_confirm() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::ClientDetail(0)); // Laptop
+        let outcome = state.handle_key(press(KeyCode::Char('k')));
+        assert!(matches!(outcome, InputOutcome::Continue));
+        match &state.overlay {
+            Some(Overlay::Confirm { message, action }) => {
+                assert_eq!(message, "Kick Laptop?");
+                assert!(matches!(
+                    action,
+                    PendingAction::Client(ClientAction::Kick(_))
+                ));
+            }
+            _ => panic!("expected a confirm overlay"),
+        }
+    }
+
+    #[test]
+    fn client_detail_block_opens_confirm() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::ClientDetail(1)); // Phone, not blocked
+        state.handle_key(press(KeyCode::Char('b')));
+        match &state.overlay {
+            Some(Overlay::Confirm { message, action }) => {
+                assert_eq!(message, "Block Phone?");
+                assert!(matches!(
+                    action,
+                    PendingAction::Client(ClientAction::Block(_))
+                ));
+            }
+            _ => panic!("expected a confirm overlay"),
+        }
+    }
+
+    #[test]
+    fn confirm_yes_spawns_action_and_clears_overlay() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::Confirm {
+            message: "Kick Laptop?".into(),
+            action: PendingAction::Client(ClientAction::Kick("aa:bb:cc:00:00:01".into())),
+        });
+        let outcome = state.handle_key(press(KeyCode::Char('y')));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Spawn(PendingAction::Client(ClientAction::Kick(_)))
+        ));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn confirm_no_cancels_without_spawning() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::Confirm {
+            message: "Kick Laptop?".into(),
+            action: PendingAction::Client(ClientAction::Kick("m".into())),
+        });
+        let outcome = state.handle_key(press(KeyCode::Char('n')));
+        assert!(matches!(outcome, InputOutcome::Continue));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn device_detail_restart_opens_confirm() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::DeviceDetail(0)); // AP-Office
+        state.handle_key(press(KeyCode::Char('r')));
+        match &state.overlay {
+            Some(Overlay::Confirm { message, action }) => {
+                assert_eq!(message, "Restart AP-Office?");
+                assert!(matches!(
+                    action,
+                    PendingAction::Device(DeviceAction::Restart(_))
+                ));
+            }
+            _ => panic!("expected a confirm overlay"),
+        }
+    }
+
+    #[test]
+    fn device_detail_locate_spawns_and_toggles_locating() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::DeviceDetail(0));
+        let outcome = state.handle_key(press(KeyCode::Char('l')));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Spawn(PendingAction::Device(DeviceAction::Locate(_, true)))
+        ));
+        // Locate leaves the detail overlay open and records the new state.
+        assert!(matches!(state.overlay, Some(Overlay::DeviceDetail(0))));
+        let norm = crate::api::normalize_mac("dd:ee:ff:00:00:01");
+        assert_eq!(state.locating.get(&norm), Some(&true));
+    }
+
+    #[test]
+    fn ap_picker_navigates_and_selects() {
+        let mut state = dashboard();
+        state
+            .devices
+            .push(make_device("dd:ee:ff:00:00:03", "AP-Garage", "uap"));
+        state.overlay = Some(Overlay::ApPicker {
+            client_idx: 0,
+            ap_cursor: 0,
+        });
+        state.handle_key(press(KeyCode::Down));
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::ApPicker { ap_cursor: 1, .. })
+        ));
+        let outcome = state.handle_key(press(KeyCode::Enter));
+        assert!(matches!(
+            outcome,
+            InputOutcome::Spawn(PendingAction::Client(ClientAction::LockToAp { .. }))
+        ));
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn ap_picker_esc_returns_to_client_detail() {
+        let mut state = dashboard();
+        state.overlay = Some(Overlay::ApPicker {
+            client_idx: 2,
+            ap_cursor: 0,
+        });
+        state.handle_key(press(KeyCode::Esc));
+        assert!(matches!(state.overlay, Some(Overlay::ClientDetail(2))));
     }
 }
