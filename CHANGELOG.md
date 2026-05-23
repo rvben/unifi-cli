@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.0](https://github.com/rvben/unifi-cli/compare/v0.1.7...v0.2.0) - 2026-05-23
 
+Thanks to [@l3wi](https://github.com/l3wi) for reporting the TLS certificate validation issue ([#2](https://github.com/rvben/unifi-cli/pull/2)).
+
 ### Breaking Changes
 
 - **security**: verify controller TLS certificates by default ([9555a86](https://github.com/rvben/unifi-cli/commit/9555a8671d80a706b7c9ee00215a3cbfcf842d16))
