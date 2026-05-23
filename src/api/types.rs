@@ -453,31 +453,76 @@ pub enum ApiError {
     Other(String),
 }
 
+/// Scan a single error string for TLS certificate failure markers. The rustls
+/// cause surfaces in different forms depending on the layer (Display vs Debug),
+/// so several spellings are matched.
+fn text_indicates_cert_failure(s: &str) -> bool {
+    let s = s.to_lowercase();
+    s.contains("certificate")
+        || s.contains("self-signed")
+        || s.contains("self signed")
+        || s.contains("unknownissuer")
+        || s.contains("invalidcertificate")
+}
+
+/// Walk a reqwest error's Debug form and full source chain looking for a TLS
+/// certificate failure. reqwest's own Display is only "error sending request",
+/// so the cert cause must be read from the nested chain.
+fn reqwest_is_cert_failure(e: &reqwest::Error) -> bool {
+    use std::error::Error;
+    if text_indicates_cert_failure(&format!("{e:?}")) {
+        return true;
+    }
+    let mut source: Option<&dyn std::error::Error> = e.source();
+    while let Some(err) = source {
+        if text_indicates_cert_failure(&err.to_string()) {
+            return true;
+        }
+        source = err.source();
+    }
+    false
+}
+
+impl ApiError {
+    /// True when the error indicates a TLS certificate verification failure, so
+    /// callers can offer the `--accept-invalid-certs` opt-out.
+    pub fn is_tls_cert_error(&self) -> bool {
+        match self {
+            ApiError::Http(e) => reqwest_is_cert_failure(e),
+            other => text_indicates_cert_failure(&other.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiError::Http(e) => {
-                let msg = e.to_string();
                 write!(f, "HTTP error: {e}")?;
-                if msg.contains("connect") || msg.contains("Connection refused") {
-                    write!(
-                        f,
-                        "\n  Hint: Check that the host is reachable and the URL is correct"
-                    )?;
-                } else if msg.contains("dns") || msg.contains("resolve") {
-                    write!(
-                        f,
-                        "\n  Hint: Could not resolve hostname. Check the host value"
-                    )?;
-                } else if msg.contains("timed out") || msg.contains("timeout") {
-                    write!(f, "\n  Hint: Request timed out. Is the controller running?")?;
-                } else if msg.contains("certificate") || msg.contains("SSL") {
+                // Certificate failures are checked first because reqwest also
+                // classifies a failed TLS handshake as a connect error.
+                if reqwest_is_cert_failure(e) {
                     write!(
                         f,
                         "\n  Hint: TLS certificate verification failed. For a trusted controller \
                          with a self-signed cert, pass --accept-invalid-certs (or set \
                          UNIFI_ACCEPT_INVALID_CERTS=true or accept_invalid_certs = true in config)"
                     )?;
+                } else if e.is_connect() {
+                    write!(
+                        f,
+                        "\n  Hint: Check that the host is reachable and the URL is correct"
+                    )?;
+                } else if e.is_timeout() {
+                    write!(f, "\n  Hint: Request timed out. Is the controller running?")?;
+                } else {
+                    let msg = e.to_string().to_lowercase();
+                    if msg.contains("dns") || msg.contains("resolve") {
+                        write!(
+                            f,
+                            "\n  Hint: Could not resolve hostname. Check the host value"
+                        )?;
+                    }
                 }
                 Ok(())
             }
@@ -495,7 +540,14 @@ impl fmt::Display for ApiError {
     }
 }
 
-impl std::error::Error for ApiError {}
+impl std::error::Error for ApiError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ApiError::Http(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<reqwest::Error> for ApiError {
     fn from(e: reqwest::Error) -> Self {

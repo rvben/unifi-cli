@@ -639,13 +639,6 @@ fn run_init_with_io(
     })
 }
 
-/// Detect whether an API error is a TLS certificate verification failure, so
-/// init can offer to trust a self-signed controller instead of failing.
-fn is_tls_cert_error(err: &api::ApiError) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("certificate") || msg.contains("ssl") || msg.contains("self-signed")
-}
-
 /// Set `accept_invalid_certs = true` in an already-written config, targeting the
 /// default table or the given profile section.
 fn enable_accept_invalid_certs_in_config(
@@ -779,7 +772,7 @@ async fn run_init(accept_invalid_certs: bool) {
                 );
                 break;
             }
-            Err(e) if !effective_accept && use_tty && is_tls_cert_error(&e) => {
+            Err(e) if !effective_accept && use_tty && e.is_tls_cert_error() => {
                 eprintln!(" {} certificate verification failed", sym_fail());
                 eprintln!();
                 eprintln!("  The controller's TLS certificate could not be verified.");
@@ -1469,20 +1462,20 @@ api_key = "work_key"
 
     #[test]
     fn is_tls_cert_error_detects_certificate_failures() {
-        assert!(is_tls_cert_error(&api::ApiError::Other(
-            "invalid peer certificate: UnknownIssuer".into()
-        )));
-        assert!(is_tls_cert_error(&api::ApiError::Other(
-            "the handshake failed: self-signed certificate".into()
-        )));
+        assert!(
+            api::ApiError::Other("invalid peer certificate: UnknownIssuer".into())
+                .is_tls_cert_error()
+        );
+        assert!(
+            api::ApiError::Other("the handshake failed: self-signed certificate".into())
+                .is_tls_cert_error()
+        );
     }
 
     #[test]
     fn is_tls_cert_error_ignores_unrelated_failures() {
-        assert!(!is_tls_cert_error(&api::ApiError::Other(
-            "connection refused".into()
-        )));
-        assert!(!is_tls_cert_error(&api::ApiError::NotFound("nope".into())));
+        assert!(!api::ApiError::Other("connection refused".into()).is_tls_cert_error());
+        assert!(!api::ApiError::NotFound("nope".into()).is_tls_cert_error());
     }
 
     #[test]
