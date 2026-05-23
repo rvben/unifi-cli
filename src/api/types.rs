@@ -501,7 +501,8 @@ impl fmt::Display for ApiError {
                     write!(
                         f,
                         "\n  Hint: TLS certificate verification failed. For a trusted controller \
-                         with a self-signed cert, pass --accept-invalid-certs (or set \
+                         with a self-signed cert, run 'unifi config init' to trust it \
+                         interactively, or pass --accept-invalid-certs (or set \
                          UNIFI_ACCEPT_INVALID_CERTS=true or accept_invalid_certs = true in config)"
                     )?;
                 } else if e.is_connect() {
