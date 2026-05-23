@@ -98,6 +98,9 @@ self-signed certificate, pass `--accept-invalid-certs`, set
 config file. Only use this on trusted networks because it weakens protection for
 API keys, passwords, session cookies, and stream URLs.
 
+When `unifi config init` cannot verify the controller's certificate, it offers
+to trust the controller and saves `accept_invalid_certs = true` for you.
+
 ## TUI dashboard
 
 ```bash

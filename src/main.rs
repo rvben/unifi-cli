@@ -639,6 +639,66 @@ fn run_init_with_io(
     })
 }
 
+/// Detect whether an API error is a TLS certificate verification failure, so
+/// init can offer to trust a self-signed controller instead of failing.
+fn is_tls_cert_error(err: &api::ApiError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("certificate") || msg.contains("ssl") || msg.contains("self-signed")
+}
+
+/// Set `accept_invalid_certs = true` in an already-written config, targeting the
+/// default table or the given profile section.
+fn enable_accept_invalid_certs_in_config(
+    config_path: &std::path::Path,
+    profile: Option<&str>,
+) -> Result<(), InitError> {
+    let contents = std::fs::read_to_string(config_path)
+        .map_err(|e| InitError(format!("Failed to read config: {e}")))?;
+    let mut config: toml::Table = contents
+        .parse()
+        .map_err(|e| InitError(format!("Failed to parse config: {e}")))?;
+
+    if let Some(name) = profile {
+        let profiles = config
+            .entry("profiles")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or(InitError("'profiles' key exists but is not a table".into()))?;
+        let section = profiles
+            .entry(name.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or(InitError("profile section is not a table".into()))?;
+        section.insert("accept_invalid_certs".into(), toml::Value::Boolean(true));
+    } else {
+        config.insert("accept_invalid_certs".into(), toml::Value::Boolean(true));
+    }
+
+    let toml_str = toml::to_string_pretty(&config)
+        .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
+    std::fs::write(config_path, &toml_str)
+        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// Prompt for a yes/no answer on stderr (where init status is shown) and read
+/// the reply from the given reader. Defaults to no on empty or read error.
+fn prompt_yes_no_stderr(reader: &mut dyn std::io::BufRead, prompt: &str) -> bool {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 async fn run_init(accept_invalid_certs: bool) {
     let path = match default_config_path() {
         Ok(p) => p,
@@ -679,21 +739,37 @@ async fn run_init(accept_invalid_certs: bool) {
         InitOutcome::Cancelled => return,
     };
 
-    // Validate credentials against the API
+    // Validate credentials against the API. On a TLS certificate failure (common
+    // for self-signed UniFi controllers), offer to trust the controller and
+    // retry with verification disabled, persisting the choice to config.
     use std::io::Write;
-    eprint!("  Verifying credentials...");
-    std::io::stderr().flush().ok();
+    let mut effective_accept = accept_invalid_certs;
+    loop {
+        eprint!("  Verifying credentials...");
+        std::io::stderr().flush().ok();
 
-    match api::UnifiClient::new_with_options(
-        &host,
-        &api_key,
-        api::ClientOptions {
-            accept_invalid_certs,
-        },
-    ) {
-        Ok(client) => match client.get_health().await {
+        let client = match api::UnifiClient::new_with_options(
+            &host,
+            &api_key,
+            api::ClientOptions {
+                accept_invalid_certs: effective_accept,
+            },
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(" {} Failed to create client: {e}", sym_fail());
+                eprintln!(
+                    "  {}",
+                    sym_dim("Config saved. Check your settings and re-run 'unifi config init'.")
+                );
+                break;
+            }
+        };
+
+        match client.get_health().await {
             Ok(_) => {
                 eprintln!(" {} Connected", sym_ok());
+                break;
             }
             Err(api::ApiError::Auth(msg)) => {
                 eprintln!(" {} Authentication failed: {msg}", sym_fail());
@@ -701,6 +777,28 @@ async fn run_init(accept_invalid_certs: bool) {
                     "  {}",
                     sym_dim("Config saved. Fix your API key and re-run 'unifi config init'.")
                 );
+                break;
+            }
+            Err(e) if !effective_accept && use_tty && is_tls_cert_error(&e) => {
+                eprintln!(" {} certificate verification failed", sym_fail());
+                eprintln!();
+                eprintln!("  The controller's TLS certificate could not be verified.");
+                eprintln!("  This is normal for UniFi controllers with self-signed certs.");
+                if !prompt_yes_no_stderr(&mut reader, "  Trust this controller anyway? [y/N]: ") {
+                    eprintln!(
+                        "  {}",
+                        sym_dim(
+                            "Config saved. Set accept_invalid_certs to connect to this controller."
+                        )
+                    );
+                    break;
+                }
+                if let Err(e) = enable_accept_invalid_certs_in_config(&path, profile.as_deref()) {
+                    eprintln!(" {} Failed to update config: {e}", sym_fail());
+                    break;
+                }
+                eprintln!("  {}", sym_dim("Saved accept_invalid_certs = true."));
+                effective_accept = true;
             }
             Err(e) => {
                 eprintln!(" {} Connection failed: {e}", sym_fail());
@@ -708,14 +806,8 @@ async fn run_init(accept_invalid_certs: bool) {
                     "  {}",
                     sym_dim("Config saved. Check your host and re-run 'unifi config init'.")
                 );
+                break;
             }
-        },
-        Err(e) => {
-            eprintln!(" {} Failed to create client: {e}", sym_fail());
-            eprintln!(
-                "  {}",
-                sym_dim("Config saved. Check your settings and re-run 'unifi config init'.")
-            );
         }
     }
 
@@ -1329,6 +1421,68 @@ api_key = "work_key"
         let display = String::from_utf8(output).unwrap();
         assert!(written.contains("accept_invalid_certs = true"));
         assert!(display.contains("accept_invalid_certs = true"));
+    }
+
+    #[test]
+    fn enable_accept_invalid_certs_updates_default_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "host = \"https://unifi.local\"\napi_key = \"k\"\n").unwrap();
+
+        enable_accept_invalid_certs_in_config(&path, None).unwrap();
+
+        let written: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            written
+                .get("accept_invalid_certs")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // Existing keys are preserved.
+        assert!(written.contains_key("host"));
+        assert!(written.contains_key("api_key"));
+    }
+
+    #[test]
+    fn enable_accept_invalid_certs_updates_profile_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[profiles.home]\nhost = \"https://unifi.local\"\napi_key = \"k\"\n",
+        )
+        .unwrap();
+
+        enable_accept_invalid_certs_in_config(&path, Some("home")).unwrap();
+
+        let written: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let home = written["profiles"].as_table().unwrap()["home"]
+            .as_table()
+            .unwrap();
+        assert_eq!(
+            home.get("accept_invalid_certs").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // The default table is untouched.
+        assert!(!written.contains_key("accept_invalid_certs"));
+    }
+
+    #[test]
+    fn is_tls_cert_error_detects_certificate_failures() {
+        assert!(is_tls_cert_error(&api::ApiError::Other(
+            "invalid peer certificate: UnknownIssuer".into()
+        )));
+        assert!(is_tls_cert_error(&api::ApiError::Other(
+            "the handshake failed: self-signed certificate".into()
+        )));
+    }
+
+    #[test]
+    fn is_tls_cert_error_ignores_unrelated_failures() {
+        assert!(!is_tls_cert_error(&api::ApiError::Other(
+            "connection refused".into()
+        )));
+        assert!(!is_tls_cert_error(&api::ApiError::NotFound("nope".into())));
     }
 
     #[test]
