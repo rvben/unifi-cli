@@ -2,8 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0](https://github.com/rvben/unifi-cli/compare/v0.1.7...v0.2.0) - 2026-05-23
 
+### Breaking Changes
 
+- **security**: verify controller TLS certificates by default ([9555a86](https://github.com/rvben/unifi-cli/commit/9555a8671d80a706b7c9ee00215a3cbfcf842d16))
+
+### Added
+
+- **init**: offer to trust self-signed controllers during config init ([c9ee049](https://github.com/rvben/unifi-cli/commit/c9ee04909f5f9d953be1ee36ab7e591df54b2ee1))
+
+### Fixed
+
+- **security**: scope TLS cert detection to the error source chain ([5b440a8](https://github.com/rvben/unifi-cli/commit/5b440a865d21b9b1a9ca3cddd4247c1f64d5c6f2))
+- **security**: detect TLS cert failures via the error source chain ([636b051](https://github.com/rvben/unifi-cli/commit/636b05100b4cb26e01b1be2e9f2fae60a625fbaf))
+- **deps**: bump ratatui and crossterm to clear RUSTSEC advisories ([639fc73](https://github.com/rvben/unifi-cli/commit/639fc739585fd8f60610184196a4c0dd61b15474))
 
 ## [0.1.7](https://github.com/rvben/unifi-cli/compare/v0.1.6...v0.1.7) - 2026-05-21
 
@@ -24,8 +37,6 @@ All notable changes to this project will be documented in this file.
 - **init**: add API key URL, credential validation, and next steps to config init ([e09bd0e](https://github.com/rvben/unifi-cli/commit/e09bd0e7d02a68345f1b67b60ef147f2a847ead2))
 
 ## [0.1.5](https://github.com/rvben/unifi-cli/compare/v0.1.4...v0.1.5) - 2026-04-03
-
-## [Unreleased]
 
 ## [0.1.4] - 2026-03-20
 
@@ -173,14 +184,3 @@ All notable changes to this project will be documented in this file.
 - Environment variable support (`UNIFI_HOST`, `UNIFI_API_KEY`)
 - MAC address normalization (accepts any format)
 - 120+ tests (unit, CLI parsing, mock server integration)
-
-[Unreleased]: https://github.com/rvben/unifi-cli/compare/v0.1.4...HEAD
-[0.1.4]: https://github.com/rvben/unifi-cli/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/rvben/unifi-cli/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/rvben/unifi-cli/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/rvben/unifi-cli/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/rvben/unifi-cli/compare/v0.0.4...v0.1.0
-[0.0.4]: https://github.com/rvben/unifi-cli/compare/v0.0.3...v0.0.4
-[0.0.3]: https://github.com/rvben/unifi-cli/compare/v0.0.2...v0.0.3
-[0.0.2]: https://github.com/rvben/unifi-cli/compare/v0.0.1...v0.0.2
-[0.0.1]: https://github.com/rvben/unifi-cli/releases/tag/v0.0.1
