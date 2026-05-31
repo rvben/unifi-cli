@@ -285,11 +285,39 @@ pub struct PortEntry {
     pub full_duplex: bool,
     #[serde(default)]
     pub poe_enable: bool,
+    // The legacy /stat/device endpoint returns this as a JSON string
+    // (e.g. "0.00") on non-PoE switches like the USW Flex Mini, and as a
+    // JSON number on PoE-capable switches. Accept either form.
+    #[serde(default, deserialize_with = "deserialize_string_or_number_f64")]
     pub poe_power: Option<f64>,
     #[serde(default)]
     pub port_poe: bool,
     pub tx_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,
+}
+
+fn deserialize_string_or_number_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        Number(f64),
+        String(String),
+    }
+    match Option::<StringOrNumber>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(StringOrNumber::Number(n)) => Ok(Some(n)),
+        Some(StringOrNumber::String(s)) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<f64>().map(Some).map_err(D::Error::custom)
+            }
+        }
+    }
 }
 
 // Device with port_table from Legacy stat/device endpoint
