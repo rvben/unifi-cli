@@ -285,9 +285,8 @@ pub struct PortEntry {
     pub full_duplex: bool,
     #[serde(default)]
     pub poe_enable: bool,
-    // The legacy /stat/device endpoint returns this as a JSON string
-    // (e.g. "0.00") on non-PoE switches like the USW Flex Mini, and as a
-    // JSON number on PoE-capable switches. Accept either form.
+    // The legacy /stat/device endpoint may return this as a JSON string
+    // (e.g. "0.00") or as a JSON number depending on firmware. Accept either form.
     #[serde(default, deserialize_with = "deserialize_string_or_number_f64")]
     pub poe_power: Option<f64>,
     #[serde(default)]

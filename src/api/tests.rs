@@ -512,9 +512,9 @@ fn deserialize_port_entry() {
 
 #[test]
 fn deserialize_port_entry_poe_power_as_string() {
-    // The legacy /stat/device endpoint returns poe_power as the string
-    // "0.00" on non-PoE switches (e.g. USW Flex Mini). Verify both
-    // string and empty-string forms decode without error.
+    // The legacy /stat/device endpoint may return poe_power as a JSON
+    // string (e.g. "0.00") depending on firmware. Verify both string and
+    // empty-string forms decode without error.
     let json = r#"{"port_idx": 1, "poe_power": "0.00"}"#;
     let port: PortEntry = serde_json::from_str(json).unwrap();
     assert_eq!(port.poe_power, Some(0.0));
