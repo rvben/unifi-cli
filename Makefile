@@ -1,4 +1,4 @@
-.PHONY: build release test lint fmt check clean install release-patch release-minor release-major
+.PHONY: build release test lint fmt check update-deps clean install release-patch release-minor release-major
 
 build:
 	cargo build
@@ -17,6 +17,9 @@ fmt:
 	cargo fmt
 
 check: lint test
+
+update-deps:
+	upd --apply --max-bump minor --lang rust,actions
 
 clean:
 	cargo clean
