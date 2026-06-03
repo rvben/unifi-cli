@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+
+## [0.2.1](https://github.com/rvben/unifi-cli/compare/v0.2.0...v0.2.1) - 2026-06-03
+
+### Fixed
+
+- **devices**: accept poe_power as JSON string on non-PoE switches (#3) ([2cd0b5f](https://github.com/rvben/unifi-cli/commit/2cd0b5fc6547bbb2b77eb8259304114d2a779778))
+
 ## [0.2.0](https://github.com/rvben/unifi-cli/compare/v0.1.7...v0.2.0) - 2026-05-23
 
 Thanks to [@l3wi](https://github.com/l3wi) for reporting the TLS certificate validation issue ([#2](https://github.com/rvben/unifi-cli/pull/2)).
