@@ -332,7 +332,7 @@ jobs:
 
       - name: Update Homebrew formula
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION_NUM="${VERSION#v}"
@@ -381,8 +381,15 @@ jobs:
           sed -i "s/SHA_AARCH64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.aarch64_unknown_linux_gnu }}/g" /tmp/unifi-cli.rb
           sed -i "s/SHA_X86_64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.x86_64_unknown_linux_gnu }}/g" /tmp/unifi-cli.rb
 
-          # Clone tap repo, update formula, push
-          git clone https://x-access-token:${GH_TOKEN}@github.com/rvben/homebrew-tap.git /tmp/tap
+          # Authenticate to the tap with a write deploy key scoped to
+          # rvben/homebrew-tap. The key does not expire, so cross-repo pushes
+          # keep working without periodic token rotation.
+          mkdir -p ~/.ssh
+          echo "$HOMEBREW_TAP_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          git clone git@github.com:rvben/homebrew-tap.git /tmp/tap
           mkdir -p /tmp/tap/Formula
           cp /tmp/unifi-cli.rb /tmp/tap/Formula/unifi-cli.rb
           cd /tmp/tap
