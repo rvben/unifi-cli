@@ -802,16 +802,34 @@ mod command_output {
     use unifi_cli::output::OutputConfig;
 
     fn out_table() -> OutputConfig {
-        OutputConfig {
-            json: false,
-            quiet: false,
-        }
+        OutputConfig::new(unifi_cli::output::OutputFormat::Text, false)
     }
 
     fn out_json() -> OutputConfig {
-        OutputConfig {
-            json: true,
-            quiet: false,
+        OutputConfig::new(unifi_cli::output::OutputFormat::Json, false)
+    }
+
+    fn default_pagination() -> unifi_cli::commands::clients::Pagination {
+        unifi_cli::commands::clients::Pagination {
+            limit: 100,
+            offset: 0,
+            fields: None,
+        }
+    }
+
+    fn default_devices_pagination() -> unifi_cli::commands::devices::Pagination {
+        unifi_cli::commands::devices::Pagination {
+            limit: 100,
+            offset: 0,
+            fields: None,
+        }
+    }
+
+    fn default_events_pagination(limit: usize) -> unifi_cli::commands::events::Pagination {
+        unifi_cli::commands::events::Pagination {
+            limit,
+            offset: 0,
+            fields: None,
         }
     }
 
@@ -844,9 +862,15 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, out_table(), no_filter(), None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::list(
+            &mut client,
+            out_table(),
+            no_filter(),
+            None,
+            default_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -854,9 +878,15 @@ mod command_output {
         let server = MockServer::start().await;
         mount_clients_list(&server).await;
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::clients::list(&mut client, out_json(), no_filter(), None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::list(
+            &mut client,
+            out_json(),
+            no_filter(),
+            None,
+            default_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1057,9 +1087,14 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, out_table(), None)
-            .await
-            .unwrap();
+        unifi_cli::commands::devices::list(
+            &mut client,
+            out_table(),
+            None,
+            default_devices_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1076,9 +1111,14 @@ mod command_output {
             .await;
 
         let mut client = mock_client(&server).await;
-        unifi_cli::commands::devices::list(&mut client, out_json(), None)
-            .await
-            .unwrap();
+        unifi_cli::commands::devices::list(
+            &mut client,
+            out_json(),
+            None,
+            default_devices_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1372,9 +1412,15 @@ mod command_output {
             name: None,
         };
         // Should succeed (filter happens internally, we verify no error)
-        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::list(
+            &mut client,
+            out_json(),
+            filter,
+            None,
+            default_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1401,9 +1447,15 @@ mod command_output {
             wireless: true,
             name: None,
         };
-        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::list(
+            &mut client,
+            out_json(),
+            filter,
+            None,
+            default_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1431,9 +1483,15 @@ mod command_output {
             wireless: false,
             name: Some("phone".into()),
         };
-        unifi_cli::commands::clients::list(&mut client, out_json(), filter, None)
-            .await
-            .unwrap();
+        unifi_cli::commands::clients::list(
+            &mut client,
+            out_json(),
+            filter,
+            None,
+            default_pagination(),
+        )
+        .await
+        .unwrap();
     }
 
     // --- Events ---
@@ -1454,7 +1512,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::events::list(&client, out_table(), 10)
+        unifi_cli::commands::events::list(&client, out_table(), default_events_pagination(10))
             .await
             .unwrap();
     }
@@ -1474,7 +1532,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::events::list(&client, out_json(), 5)
+        unifi_cli::commands::events::list(&client, out_json(), default_events_pagination(5))
             .await
             .unwrap();
     }

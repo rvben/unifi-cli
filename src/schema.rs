@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 /// Domain-specific metadata that clap cannot express.
 struct CommandMeta {
-    output_fields: Option<&'static [&'static str]>,
+    output_fields: Option<&'static [(&'static str, &'static str)]>,
     mutating: bool,
     note: Option<&'static str>,
 }
 
-/// Arg IDs that are global — excluded from per-command arg lists.
-/// Includes both Cli-level args and per-command OutputConfig args (json, quiet).
+/// Arg IDs that are global - excluded from per-command arg lists.
+/// Includes both Cli-level args and per-command OutputConfig args (output, quiet).
 const GLOBAL_ARG_IDS: &[&str] = &[
     "host",
     "api_key",
@@ -17,19 +17,22 @@ const GLOBAL_ARG_IDS: &[&str] = &[
     "accept_invalid_certs",
     "profile",
     "json",
+    "output",
     "quiet",
     "help",
     "version",
+    "yes",
 ];
 
 fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     let mut m = HashMap::new();
-    let f =
-        |fields: &'static [&'static str], mutating: bool, note: Option<&'static str>| CommandMeta {
-            output_fields: Some(fields),
-            mutating,
-            note,
-        };
+    let f = |fields: &'static [(&'static str, &'static str)],
+             mutating: bool,
+             note: Option<&'static str>| CommandMeta {
+        output_fields: Some(fields),
+        mutating,
+        note,
+    };
     let n = |note: &'static str| CommandMeta {
         output_fields: None,
         mutating: false,
@@ -39,14 +42,31 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     // clients
     m.insert(
         "clients list",
-        f(&["name", "mac", "ip", "type"], false, None),
+        f(
+            &[
+                ("name", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("type", "string"),
+            ],
+            false,
+            None,
+        ),
     );
     m.insert(
         "clients show",
         f(
             &[
-                "name", "mac", "ip", "wired", "uptime", "tx_bytes", "rx_bytes", "signal", "ssid",
-                "ap_mac",
+                ("name", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("wired", "boolean"),
+                ("uptime", "integer"),
+                ("tx_bytes", "integer"),
+                ("rx_bytes", "integer"),
+                ("signal", "integer"),
+                ("ssid", "string"),
+                ("ap_mac", "string"),
             ],
             false,
             None,
@@ -54,18 +74,65 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
     m.insert(
         "clients set-fixed-ip",
-        f(&["status", "action", "mac", "ip", "name"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("name", "string"),
+            ],
+            true,
+            None,
+        ),
     );
-    m.insert("clients block", f(&["status", "action", "mac"], true, None));
+    m.insert(
+        "clients block",
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
+    );
     m.insert(
         "clients unblock",
-        f(&["status", "action", "mac"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
     );
-    m.insert("clients kick", f(&["status", "action", "mac"], true, None));
+    m.insert(
+        "clients kick",
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
+    );
     m.insert(
         "clients top",
         f(
-            &["name", "mac", "ip", "tx_bytes", "rx_bytes", "total_bytes"],
+            &[
+                ("name", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("tx_bytes", "integer"),
+                ("rx_bytes", "integer"),
+                ("total_bytes", "integer"),
+            ],
             false,
             None,
         ),
@@ -75,7 +142,14 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     m.insert(
         "devices list",
         f(
-            &["name", "model", "mac", "ip", "state", "firmware"],
+            &[
+                ("name", "string"),
+                ("model", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("state", "string"),
+                ("firmware", "string"),
+            ],
             false,
             None,
         ),
@@ -84,7 +158,15 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         "devices show",
         f(
             &[
-                "name", "model", "mac", "ip", "state", "firmware", "uptime", "num_sta", "version",
+                ("name", "string"),
+                ("model", "string"),
+                ("mac", "string"),
+                ("ip", "string"),
+                ("state", "string"),
+                ("firmware", "string"),
+                ("uptime", "integer"),
+                ("num_sta", "integer"),
+                ("version", "string"),
             ],
             false,
             None,
@@ -92,26 +174,42 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
     m.insert(
         "devices restart",
-        f(&["status", "action", "mac"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
     );
     m.insert(
         "devices locate",
-        f(&["status", "action", "mac"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
     );
     m.insert(
         "devices ports",
         f(
             &[
-                "port_idx",
-                "name",
-                "media",
-                "up",
-                "speed",
-                "full_duplex",
-                "poe_enable",
-                "poe_power",
-                "tx_bytes",
-                "rx_bytes",
+                ("port_idx", "integer"),
+                ("name", "string"),
+                ("media", "string"),
+                ("up", "boolean"),
+                ("speed", "integer"),
+                ("full_duplex", "boolean"),
+                ("poe_enable", "boolean"),
+                ("poe_power", "number"),
+                ("tx_bytes", "integer"),
+                ("rx_bytes", "integer"),
             ],
             false,
             None,
@@ -119,18 +217,41 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
     m.insert(
         "devices upgrade",
-        f(&["status", "action", "mac"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
     );
 
     // networks / events / system
     m.insert(
         "networks",
-        f(&["name", "vlan_id", "enabled", "default"], false, None),
+        f(
+            &[
+                ("name", "string"),
+                ("vlan_id", "integer"),
+                ("enabled", "boolean"),
+                ("default", "boolean"),
+            ],
+            false,
+            None,
+        ),
     );
     m.insert(
         "events list",
         f(
-            &["key", "msg", "subsystem", "time", "datetime"],
+            &[
+                ("key", "string"),
+                ("msg", "string"),
+                ("subsystem", "string"),
+                ("time", "integer"),
+                ("datetime", "string"),
+            ],
             false,
             None,
         ),
@@ -139,13 +260,13 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         "system health",
         f(
             &[
-                "subsystem",
-                "status",
-                "num_sta",
-                "num_ap",
-                "num_switches",
-                "wan_ip",
-                "isp_name",
+                ("subsystem", "string"),
+                ("status", "string"),
+                ("num_sta", "integer"),
+                ("num_ap", "integer"),
+                ("num_switches", "integer"),
+                ("wan_ip", "string"),
+                ("isp_name", "string"),
             ],
             false,
             None,
@@ -153,7 +274,16 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
     m.insert(
         "system info",
-        f(&["hostname", "version", "timezone", "uptime"], false, None),
+        f(
+            &[
+                ("hostname", "string"),
+                ("version", "string"),
+                ("timezone", "string"),
+                ("uptime", "integer"),
+            ],
+            false,
+            None,
+        ),
     );
 
     // protect
@@ -161,13 +291,13 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         "protect cameras list",
         f(
             &[
-                "id",
-                "name",
-                "mac",
-                "state",
-                "model_key",
-                "mic_enabled",
-                "video_mode",
+                ("id", "string"),
+                ("name", "string"),
+                ("mac", "string"),
+                ("state", "string"),
+                ("model_key", "string"),
+                ("mic_enabled", "boolean"),
+                ("video_mode", "string"),
             ],
             false,
             Some(
@@ -175,21 +305,63 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
             ),
         ),
     );
-    m.insert("protect cameras show", f(
-        &["id", "name", "mac", "state", "model_key", "mic_enabled", "video_mode", "feature_flags"], false,
-        Some("With --full: adds ip, type, firmware, uptime, channels, wifi, storage, recording settings"),
-    ));
+    m.insert(
+        "protect cameras show",
+        f(
+            &[
+                ("id", "string"),
+                ("name", "string"),
+                ("mac", "string"),
+                ("state", "string"),
+                ("model_key", "string"),
+                ("mic_enabled", "boolean"),
+                ("video_mode", "string"),
+                ("feature_flags", "object"),
+            ],
+            false,
+            Some(
+                "With --full: adds ip, type, firmware, uptime, channels, wifi, storage, recording settings",
+            ),
+        ),
+    );
     m.insert(
         "protect rtsps list",
-        f(&["high", "medium", "low", "package"], false, None),
+        f(
+            &[
+                ("high", "string"),
+                ("medium", "string"),
+                ("low", "string"),
+                ("package", "string"),
+            ],
+            false,
+            None,
+        ),
     );
     m.insert(
         "protect rtsps create",
-        f(&["status", "action", "camera_id", "streams"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("camera_id", "string"),
+                ("streams", "object"),
+            ],
+            true,
+            None,
+        ),
     );
     m.insert(
         "protect rtsps delete",
-        f(&["status", "action", "camera_id", "qualities"], true, None),
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("camera_id", "string"),
+                ("qualities", "string[]"),
+            ],
+            true,
+            None,
+        ),
     );
 
     // utility commands
@@ -210,14 +382,24 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     m
 }
 
-fn extract_global_flags(cmd: &clap::Command) -> serde_json::Map<String, serde_json::Value> {
-    let mut flags = serde_json::Map::new();
+fn build_global_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
+    let mut args = Vec::new();
+
+    // Emit global flags derived from the clap command tree
+    let included = &[
+        "host",
+        "api_key",
+        "username",
+        "password",
+        "accept_invalid_certs",
+        "profile",
+    ];
     for arg in cmd.get_arguments() {
         let id = arg.get_id().as_str();
-        if !GLOBAL_ARG_IDS.contains(&id) || matches!(id, "help" | "version" | "json" | "quiet") {
+        if !included.contains(&id) {
             continue;
         }
-        let key = match arg.get_long() {
+        let name = match arg.get_long() {
             Some(long) => {
                 if let Some(names) = arg.get_value_names() {
                     let vs: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
@@ -229,15 +411,43 @@ fn extract_global_flags(cmd: &clap::Command) -> serde_json::Map<String, serde_js
             None => continue,
         };
         let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
-        flags.insert(key, serde_json::Value::String(help));
+        args.push(serde_json::json!({
+            "name": name,
+            "type": "string",
+            "required": false,
+            "description": help,
+        }));
     }
-    // Synthetic flags added per-command by OutputConfig, not on the Cli struct
-    flags.insert(
-        "--json".into(),
-        "Output as JSON (auto-enabled when piped)".into(),
-    );
-    flags.insert("--quiet".into(), "Suppress non-data output".into());
-    flags
+
+    // Synthetic global args (added per-command via OutputConfig, not on the Cli struct directly)
+    args.push(serde_json::json!({
+        "name": "--output",
+        "type": "string",
+        "required": false,
+        "enum": ["auto", "text", "json"],
+        "default": "auto",
+        "description": "Output format: auto (TTY detection), text, or json. Alias: --json for json.",
+    }));
+    args.push(serde_json::json!({
+        "name": "--quiet",
+        "type": "boolean",
+        "required": false,
+        "description": "Suppress non-data output",
+    }));
+    args
+}
+
+fn infer_arg_type(arg: &clap::Arg) -> &'static str {
+    let id = arg.get_id().as_str();
+    // Boolean flags (no value name = flag/switch)
+    if arg.get_value_names().is_none_or(|v| v.is_empty()) {
+        return "boolean";
+    }
+    // Known integer args by id
+    match id {
+        "limit" | "offset" | "interval" => "integer",
+        _ => "string",
+    }
 }
 
 fn extract_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
@@ -257,11 +467,17 @@ fn extract_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
             continue;
         };
         let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
-        args.push(serde_json::json!({
+        let arg_type = infer_arg_type(arg);
+        let mut obj = serde_json::json!({
             "name": name,
+            "type": arg_type,
             "required": arg.is_required_set(),
             "description": help,
-        }));
+        });
+        if let Some(default) = arg.get_default_values().first() {
+            obj["default"] = serde_json::Value::String(default.to_string_lossy().into_owned());
+        }
+        args.push(obj);
     }
     args
 }
@@ -270,7 +486,7 @@ fn walk_commands(
     cmd: &clap::Command,
     prefix: &str,
     metadata: &HashMap<&str, CommandMeta>,
-    out: &mut serde_json::Map<String, serde_json::Value>,
+    out: &mut Vec<serde_json::Value>,
 ) {
     for sub in cmd.get_subcommands() {
         let name = sub.get_name();
@@ -292,22 +508,26 @@ fn walk_commands(
             walk_commands(sub, &path, metadata, out);
         } else {
             let desc = sub.get_about().map(|h| h.to_string()).unwrap_or_default();
-            let mut entry = serde_json::Map::new();
-            entry.insert("description".into(), desc.into());
-            entry.insert("args".into(), extract_args(sub).into());
+            let mut entry = serde_json::json!({
+                "name": path,
+                "description": desc,
+                "mutating": false,
+                "args": extract_args(sub),
+            });
             if let Some(meta) = metadata.get(path.as_str()) {
                 if let Some(fields) = meta.output_fields {
-                    let arr: Vec<serde_json::Value> = fields.iter().map(|f| (*f).into()).collect();
-                    entry.insert("output_fields".into(), arr.into());
+                    let arr: Vec<serde_json::Value> = fields
+                        .iter()
+                        .map(|(fname, ftype)| serde_json::json!({"name": fname, "type": ftype}))
+                        .collect();
+                    entry["output_fields"] = arr.into();
                 }
-                if meta.mutating {
-                    entry.insert("mutating".into(), true.into());
-                }
+                entry["mutating"] = meta.mutating.into();
                 if let Some(note) = meta.note {
-                    entry.insert("note".into(), note.into());
+                    entry["note"] = note.into();
                 }
             }
-            out.insert(path, entry.into());
+            out.push(entry);
         }
     }
 }
@@ -319,25 +539,56 @@ fn walk_commands(
 /// (`output_fields`, `mutating`, `note`) comes from `command_metadata()`.
 pub fn print_schema(cmd: clap::Command) {
     let metadata = command_metadata();
-    let global_flags = extract_global_flags(&cmd);
+    let global_args = build_global_args(&cmd);
 
-    let mut commands = serde_json::Map::new();
+    let mut commands: Vec<serde_json::Value> = Vec::new();
     walk_commands(&cmd, "", &metadata, &mut commands);
 
     let schema = serde_json::json!({
+        "clispec": "0.2",
         "name": cmd.get_name(),
         "version": env!("CARGO_PKG_VERSION"),
         "description": cmd.get_about().map(|h| h.to_string()).unwrap_or_default(),
-        "global_flags": global_flags,
-        "exit_codes": {
-            "0": "success",
-            "1": "general error",
-            "2": "configuration error (missing host/api-key)",
-            "3": "authentication error (401/403)",
-            "4": "not found (404)",
-            "5": "API error (server error)",
-        },
+        "global_args": global_args,
         "commands": commands,
+        "errors": [
+            {
+                "kind": "general_error",
+                "exit_code": 1,
+                "retryable": false,
+                "description": "Unspecified error",
+            },
+            {
+                "kind": "config_error",
+                "exit_code": 2,
+                "retryable": false,
+                "description": "Missing or invalid configuration (host/api-key not set)",
+            },
+            {
+                "kind": "confirmation_required",
+                "exit_code": 2,
+                "retryable": false,
+                "description": "Destructive command requires --yes flag when stdin is not a terminal",
+            },
+            {
+                "kind": "auth_error",
+                "exit_code": 3,
+                "retryable": false,
+                "description": "Authentication or authorization failure (401/403)",
+            },
+            {
+                "kind": "not_found",
+                "exit_code": 4,
+                "retryable": false,
+                "description": "Requested resource not found (404)",
+            },
+            {
+                "kind": "api_error",
+                "exit_code": 5,
+                "retryable": true,
+                "description": "API returned a server-side error (5xx)",
+            },
+        ],
     });
     println!(
         "{}",

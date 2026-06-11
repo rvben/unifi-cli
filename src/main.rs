@@ -1,6 +1,8 @@
 use unifi_cli::api;
 use unifi_cli::commands;
-use unifi_cli::output::{OutputConfig, exit_code_for_error, exit_codes, use_color};
+use unifi_cli::output::{
+    OutputConfig, OutputFormat, error_kind_and_code, exit_codes, print_error_envelope, use_color,
+};
 
 mod schema;
 
@@ -34,8 +36,12 @@ struct Cli {
     #[arg(long, env = "UNIFI_PROFILE")]
     profile: Option<String>,
 
-    /// Output as JSON (auto-enabled when stdout is not a terminal)
-    #[arg(long, global = true)]
+    /// Output format: auto (TTY detection), text, json
+    #[arg(short = 'o', long = "output", global = true, default_value = "auto")]
+    output: String,
+
+    /// Output as JSON (alias for --output=json, auto-enabled when stdout is not a terminal)
+    #[arg(long, global = true, hide = true)]
     json: bool,
 
     /// Suppress non-data output (summary lines, confirmations)
@@ -112,6 +118,15 @@ enum ClientsCommand {
         /// Refresh every N seconds
         #[arg(short, long, value_name = "SECONDS")]
         watch: Option<u64>,
+        /// Maximum number of results to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Show details for a client by MAC address
     Show {
@@ -132,16 +147,25 @@ enum ClientsCommand {
     Block {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
     /// Unblock a client
     Unblock {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
     /// Kick (disconnect) a client
     Kick {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
     /// Show top clients by bandwidth usage
     Top {
@@ -158,6 +182,15 @@ enum DevicesCommand {
         /// Refresh every N seconds
         #[arg(short, long, value_name = "SECONDS")]
         watch: Option<u64>,
+        /// Maximum number of results to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Show details for a device by MAC address
     Show {
@@ -168,6 +201,9 @@ enum DevicesCommand {
     Restart {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
     /// Toggle locate LED on a device
     Locate {
@@ -192,6 +228,9 @@ enum DevicesCommand {
     Upgrade {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -210,6 +249,12 @@ enum EventsCommand {
         /// Number of events to show
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output
+        #[arg(long)]
+        fields: Option<String>,
     },
 }
 
@@ -272,7 +317,24 @@ enum ProtectRtspsCommand {
         /// Quality levels to delete (comma-separated: high,medium,low,package)
         #[arg(short, long, value_delimiter = ',', default_value = "high,medium")]
         quality: Vec<String>,
+        /// Skip confirmation prompt (required when stdin is not a terminal)
+        #[arg(long)]
+        yes: bool,
     },
+}
+
+/// Check TTY for destructive commands. When stdin is not a terminal and --yes was not
+/// passed, emit a structured error and exit with code 2.
+fn require_confirmation(yes: bool, action: &str) {
+    use std::io::IsTerminal;
+    if !yes && !std::io::stdin().is_terminal() {
+        print_error_envelope(
+            "confirmation_required",
+            &format!("Destructive action '{action}' requires confirmation."),
+            Some("Re-run with --yes to confirm."),
+        );
+        std::process::exit(exit_codes::CONFIRMATION_REQUIRED);
+    }
 }
 
 fn print_schema() {
@@ -951,8 +1013,9 @@ async fn require_protect_session(
     match api::ProtectSession::login_with_options(host, user, pass, client_options).await {
         Ok(session) => session,
         Err(e) => {
-            eprintln!("Error: Protect login failed: {e}");
-            std::process::exit(exit_code_for_error(&e));
+            let (kind, code) = error_kind_and_code(&e as &dyn std::error::Error);
+            print_error_envelope(kind, &format!("Protect login failed: {e}"), None);
+            std::process::exit(code);
         }
     }
 }
@@ -1003,7 +1066,12 @@ async fn run_config_check(client: &api::UnifiClient) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let out = OutputConfig::new(cli.json, cli.quiet);
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::parse(&cli.output).unwrap_or(OutputFormat::Auto)
+    };
+    let out = OutputConfig::new(format, cli.quiet);
 
     match &cli.command {
         Command::Schema => {
@@ -1073,13 +1141,21 @@ async fn main() {
                 wireless,
                 name,
                 watch,
+                limit,
+                offset,
+                fields,
             } => {
                 let filter = commands::clients::ListFilter {
                     wired,
                     wireless,
                     name,
                 };
-                commands::clients::list(&mut client, out, filter, watch).await
+                let pagination = commands::clients::Pagination {
+                    limit,
+                    offset,
+                    fields,
+                };
+                commands::clients::list(&mut client, out, filter, watch, pagination).await
             }
             ClientsCommand::Show { mac } => commands::clients::show(&client, &mac, out).await,
             ClientsCommand::SetFixedIp { mac, ip, name } => {
@@ -1089,17 +1165,39 @@ async fn main() {
                 }
                 commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
             }
-            ClientsCommand::Block { mac } => commands::clients::block(&client, &mac, out).await,
-            ClientsCommand::Unblock { mac } => commands::clients::unblock(&client, &mac, out).await,
-            ClientsCommand::Kick { mac } => commands::clients::kick(&client, &mac, out).await,
+            ClientsCommand::Block { mac, yes } => {
+                require_confirmation(yes, "block");
+                commands::clients::block(&client, &mac, out).await
+            }
+            ClientsCommand::Unblock { mac, yes } => {
+                require_confirmation(yes, "unblock");
+                commands::clients::unblock(&client, &mac, out).await
+            }
+            ClientsCommand::Kick { mac, yes } => {
+                require_confirmation(yes, "kick");
+                commands::clients::kick(&client, &mac, out).await
+            }
             ClientsCommand::Top { limit } => commands::clients::top(&client, out, limit).await,
         },
         Command::Devices(cmd) => match cmd {
-            DevicesCommand::List { watch } => {
-                commands::devices::list(&mut client, out, watch).await
+            DevicesCommand::List {
+                watch,
+                limit,
+                offset,
+                fields,
+            } => {
+                let pagination = commands::devices::Pagination {
+                    limit,
+                    offset,
+                    fields,
+                };
+                commands::devices::list(&mut client, out, watch, pagination).await
             }
             DevicesCommand::Show { mac } => commands::devices::show(&client, &mac, out).await,
-            DevicesCommand::Restart { mac } => commands::devices::restart(&client, &mac, out).await,
+            DevicesCommand::Restart { mac, yes } => {
+                require_confirmation(yes, "restart");
+                commands::devices::restart(&client, &mac, out).await
+            }
             DevicesCommand::Locate { mac, off } => {
                 commands::devices::locate(&client, &mac, off, out).await
             }
@@ -1114,11 +1212,25 @@ async fn main() {
                     commands::devices::ports(&client, &mac, out).await
                 }
             }
-            DevicesCommand::Upgrade { mac } => commands::devices::upgrade(&client, &mac, out).await,
+            DevicesCommand::Upgrade { mac, yes } => {
+                require_confirmation(yes, "upgrade");
+                commands::devices::upgrade(&client, &mac, out).await
+            }
         },
         Command::Networks => commands::networks::list(&mut client, out).await,
         Command::Events(cmd) => match cmd {
-            EventsCommand::List { limit } => commands::events::list(&client, out, limit).await,
+            EventsCommand::List {
+                limit,
+                offset,
+                fields,
+            } => {
+                let pagination = commands::events::Pagination {
+                    limit,
+                    offset,
+                    fields,
+                };
+                commands::events::list(&client, out, pagination).await
+            }
         },
         Command::System(cmd) => match cmd {
             SystemCommand::Health => commands::system::health(&client, out).await,
@@ -1154,7 +1266,12 @@ async fn main() {
                 ProtectRtspsCommand::Create { camera, quality } => {
                     commands::protect::rtsps_create(&client, &camera, &quality, out).await
                 }
-                ProtectRtspsCommand::Delete { camera, quality } => {
+                ProtectRtspsCommand::Delete {
+                    camera,
+                    quality,
+                    yes,
+                } => {
+                    require_confirmation(yes, "rtsps delete");
                     commands::protect::rtsps_delete(&client, &camera, &quality, out).await
                 }
             },
@@ -1170,8 +1287,9 @@ async fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {e}");
-        std::process::exit(exit_code_for_error(e.as_ref()));
+        let (kind, exit_code) = error_kind_and_code(e.as_ref());
+        print_error_envelope(kind, &e.to_string(), None);
+        std::process::exit(exit_code);
     }
 }
 
@@ -1793,7 +1911,7 @@ api_key = "work_key"
             "aa:bb:cc:dd:ee:ff",
         ]);
         match cli.command {
-            Command::Devices(DevicesCommand::Restart { mac }) => {
+            Command::Devices(DevicesCommand::Restart { mac, .. }) => {
                 assert_eq!(mac, "aa:bb:cc:dd:ee:ff")
             }
             _ => panic!("expected Devices Restart"),
@@ -1962,6 +2080,7 @@ api_key = "work_key"
                 wireless,
                 name,
                 watch,
+                ..
             }) => {
                 assert!(wired);
                 assert!(!wireless);
@@ -2111,7 +2230,7 @@ api_key = "work_key"
     fn cli_events_list() {
         let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "events", "list"]);
         match cli.command {
-            Command::Events(EventsCommand::List { limit }) => {
+            Command::Events(EventsCommand::List { limit, .. }) => {
                 assert_eq!(limit, 10); // default
             }
             _ => panic!("expected Events List"),
@@ -2132,7 +2251,7 @@ api_key = "work_key"
             "50",
         ]);
         match cli.command {
-            Command::Events(EventsCommand::List { limit }) => {
+            Command::Events(EventsCommand::List { limit, .. }) => {
                 assert_eq!(limit, 50);
             }
             _ => panic!("expected Events List"),
@@ -2261,7 +2380,7 @@ api_key = "work_key"
             "aa:bb:cc:dd:ee:ff",
         ]);
         match cli.command {
-            Command::Devices(DevicesCommand::Upgrade { mac }) => {
+            Command::Devices(DevicesCommand::Upgrade { mac, .. }) => {
                 assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
             }
             _ => panic!("expected Devices Upgrade"),

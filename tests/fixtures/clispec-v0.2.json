@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clispec.dev/schema/v0.2.json",
+  "title": "The CLI Spec - Schema v0.2",
+  "description": "Machine-readable description of a CLI tool that conforms to The CLI Spec (https://clispec.dev). Emitted to stdout by the tool's `schema` subcommand.",
+  "type": "object",
+  "required": ["name", "version", "commands"],
+  "properties": {
+    "clispec": {
+      "description": "Version of The CLI Spec schema this document conforms to.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "name": {
+      "description": "The tool's invocation name (the binary name, without path).",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "description": "The tool's version. Free-form, but SemVer is recommended.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "global_args": {
+      "description": "Arguments accepted by every command (e.g. --output, --quiet, --profile). Listed once here instead of being repeated or omitted per command.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/arg" }
+    },
+    "commands": {
+      "description": "Commands the tool exposes. Subcommands nest via the `subcommands` field.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "errors": {
+      "description": "The finite set of `kind` values the tool emits in structured errors. Consumers can write exhaustive handlers against this set.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/error" }
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "mutating": {
+          "description": "Whether the command modifies state. Omitted means unknown - consumers MUST NOT assume an unmarked command is read-only. `mutating: false` is a contract: consumers may grant trust (e.g. auto-approval) based on it.",
+          "type": "boolean"
+        },
+        "stability": {
+          "description": "Stability of the command's contract.",
+          "type": "string",
+          "enum": ["stable", "beta", "experimental", "deprecated"]
+        },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/arg" }
+        },
+        "output_fields": {
+          "description": "Fields present in the command's structured output, so consumers know the shape without invoking the command. For list commands, these describe one item of the `items` array, not the envelope.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "subcommands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    },
+    "arg": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "description": "Flag (e.g. \"--status\") or positional name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "Type name. Common values: \"string\", \"integer\", \"number\", \"boolean\", \"path\", \"string[]\".",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "default": {},
+        "enum": {
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "description": "Stable identifier consumers branch on. Snake_case by convention.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "exit_code": {
+          "description": "The exit code the tool returns for this error kind. Consumers can branch on the exit code without parsing stderr.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "retryable": {
+          "description": "Whether a consumer should retry on this error.",
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -9,7 +9,7 @@ pub async fn health(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let subsystems = client.get_health().await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(
             &subsystems
                 .iter()
@@ -99,7 +99,7 @@ pub async fn info(
     let host = client.get_host_system().await.ok();
     let update_available = host.as_ref().is_some_and(|h| h.update_available());
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "hostname": sys.hostname,
             "version": sys.version,

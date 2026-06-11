@@ -11,6 +11,12 @@ pub struct ListFilter {
     pub name: Option<String>,
 }
 
+pub struct Pagination {
+    pub limit: usize,
+    pub offset: usize,
+    pub fields: Option<String>,
+}
+
 pub(crate) fn apply_filter(clients: Vec<Client>, filter: &ListFilter) -> Vec<Client> {
     clients
         .into_iter()
@@ -34,7 +40,7 @@ pub(crate) fn apply_filter(clients: Vec<Client>, filter: &ListFilter) -> Vec<Cli
 }
 
 fn render_clients(clients: &[Client], out: &OutputConfig) {
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &clients
@@ -96,6 +102,7 @@ pub async fn list(
     out: OutputConfig,
     filter: ListFilter,
     watch: Option<u64>,
+    pagination: Pagination,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(interval) = watch {
         use crossterm::execute;
@@ -125,7 +132,46 @@ pub async fn list(
     } else {
         let clients = client.list_clients().await?;
         let filtered = apply_filter(clients, &filter);
-        render_clients(&filtered, &out);
+        let total = filtered.len();
+        let paginated: Vec<Client> = filtered
+            .into_iter()
+            .skip(pagination.offset)
+            .take(pagination.limit)
+            .collect();
+        if out.is_json() {
+            let items: Vec<serde_json::Value> = paginated
+                .iter()
+                .map(|c| {
+                    let mac_str = c
+                        .mac_address
+                        .as_deref()
+                        .map(|m| format_mac(&normalize_mac(m)));
+                    let mut obj = serde_json::json!({
+                        "name": c.clean_name(),
+                        "mac": mac_str,
+                        "ip": c.ip_address,
+                        "type": c.client_type,
+                    });
+                    if let Some(ref fields_str) = pagination.fields {
+                        let keep: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+                        let map = obj.as_object_mut().unwrap();
+                        map.retain(|k, _| keep.contains(&k.as_str()));
+                    }
+                    obj
+                })
+                .collect();
+            out.print_data(
+                &serde_json::to_string_pretty(&serde_json::json!({
+                    "items": items,
+                    "total": total,
+                    "limit": pagination.limit,
+                    "offset": pagination.offset,
+                }))
+                .expect("failed to serialize JSON"),
+            );
+        } else {
+            render_clients(&paginated, &out);
+        }
         Ok(())
     }
 }
@@ -137,7 +183,7 @@ pub async fn show(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let c = client.get_client_detail(mac).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "name": c.display_name(),
             "mac": c.mac,
@@ -288,7 +334,7 @@ pub async fn top(
     clients.sort_by_key(|c| std::cmp::Reverse(total_bytes(c)));
     let top_clients: Vec<&LegacyClient> = clients.iter().take(limit).collect();
 
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &top_clients

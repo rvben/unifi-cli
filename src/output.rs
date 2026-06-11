@@ -5,20 +5,50 @@ pub fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Output format selection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Use JSON when stdout is not a terminal, text otherwise.
+    Auto,
+    /// Always output human-readable text.
+    Text,
+    /// Always output JSON.
+    Json,
+}
+
+impl OutputFormat {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Self::Auto),
+            "text" => Some(Self::Text),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
 /// Output configuration for agent-friendly CLI design.
 ///
 /// Supports TTY detection (auto-JSON when piped), quiet mode,
 /// and structured JSON output for all commands including mutations.
 #[derive(Clone, Copy)]
 pub struct OutputConfig {
-    pub json: bool,
+    pub format: OutputFormat,
     pub quiet: bool,
 }
 
 impl OutputConfig {
-    pub fn new(json_flag: bool, quiet: bool) -> Self {
-        let json = json_flag || !std::io::stdout().is_terminal();
-        Self { json, quiet }
+    pub fn new(format: OutputFormat, quiet: bool) -> Self {
+        Self { format, quiet }
+    }
+
+    /// True when JSON output is active.
+    pub fn is_json(&self) -> bool {
+        match self.format {
+            OutputFormat::Json => true,
+            OutputFormat::Text => false,
+            OutputFormat::Auto => !std::io::stdout().is_terminal(),
+        }
     }
 
     /// Print data to stdout (tables or JSON). Always shown.
@@ -36,7 +66,7 @@ impl OutputConfig {
     /// Print a structured JSON result for mutation commands.
     /// In JSON mode, prints to stdout. In human mode, prints message to stderr.
     pub fn print_result(&self, json_value: &serde_json::Value, human_message: &str) {
-        if self.json {
+        if self.is_json() {
             println!(
                 "{}",
                 serde_json::to_string_pretty(json_value).expect("failed to serialize JSON")
@@ -47,15 +77,33 @@ impl OutputConfig {
     }
 }
 
+/// Write a structured error envelope as the last line of stderr.
+/// Always call this before process::exit on non-zero paths.
+pub fn print_error_envelope(kind: &str, message: &str, hint: Option<&str>) {
+    let mut err = serde_json::json!({
+        "kind": kind,
+        "message": message,
+    });
+    if let Some(h) = hint {
+        err["hint"] = serde_json::Value::String(h.to_string());
+    }
+    eprintln!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({ "error": err }))
+            .expect("failed to serialize error envelope")
+    );
+}
+
 /// Exit codes for agent-friendly error handling.
 /// Agents can branch on specific failure modes without parsing error text.
 pub mod exit_codes {
     pub const SUCCESS: i32 = 0;
+    pub const GENERAL_ERROR: i32 = 1;
     pub const CONFIG_ERROR: i32 = 2;
+    pub const CONFIRMATION_REQUIRED: i32 = 2;
     pub const AUTH_ERROR: i32 = 3;
     pub const NOT_FOUND: i32 = 4;
     pub const API_ERROR: i32 = 5;
-    pub const GENERAL_ERROR: i32 = 1;
 }
 
 /// Map an error to a specific exit code by downcasting to ApiError.
@@ -71,6 +119,22 @@ pub fn exit_code_for_error(err: &(dyn std::error::Error + 'static)) -> i32 {
         }
     } else {
         exit_codes::GENERAL_ERROR
+    }
+}
+
+/// Map an error to its kind string and exit code.
+pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static str, i32) {
+    if let Some(api_err) = err.downcast_ref::<crate::api::ApiError>() {
+        match api_err {
+            crate::api::ApiError::Auth(_) => ("auth_error", exit_codes::AUTH_ERROR),
+            crate::api::ApiError::NotFound(_) => ("not_found", exit_codes::NOT_FOUND),
+            crate::api::ApiError::Api { .. } => ("api_error", exit_codes::API_ERROR),
+            crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
+                ("general_error", exit_codes::GENERAL_ERROR)
+            }
+        }
+    } else {
+        ("general_error", exit_codes::GENERAL_ERROR)
     }
 }
 
@@ -110,5 +174,45 @@ mod tests {
     fn exit_code_for_non_api_error() {
         let err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         assert_eq!(exit_code_for_error(&err), exit_codes::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn output_format_explicit_text_is_not_json() {
+        let out = OutputConfig::new(OutputFormat::Text, false);
+        assert!(!out.is_json());
+    }
+
+    #[test]
+    fn output_format_explicit_json_is_json() {
+        let out = OutputConfig::new(OutputFormat::Json, false);
+        assert!(out.is_json());
+    }
+
+    #[test]
+    fn error_kind_and_code_auth() {
+        let err = ApiError::Auth("bad".into());
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "auth_error");
+        assert_eq!(code, exit_codes::AUTH_ERROR);
+    }
+
+    #[test]
+    fn error_kind_and_code_not_found() {
+        let err = ApiError::NotFound("x".into());
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "not_found");
+        assert_eq!(code, exit_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn error_envelope_is_valid_json() {
+        let envelope = serde_json::json!({
+            "error": {
+                "kind": "auth_error",
+                "message": "Authentication error: bad key",
+            }
+        });
+        assert!(envelope["error"]["kind"].as_str().is_some());
+        assert!(envelope["error"]["message"].as_str().is_some());
     }
 }

@@ -3,8 +3,14 @@ use owo_colors::OwoColorize;
 use crate::api::{Device, UnifiClient, format_bytes, format_mac, format_uptime};
 use crate::output::{OutputConfig, use_color};
 
+pub struct Pagination {
+    pub limit: usize,
+    pub offset: usize,
+    pub fields: Option<String>,
+}
+
 fn render_devices(devices: &[Device], out: &OutputConfig) {
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &devices
@@ -94,6 +100,7 @@ pub async fn list(
     client: &mut UnifiClient,
     out: OutputConfig,
     watch: Option<u64>,
+    pagination: Pagination,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(interval) = watch {
         use crossterm::execute;
@@ -121,7 +128,44 @@ pub async fn list(
         }
     } else {
         let devices = client.list_devices().await?;
-        render_devices(&devices, &out);
+        let total = devices.len();
+        let paginated: Vec<Device> = devices
+            .into_iter()
+            .skip(pagination.offset)
+            .take(pagination.limit)
+            .collect();
+        if out.is_json() {
+            let items: Vec<serde_json::Value> = paginated
+                .iter()
+                .map(|d| {
+                    let mut obj = serde_json::json!({
+                        "name": d.name,
+                        "model": d.model,
+                        "mac": d.mac_address,
+                        "ip": d.ip_address,
+                        "state": d.state,
+                        "firmware": d.firmware_version,
+                    });
+                    if let Some(ref fields_str) = pagination.fields {
+                        let keep: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+                        let map = obj.as_object_mut().unwrap();
+                        map.retain(|k, _| keep.contains(&k.as_str()));
+                    }
+                    obj
+                })
+                .collect();
+            out.print_data(
+                &serde_json::to_string_pretty(&serde_json::json!({
+                    "items": items,
+                    "total": total,
+                    "limit": pagination.limit,
+                    "offset": pagination.offset,
+                }))
+                .expect("failed to serialize JSON"),
+            );
+        } else {
+            render_devices(&paginated, &out);
+        }
         Ok(())
     }
 }
@@ -133,7 +177,7 @@ pub async fn show(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let d = client.get_device_detail(mac).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "name": d.name,
             "model": d.model,
@@ -218,13 +262,13 @@ pub async fn ports(
 
     if device.port_table.is_empty() {
         out.print_message("No port table available for this device (not a switch or router)");
-        if out.json {
+        if out.is_json() {
             out.print_data("[]");
         }
         return Ok(());
     }
 
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &device

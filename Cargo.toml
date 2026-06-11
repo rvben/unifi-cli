@@ -35,3 +35,4 @@ rpassword = "7.4.0"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+jsonschema = "0.28"

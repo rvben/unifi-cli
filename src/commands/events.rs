@@ -3,29 +3,51 @@ use owo_colors::OwoColorize;
 use crate::api::UnifiClient;
 use crate::output::{OutputConfig, use_color};
 
+pub struct Pagination {
+    pub limit: usize,
+    pub offset: usize,
+    pub fields: Option<String>,
+}
+
 pub async fn list(
     client: &UnifiClient,
     out: OutputConfig,
-    limit: usize,
+    pagination: Pagination,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let events = client.list_events(limit).await?;
+    let events = client.list_events(pagination.limit).await?;
+    let total = events.len();
+    let paginated: Vec<_> = events
+        .into_iter()
+        .skip(pagination.offset)
+        .take(pagination.limit)
+        .collect();
 
-    if out.json {
+    if out.is_json() {
+        let items: Vec<serde_json::Value> = paginated
+            .iter()
+            .map(|e| {
+                let mut obj = serde_json::json!({
+                    "key": e.key,
+                    "msg": e.msg,
+                    "subsystem": e.subsystem,
+                    "time": e.time,
+                    "datetime": e.datetime,
+                });
+                if let Some(ref fields_str) = pagination.fields {
+                    let keep: Vec<&str> = fields_str.split(',').map(str::trim).collect();
+                    let map = obj.as_object_mut().unwrap();
+                    map.retain(|k, _| keep.contains(&k.as_str()));
+                }
+                obj
+            })
+            .collect();
         out.print_data(
-            &serde_json::to_string_pretty(
-                &events
-                    .iter()
-                    .map(|e| {
-                        serde_json::json!({
-                            "key": e.key,
-                            "msg": e.msg,
-                            "subsystem": e.subsystem,
-                            "time": e.time,
-                            "datetime": e.datetime,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "items": items,
+                "total": total,
+                "limit": pagination.limit,
+                "offset": pagination.offset,
+            }))
             .expect("failed to serialize JSON"),
         );
     } else {
@@ -42,7 +64,7 @@ pub async fn list(
             println!("{}", "-".repeat(100));
         }
 
-        for e in &events {
+        for e in &paginated {
             let time = e.datetime.as_deref().unwrap_or("-");
             let subsystem = e.subsystem.as_deref().unwrap_or("-");
             let key = e.key.as_deref().unwrap_or("-");
@@ -61,7 +83,7 @@ pub async fn list(
             }
         }
     }
-    out.print_message(&format!("\n{} events", events.len()));
+    out.print_message(&format!("\n{} events", paginated.len()));
     Ok(())
 }
 

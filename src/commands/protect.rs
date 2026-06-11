@@ -9,7 +9,7 @@ pub async fn cameras_list(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cameras = client.list_protect_cameras().await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &cameras
@@ -102,7 +102,7 @@ pub async fn cameras_show(
     let camera_id = client.resolve_camera_id(id_or_name).await?;
     let c = client.get_protect_camera(&camera_id).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "id": c.id,
             "name": c.name,
@@ -205,7 +205,7 @@ pub async fn rtsps_list(
     let camera_id = client.resolve_camera_id(id_or_name).await?;
     let streams = client.get_rtsps_streams(&camera_id).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&streams)?);
         return Ok(());
     }
@@ -255,7 +255,7 @@ pub async fn rtsps_create(
     let camera_id = client.resolve_camera_id(id_or_name).await?;
     let streams = client.create_rtsps_streams(&camera_id, qualities).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "action": "create_rtsps",
@@ -307,7 +307,7 @@ pub async fn cameras_list_full(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cameras = session.list_cameras_full().await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(
             &serde_json::to_string_pretty(
                 &cameras
@@ -438,7 +438,7 @@ pub async fn cameras_show_full(
     let camera_id = client.resolve_camera_id(id_or_name).await?;
     let c = session.get_camera_full(&camera_id).await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
             "id": c.id,
             "name": c.name,

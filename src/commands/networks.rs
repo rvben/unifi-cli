@@ -9,7 +9,7 @@ pub async fn list(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let networks = client.list_networks().await?;
 
-    if out.json {
+    if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(
             &networks
                 .iter()
