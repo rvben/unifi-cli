@@ -434,6 +434,12 @@ fn build_global_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
         "required": false,
         "description": "Suppress non-data output",
     }));
+    args.push(serde_json::json!({
+        "name": "--yes",
+        "type": "boolean",
+        "required": false,
+        "description": "Skip confirmation prompt for destructive commands (required without a TTY)",
+    }));
     args
 }
 
@@ -587,6 +593,12 @@ pub fn print_schema(cmd: clap::Command) {
                 "exit_code": 5,
                 "retryable": true,
                 "description": "API returned a server-side error (5xx)",
+            },
+            {
+                "kind": "conflict",
+                "exit_code": 6,
+                "retryable": false,
+                "description": "Resource already exists with incompatible configuration",
             },
         ],
     });

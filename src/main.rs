@@ -48,6 +48,10 @@ struct Cli {
     #[arg(long, global = true)]
     quiet: bool,
 
+    /// Skip confirmation prompt for destructive commands (required without a TTY)
+    #[arg(long, global = true)]
+    yes: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -147,25 +151,16 @@ enum ClientsCommand {
     Block {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
     /// Unblock a client
     Unblock {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
     /// Kick (disconnect) a client
     Kick {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
     /// Show top clients by bandwidth usage
     Top {
@@ -201,9 +196,6 @@ enum DevicesCommand {
     Restart {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
     /// Toggle locate LED on a device
     Locate {
@@ -228,9 +220,6 @@ enum DevicesCommand {
     Upgrade {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -317,9 +306,6 @@ enum ProtectRtspsCommand {
         /// Quality levels to delete (comma-separated: high,medium,low,package)
         #[arg(short, long, value_delimiter = ',', default_value = "high,medium")]
         quality: Vec<String>,
-        /// Skip confirmation prompt (required when stdin is not a terminal)
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -1065,7 +1051,30 @@ async fn run_config_check(client: &api::UnifiClient) {
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|e| {
+        // Help and version are not errors; let clap handle them normally.
+        if matches!(
+            e.kind(),
+            clap::error::ErrorKind::DisplayHelp
+                | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                | clap::error::ErrorKind::DisplayVersion
+        ) {
+            e.exit();
+        }
+        // For genuine parse errors: emit clap's prose first, then add the
+        // structured envelope as the last line of stderr (clispec principle 1).
+        let kind = match e.kind() {
+            clap::error::ErrorKind::UnknownArgument | clap::error::ErrorKind::InvalidSubcommand => {
+                "general_error"
+            }
+            clap::error::ErrorKind::MissingRequiredArgument
+            | clap::error::ErrorKind::MissingSubcommand => "config_error",
+            _ => "general_error",
+        };
+        eprint!("{e}");
+        print_error_envelope(kind, &e.to_string(), None);
+        std::process::exit(2);
+    });
     let format = if cli.json {
         OutputFormat::Json
     } else {
@@ -1165,16 +1174,16 @@ async fn main() {
                 }
                 commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
             }
-            ClientsCommand::Block { mac, yes } => {
-                require_confirmation(yes, "block");
+            ClientsCommand::Block { mac } => {
+                require_confirmation(cli.yes, "block");
                 commands::clients::block(&client, &mac, out).await
             }
-            ClientsCommand::Unblock { mac, yes } => {
-                require_confirmation(yes, "unblock");
+            ClientsCommand::Unblock { mac } => {
+                require_confirmation(cli.yes, "unblock");
                 commands::clients::unblock(&client, &mac, out).await
             }
-            ClientsCommand::Kick { mac, yes } => {
-                require_confirmation(yes, "kick");
+            ClientsCommand::Kick { mac } => {
+                require_confirmation(cli.yes, "kick");
                 commands::clients::kick(&client, &mac, out).await
             }
             ClientsCommand::Top { limit } => commands::clients::top(&client, out, limit).await,
@@ -1194,8 +1203,8 @@ async fn main() {
                 commands::devices::list(&mut client, out, watch, pagination).await
             }
             DevicesCommand::Show { mac } => commands::devices::show(&client, &mac, out).await,
-            DevicesCommand::Restart { mac, yes } => {
-                require_confirmation(yes, "restart");
+            DevicesCommand::Restart { mac } => {
+                require_confirmation(cli.yes, "restart");
                 commands::devices::restart(&client, &mac, out).await
             }
             DevicesCommand::Locate { mac, off } => {
@@ -1212,8 +1221,8 @@ async fn main() {
                     commands::devices::ports(&client, &mac, out).await
                 }
             }
-            DevicesCommand::Upgrade { mac, yes } => {
-                require_confirmation(yes, "upgrade");
+            DevicesCommand::Upgrade { mac } => {
+                require_confirmation(cli.yes, "upgrade");
                 commands::devices::upgrade(&client, &mac, out).await
             }
         },
@@ -1266,12 +1275,8 @@ async fn main() {
                 ProtectRtspsCommand::Create { camera, quality } => {
                     commands::protect::rtsps_create(&client, &camera, &quality, out).await
                 }
-                ProtectRtspsCommand::Delete {
-                    camera,
-                    quality,
-                    yes,
-                } => {
-                    require_confirmation(yes, "rtsps delete");
+                ProtectRtspsCommand::Delete { camera, quality } => {
+                    require_confirmation(cli.yes, "rtsps delete");
                     commands::protect::rtsps_delete(&client, &camera, &quality, out).await
                 }
             },
