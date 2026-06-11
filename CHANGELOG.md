@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 
+
+## [0.2.2](https://github.com/rvben/unifi-cli/compare/v0.2.1...v0.2.2) - 2026-06-11
+
+### Added
+
+- **schema**: upgrade to clispec v0.2 schema shape and add compliance features ([25ba5fd](https://github.com/rvben/unifi-cli/commit/25ba5fd365e4124117dcd648d08f4888c118d6a4))
+
+### Fixed
+
+- **schema**: promote --yes to global flag and add conflict error kind ([2da61c5](https://github.com/rvben/unifi-cli/commit/2da61c57b3d4e4863293e795950f6a28e5999dd9))
+
 ## [0.2.1](https://github.com/rvben/unifi-cli/compare/v0.2.0...v0.2.1) - 2026-06-03
 
 Thanks to [@captbaritone](https://github.com/captbaritone) for reporting and fixing the `poe_power` decode error ([#3](https://github.com/rvben/unifi-cli/pull/3)).
