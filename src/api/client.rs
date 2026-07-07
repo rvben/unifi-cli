@@ -367,11 +367,30 @@ impl UnifiClient {
     }
 
     // Events
+    //
+    // Legacy `stat/event` was removed in UniFi Network 9+ (UniFi OS) and now
+    // returns api.err.NotFound (404). On those controllers the surviving REST
+    // surface for notable events is `rest/alarm`, whose records share this
+    // `Event` shape, so fall back to it. (The full live event stream on newer
+    // controllers is only exposed over the events WebSocket, which this REST
+    // client does not consume.)
     pub async fn list_events(&self, limit: usize) -> Result<Vec<Event>, ApiError> {
-        let events: Vec<Event> = self
-            .get_legacy(&format!("/stat/event?_limit={limit}"))
-            .await?;
-        Ok(events)
+        match self
+            .get_legacy::<Event>(&format!("/stat/event?_limit={limit}"))
+            .await
+        {
+            Ok(events) => Ok(events),
+            Err(ApiError::NotFound(_)) => {
+                let mut alarms: Vec<Event> = self.get_legacy("/rest/alarm").await?;
+                // `rest/alarm` is neither time-ordered nor limited server-side;
+                // present the most recent `limit` records to match the
+                // semantics `stat/event?_limit=` provided on older controllers.
+                alarms.sort_by_key(|e| std::cmp::Reverse(e.time));
+                alarms.truncate(limit);
+                Ok(alarms)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     // Port table for a specific device

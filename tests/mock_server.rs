@@ -1706,6 +1706,80 @@ mod command_output {
             .unwrap_err();
         assert!(err.to_string().contains("Not found"));
     }
+
+    #[tokio::test]
+    async fn list_events_returns_stat_event_records() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_AP_Connected", "msg": "AP connected", "subsystem": "wlan", "time": 200, "datetime": "2026-07-07T16:00:00Z"},
+                    {"key": "EVT_SW_LostContact", "msg": "Switch lost contact", "subsystem": "lan", "time": 100, "datetime": "2026-07-07T15:00:00Z"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let events = client.list_events(10).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key.as_deref(), Some("EVT_AP_Connected"));
+    }
+
+    // UniFi Network 9+ (UniFi OS) removed the legacy stat/event route, which now
+    // returns api.err.NotFound (404). list_events must fall back to rest/alarm and
+    // return the most recent `limit` records.
+    #[tokio::test]
+    async fn list_events_falls_back_to_alarms_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.NotFound"},
+                "data": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/alarm"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_GW_Older", "msg": "older", "time": 100, "datetime": "a"},
+                    {"key": "EVT_GW_Newest", "msg": "newest", "time": 300, "datetime": "c"},
+                    {"key": "EVT_GW_Middle", "msg": "middle", "time": 200, "datetime": "b"}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let events = client.list_events(2).await.unwrap();
+        // Most-recent-first, truncated to the requested limit.
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].msg.as_deref(), Some("newest"));
+        assert_eq!(events[1].msg.as_deref(), Some("middle"));
+    }
+
+    #[tokio::test]
+    async fn list_events_propagates_non_404_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.ServerError"},
+                "data": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        assert!(client.list_events(10).await.is_err());
+    }
 }
 
 // --- Client construction tests ---
