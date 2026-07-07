@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 
 
+
+## [0.2.3](https://github.com/rvben/unifi-cli/compare/v0.2.2...v0.2.3) - 2026-07-07
+
+### Fixed
+
+- **events**: fall back to rest/alarm when stat/event is 404 on UniFi OS 9+ ([ac8a69c](https://github.com/rvben/unifi-cli/commit/ac8a69c743c5eab05def7bcd67e08e5b060275ea))
+
 ## [0.2.2](https://github.com/rvben/unifi-cli/compare/v0.2.1...v0.2.2) - 2026-06-11
 
 ### Added
