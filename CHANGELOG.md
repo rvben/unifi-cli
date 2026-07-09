@@ -8,9 +8,19 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.0](https://github.com/rvben/unifi-cli/compare/v0.2.3...v0.3.0) - 2026-07-09
 
+### Added
+
+- **clients list**: project `ssid`, `signal`, `uptime`, `network`, `vlan`, `tx_bytes`, `rx_bytes`, `blocked` and `connected_at`. Answering "which SSID is each client on" cost one API call per client; it is now one call for the whole list.
+- **networks list**: a `list` subcommand, matching `clients`, `devices` and `events`. Bare `unifi networks` still works.
+
+### Changed
+
+- **clients list**: `ip` is now the address a client currently holds, read from the live `stat/sta` record. It previously came from the integration API's `ipAddress`, which retains the last address a client ever had and outlives the lease. A client with no current lease now reports `ip: null` instead of a stale address, and `clients list` agrees with `clients show`.
+
 ### Fixed
 
 - **clients**: stop three silent-failure modes in the agent contract ([5e50bb7](https://github.com/rvben/unifi-cli/commit/5e50bb704777407acf244856bc435f7ceccd7b00))
+- **--fields**: an unknown field is now a usage error (exit 2) naming the offender and the valid set, raised before the config loads or a connection opens. It previously returned `{}` per row with exit 0, which is indistinguishable from a query that matched nothing. `schema` and `--fields` read the same field tables, so the published contract and the enforced one cannot drift.
 
 ## [0.2.3](https://github.com/rvben/unifi-cli/compare/v0.2.2...v0.2.3) - 2026-07-07
 
