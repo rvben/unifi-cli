@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use unifi_cli::fields;
+
 /// Domain-specific metadata that clap cannot express.
 struct CommandMeta {
     output_fields: Option<&'static [(&'static str, &'static str)]>,
@@ -40,38 +42,8 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     };
 
     // clients
-    m.insert(
-        "clients list",
-        f(
-            &[
-                ("name", "string"),
-                ("mac", "string"),
-                ("ip", "string"),
-                ("type", "string"),
-            ],
-            false,
-            None,
-        ),
-    );
-    m.insert(
-        "clients show",
-        f(
-            &[
-                ("name", "string"),
-                ("mac", "string"),
-                ("ip", "string"),
-                ("wired", "boolean"),
-                ("uptime", "integer"),
-                ("tx_bytes", "integer"),
-                ("rx_bytes", "integer"),
-                ("signal", "integer"),
-                ("ssid", "string"),
-                ("ap_mac", "string"),
-            ],
-            false,
-            None,
-        ),
-    );
+    m.insert("clients list", f(fields::CLIENTS_LIST, false, None));
+    m.insert("clients show", f(fields::CLIENTS_SHOW, false, None));
     m.insert(
         "clients set-fixed-ip",
         f(
@@ -139,21 +111,7 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
 
     // devices
-    m.insert(
-        "devices list",
-        f(
-            &[
-                ("name", "string"),
-                ("model", "string"),
-                ("mac", "string"),
-                ("ip", "string"),
-                ("state", "string"),
-                ("firmware", "string"),
-            ],
-            false,
-            None,
-        ),
-    );
+    m.insert("devices list", f(fields::DEVICES_LIST, false, None));
     m.insert(
         "devices show",
         f(
@@ -229,33 +187,8 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     );
 
     // networks / events / system
-    m.insert(
-        "networks",
-        f(
-            &[
-                ("name", "string"),
-                ("vlan_id", "integer"),
-                ("enabled", "boolean"),
-                ("default", "boolean"),
-            ],
-            false,
-            None,
-        ),
-    );
-    m.insert(
-        "events list",
-        f(
-            &[
-                ("key", "string"),
-                ("msg", "string"),
-                ("subsystem", "string"),
-                ("time", "integer"),
-                ("datetime", "string"),
-            ],
-            false,
-            None,
-        ),
-    );
+    m.insert("networks list", f(fields::NETWORKS_LIST, false, None));
+    m.insert("events list", f(fields::EVENTS_LIST, false, None));
     m.insert(
         "system health",
         f(

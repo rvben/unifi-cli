@@ -6,7 +6,8 @@ use crate::output::{OutputConfig, use_color};
 pub struct Pagination {
     pub limit: usize,
     pub offset: usize,
-    pub fields: Option<String>,
+    /// Field names already validated against `fields::DEVICES_LIST`.
+    pub fields: Option<Vec<String>>,
 }
 
 fn render_devices(devices: &[Device], out: &OutputConfig) {
@@ -146,10 +147,9 @@ pub async fn list(
                         "state": d.state,
                         "firmware": d.firmware_version,
                     });
-                    if let Some(ref fields_str) = pagination.fields {
-                        let keep: Vec<&str> = fields_str.split(',').map(str::trim).collect();
-                        let map = obj.as_object_mut().unwrap();
-                        map.retain(|k, _| keep.contains(&k.as_str()));
+                    if let Some(ref keep) = pagination.fields {
+                        let map = obj.as_object_mut().expect("device is a JSON object");
+                        map.retain(|k, _| keep.iter().any(|f| f == k));
                     }
                     obj
                 })

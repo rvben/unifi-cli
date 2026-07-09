@@ -1,5 +1,7 @@
 use unifi_cli::api;
 use unifi_cli::commands;
+use unifi_cli::fields;
+use unifi_cli::fields::InvalidFields;
 use unifi_cli::output::{
     OutputConfig, OutputFormat, error_kind_and_code, exit_codes, print_error_envelope, use_color,
 };
@@ -67,7 +69,11 @@ enum Command {
     Devices(DevicesCommand),
 
     /// List networks
-    Networks,
+    Networks {
+        /// Defaults to `list`, so bare `unifi networks` keeps working.
+        #[command(subcommand)]
+        command: Option<NetworksCommand>,
+    },
 
     /// View controller events
     #[command(subcommand)]
@@ -128,7 +134,7 @@ enum ClientsCommand {
         /// Number of results to skip
         #[arg(long, default_value = "0")]
         offset: usize,
-        /// Comma-separated list of fields to include in output
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
         #[arg(long)]
         fields: Option<String>,
     },
@@ -183,7 +189,7 @@ enum DevicesCommand {
         /// Number of results to skip
         #[arg(long, default_value = "0")]
         offset: usize,
-        /// Comma-separated list of fields to include in output
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
         #[arg(long)]
         fields: Option<String>,
     },
@@ -232,6 +238,12 @@ enum ConfigCommand {
 }
 
 #[derive(Subcommand)]
+enum NetworksCommand {
+    /// List networks
+    List,
+}
+
+#[derive(Subcommand)]
 enum EventsCommand {
     /// List recent events
     List {
@@ -241,7 +253,7 @@ enum EventsCommand {
         /// Number of results to skip
         #[arg(long, default_value = "0")]
         offset: usize,
-        /// Comma-separated list of fields to include in output
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
         #[arg(long)]
         fields: Option<String>,
     },
@@ -325,6 +337,22 @@ fn require_confirmation(yes: bool, action: &str) {
 
 fn print_schema() {
     schema::print_schema(Cli::command());
+}
+
+/// Validate a `--fields` request against the field table the schema publishes
+/// for that command. Commands without `--fields` yield `Ok(None)`.
+fn validate_requested_fields(command: &Command) -> Result<Option<Vec<String>>, InvalidFields> {
+    let (spec, table) = match command {
+        Command::Clients(ClientsCommand::List { fields, .. }) => (fields, fields::CLIENTS_LIST),
+        Command::Devices(DevicesCommand::List { fields, .. }) => (fields, fields::DEVICES_LIST),
+        Command::Events(EventsCommand::List { fields, .. }) => (fields, fields::EVENTS_LIST),
+        _ => return Ok(None),
+    };
+
+    match spec {
+        Some(spec) => fields::validate(spec, table).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn load_config_from(path: &std::path::Path, profile: Option<&str>) -> ConfigValues {
@@ -1107,6 +1135,19 @@ async fn main() {
         _ => {}
     }
 
+    // Validate --fields before loading config or opening a connection. An
+    // unknown field is a usage error, and the caller should learn that without
+    // a round trip to the controller.
+    let requested_fields = validate_requested_fields(&cli.command).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        print_error_envelope(
+            "config_error",
+            &e.to_string(),
+            Some("run `unifi schema` to see output_fields for each command"),
+        );
+        std::process::exit(exit_codes::CONFIG_ERROR);
+    });
+
     let config = load_config(cli.profile.as_deref());
 
     let host = cli.host.or(config.host).unwrap_or_else(|| {
@@ -1152,7 +1193,7 @@ async fn main() {
                 watch,
                 limit,
                 offset,
-                fields,
+                fields: _,
             } => {
                 let filter = commands::clients::ListFilter {
                     wired,
@@ -1162,7 +1203,7 @@ async fn main() {
                 let pagination = commands::clients::Pagination {
                     limit,
                     offset,
-                    fields,
+                    fields: requested_fields,
                 };
                 commands::clients::list(&mut client, out, filter, watch, pagination).await
             }
@@ -1193,12 +1234,12 @@ async fn main() {
                 watch,
                 limit,
                 offset,
-                fields,
+                fields: _,
             } => {
                 let pagination = commands::devices::Pagination {
                     limit,
                     offset,
-                    fields,
+                    fields: requested_fields,
                 };
                 commands::devices::list(&mut client, out, watch, pagination).await
             }
@@ -1226,17 +1267,17 @@ async fn main() {
                 commands::devices::upgrade(&client, &mac, out).await
             }
         },
-        Command::Networks => commands::networks::list(&mut client, out).await,
+        Command::Networks { .. } => commands::networks::list(&mut client, out).await,
         Command::Events(cmd) => match cmd {
             EventsCommand::List {
                 limit,
                 offset,
-                fields,
+                fields: _,
             } => {
                 let pagination = commands::events::Pagination {
                     limit,
                     offset,
-                    fields,
+                    fields: requested_fields,
                 };
                 commands::events::list(&client, out, pagination).await
             }
@@ -1964,9 +2005,85 @@ api_key = "work_key"
     }
 
     #[test]
-    fn cli_networks() {
+    fn cli_networks_bare_defaults_to_list() {
         let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks"]);
-        assert!(matches!(cli.command, Command::Networks));
+        assert!(matches!(cli.command, Command::Networks { command: None }));
+    }
+
+    #[test]
+    fn cli_networks_list_subcommand() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "networks", "list"]);
+        assert!(matches!(
+            cli.command,
+            Command::Networks {
+                command: Some(NetworksCommand::List)
+            }
+        ));
+    }
+
+    // --- --fields validation ---
+
+    #[test]
+    fn validate_fields_accepts_known_client_fields() {
+        let cli = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--fields",
+            "mac,ssid",
+        ]);
+        let got = validate_requested_fields(&cli.command).unwrap();
+        assert_eq!(got, Some(vec!["mac".to_string(), "ssid".to_string()]));
+    }
+
+    #[test]
+    fn validate_fields_rejects_unknown_client_field() {
+        let cli = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "clients",
+            "list",
+            "--fields",
+            "bogus",
+        ]);
+        let err = validate_requested_fields(&cli.command).unwrap_err();
+        assert_eq!(err.unknown, vec!["bogus"]);
+    }
+
+    #[test]
+    fn validate_fields_is_none_without_the_flag() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "clients", "list"]);
+        assert_eq!(validate_requested_fields(&cli.command).unwrap(), None);
+    }
+
+    #[test]
+    fn validate_fields_ignores_commands_without_the_flag() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "system", "health"]);
+        assert_eq!(validate_requested_fields(&cli.command).unwrap(), None);
+    }
+
+    #[test]
+    fn validate_fields_uses_the_right_table_per_command() {
+        // `ssid` is a client field, not a device field.
+        let cli = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "devices",
+            "list",
+            "--fields",
+            "ssid",
+        ]);
+        assert!(validate_requested_fields(&cli.command).is_err());
     }
 
     #[test]

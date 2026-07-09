@@ -38,12 +38,19 @@ pub struct Site {
 pub struct Client {
     #[serde(alias = "macAddress")]
     pub mac_address: Option<String>,
+    /// The last address the controller recorded for this client. It outlives the
+    /// lease, so it can name an address the client no longer holds. `clients list`
+    /// reports the live address from `stat/sta` instead, so that it agrees with
+    /// `clients show`.
     #[serde(alias = "ipAddress")]
     pub ip_address: Option<String>,
     pub name: Option<String>,
     pub hostname: Option<String>,
     #[serde(alias = "type")]
     pub client_type: Option<String>,
+    /// ISO8601 timestamp of the current association.
+    #[serde(alias = "connectedAt")]
+    pub connected_at: Option<String>,
 }
 
 impl Client {
@@ -83,6 +90,10 @@ pub struct LegacyClient {
     pub ap_mac: Option<String>,
     #[serde(rename = "essid")]
     pub ssid: Option<String>,
+    /// Name of the network the client landed on ("Default", "IoT", ...). Absent
+    /// while the client is associated but has not obtained an address.
+    pub network: Option<String>,
+    pub vlan: Option<u32>,
 }
 
 impl LegacyClient {

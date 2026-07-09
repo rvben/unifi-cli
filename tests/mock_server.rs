@@ -833,7 +833,12 @@ mod command_output {
         }
     }
 
-    // Helper: mount sites + clients list endpoint
+    // Helper: mount sites + both client endpoints.
+    //
+    // `clients list` joins the integration-API record to the live legacy record
+    // so it can report SSID, network and the address the client actually holds.
+    // Device1's live address deliberately differs from the integration API's
+    // last-known value, and host2 has no live address at all.
     async fn mount_clients_list(server: &MockServer) {
         mount_site_discovery(server).await;
         Mock::given(method("GET"))
@@ -844,6 +849,32 @@ mod command_output {
                     {"macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "10.0.0.1", "name": "Device1", "type": "WIRED"},
                     {"macAddress": "11:22:33:44:55:66", "ipAddress": "10.0.0.2", "hostname": "host2", "type": "WIRELESS"}
                 ]
+            })))
+            .mount(server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.99",
+                     "is_wired": true, "network": "Default", "vlan": 1},
+                    {"_id": "2", "mac": "11:22:33:44:55:66", "essid": "Notwork",
+                     "signal": -55, "uptime": 100, "network": "IoT", "vlan": 20}
+                ]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// `clients list` also reads the live legacy view. Tests that only care about
+    /// filtering can serve an empty one.
+    async fn mount_empty_legacy_clients(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"}, "data": []
             })))
             .mount(server)
             .await;
@@ -1390,6 +1421,7 @@ mod command_output {
     async fn clients_list_wired_filter() {
         let server = MockServer::start().await;
         mount_site_discovery(&server).await;
+        mount_empty_legacy_clients(&server).await;
         Mock::given(method("GET"))
             .and(path_regex(
                 r"/proxy/network/integration/v1/sites/.*/clients",
@@ -1427,6 +1459,7 @@ mod command_output {
     async fn clients_list_wireless_filter() {
         let server = MockServer::start().await;
         mount_site_discovery(&server).await;
+        mount_empty_legacy_clients(&server).await;
         Mock::given(method("GET"))
             .and(path_regex(
                 r"/proxy/network/integration/v1/sites/.*/clients",
@@ -1462,6 +1495,7 @@ mod command_output {
     async fn clients_list_name_filter() {
         let server = MockServer::start().await;
         mount_site_discovery(&server).await;
+        mount_empty_legacy_clients(&server).await;
         Mock::given(method("GET"))
             .and(path_regex(
                 r"/proxy/network/integration/v1/sites/.*/clients",
