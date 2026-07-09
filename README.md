@@ -130,6 +130,7 @@ unifi clients list                          # List connected clients
 unifi clients list --wired                  # Wired clients only
 unifi clients list --wireless --name tasmota  # Filter by type and name
 unifi clients list --watch                  # Auto-refresh
+unifi clients list --fields name,ssid,ip    # Project specific fields (see `unifi schema`)
 unifi clients show aa:bb:cc:dd:ee:ff        # Show client details
 unifi clients top                           # Top clients by bandwidth
 unifi clients block aa:bb:cc:dd:ee:ff       # Block a client
@@ -161,7 +162,8 @@ unifi events list --limit 50                # Last 50 events
 ### Networks
 
 ```bash
-unifi networks                              # List all networks
+unifi networks list                         # List all networks
+unifi networks                              # Same thing
 ```
 
 ### System
