@@ -24,8 +24,7 @@ fn error_envelope(stderr: &[u8]) -> serde_json::Value {
     let text = String::from_utf8_lossy(stderr);
     let last = text
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
+        .rfind(|l| !l.trim().is_empty())
         .unwrap_or_default();
     serde_json::from_str(last)
         .unwrap_or_else(|e| panic!("last stderr line is not a JSON envelope: {last:?} ({e})"))

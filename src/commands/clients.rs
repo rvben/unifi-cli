@@ -314,7 +314,7 @@ pub async fn show(
         println!("  {}  {vlan}", label("VLAN:  "));
     }
     if c.blocked {
-        println!("  {}  {}", label("Blocked:"), "yes");
+        println!("  {}  yes", label("Blocked:"));
     }
 
     Ok(())
