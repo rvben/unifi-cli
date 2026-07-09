@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 
 
 
+
+## [0.3.0](https://github.com/rvben/unifi-cli/compare/v0.2.3...v0.3.0) - 2026-07-09
+
+### Fixed
+
+- **clients**: stop three silent-failure modes in the agent contract ([5e50bb7](https://github.com/rvben/unifi-cli/commit/5e50bb704777407acf244856bc435f7ceccd7b00))
+
 ## [0.2.3](https://github.com/rvben/unifi-cli/compare/v0.2.2...v0.2.3) - 2026-07-07
 
 ### Fixed
