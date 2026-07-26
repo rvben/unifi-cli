@@ -1,6 +1,6 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{Device, UnifiClient, format_bytes, format_mac, format_uptime};
+use crate::api::{Device, UnifiClient, format_mac, format_uptime};
 use crate::output::{OutputConfig, use_color};
 
 pub struct Pagination {
@@ -253,6 +253,10 @@ pub async fn restart(
     Ok(())
 }
 
+/// Alias for `ports list <MAC>`. Deliberately keeps the historical bare JSON
+/// array shape: `ports list` emits the paginated `{items,total,...}` envelope,
+/// but changing this one from array to object would break every consumer
+/// indexing the top level.
 pub async fn ports(
     client: &UnifiClient,
     mac: &str,
@@ -268,101 +272,19 @@ pub async fn ports(
         return Ok(());
     }
 
+    let devices = vec![device];
+    let rows = crate::commands::ports::collect_rows(&devices);
+
     if out.is_json() {
-        out.print_data(
-            &serde_json::to_string_pretty(
-                &device
-                    .port_table
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "port_idx": p.port_idx,
-                            "name": p.name,
-                            "media": p.media,
-                            "up": p.up,
-                            "speed": p.speed,
-                            "full_duplex": p.full_duplex,
-                            "poe_enable": p.poe_enable,
-                            "poe_power": p.poe_power,
-                            "port_poe": p.port_poe,
-                            "tx_bytes": p.tx_bytes,
-                            "rx_bytes": p.rx_bytes,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .expect("failed to serialize JSON"),
-        );
+        let items: Vec<serde_json::Value> =
+            rows.iter().map(crate::commands::ports::row_json).collect();
+        out.print_data(&serde_json::to_string_pretty(&items)?);
     } else {
-        let device_label = device
-            .name
-            .as_deref()
-            .unwrap_or(device.model.as_deref().unwrap_or("Device"));
-        out.print_message(&format!("Ports for {device_label}:\n"));
-
-        let color = use_color();
-        let header = format!(
-            "{:<6} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-            "Port", "Name", "Link", "Speed", "PoE", "TX", "RX"
-        );
-        if color {
-            println!("{}", header.bold());
-            println!("{}", "-".repeat(70).dimmed());
-        } else {
-            println!("{header}");
-            println!("{}", "-".repeat(70));
-        }
-
-        for p in &device.port_table {
-            let port = p
-                .port_idx
-                .map(|i| i.to_string())
-                .unwrap_or_else(|| "-".into());
-            let name = p.name.as_deref().unwrap_or("-");
-            let link = if p.up { "up" } else { "down" };
-            let speed = if p.up {
-                match p.speed {
-                    Some(s) => {
-                        let duplex = if p.full_duplex { "FD" } else { "HD" };
-                        format!("{s}{duplex}")
-                    }
-                    None => "up".into(),
-                }
-            } else {
-                "down".into()
-            };
-            let poe = if p.poe_enable {
-                match p.poe_power {
-                    Some(w) if w > 0.0 => format!("{w:.1}W"),
-                    _ => "on".into(),
-                }
-            } else if p.port_poe {
-                "off".into()
-            } else {
-                "-".into()
-            };
-            let tx = p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
-            let rx = p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
-
-            if color {
-                let link_display = if p.up {
-                    format!("{}", "up".green())
-                } else {
-                    format!("{}", "down".dimmed())
-                };
-                println!(
-                    " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                    port, name, link_display, speed, poe, tx, rx
-                );
-            } else {
-                println!(
-                    " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                    port, name, link, speed, poe, tx, rx
-                );
-            }
-        }
+        let label = &rows[0].device_name;
+        out.print_message(&format!("Ports for {label}:\n"));
+        let refs: Vec<&crate::commands::ports::PortRow> = rows.iter().collect();
+        crate::commands::ports::render_text(&refs, false, &out);
     }
-    out.print_message(&format!("\n{} ports", device.port_table.len()));
     Ok(())
 }
 

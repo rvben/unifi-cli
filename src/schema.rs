@@ -157,20 +157,9 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     m.insert(
         "devices ports",
         f(
-            &[
-                ("port_idx", "integer"),
-                ("name", "string"),
-                ("media", "string"),
-                ("up", "boolean"),
-                ("speed", "integer"),
-                ("full_duplex", "boolean"),
-                ("poe_enable", "boolean"),
-                ("poe_power", "number"),
-                ("tx_bytes", "integer"),
-                ("rx_bytes", "integer"),
-            ],
+            fields::PORTS_LIST,
             false,
-            None,
+            Some("Alias for `ports list`; returns a bare JSON array for backward compatibility."),
         ),
     );
     m.insert(

@@ -181,6 +181,24 @@ fn ports_list_rejects_unknown_field() {
 }
 
 #[test]
+fn devices_ports_and_ports_list_are_the_same_command() {
+    // Both spellings must accept a MAC and reach the network layer, not fail
+    // at argument parsing. Pointed at an unroutable host, so no controller.
+    for args in [
+        vec!["devices", "ports", "aa:bb:cc:dd:ee:ff"],
+        vec!["ports", "list", "aa:bb:cc:dd:ee:ff"],
+    ] {
+        let out = unifi().args(&args).output().expect("failed to run binary");
+        assert_ne!(
+            out.status.code(),
+            Some(2),
+            "{args:?} must not be a usage error, stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn ports_live_requires_a_mac() {
     let out = unifi()
         .args(["ports", "list", "--live"])
