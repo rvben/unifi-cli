@@ -547,7 +547,7 @@ pub fn print_schema(cmd: clap::Command) {
                 "kind": "confirmation_required",
                 "exit_code": 2,
                 "retryable": false,
-                "description": "Destructive command requires --yes flag when stdin is not a terminal",
+                "description": "Confirmation for a destructive command was not obtained: either --yes was omitted while stdin is not a terminal, or the operator declined at an interactive confirmation prompt",
             },
             {
                 "kind": "auth_error",

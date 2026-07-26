@@ -401,6 +401,14 @@ fn confirm_destructive(
     writer.flush()?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
+    // The user's Enter is echoed by the terminal, not written to this stream,
+    // so without this the prompt line above stays unterminated on our writer.
+    // With stdin a TTY and stderr redirected, a decline's error envelope
+    // (printed with `eprintln!` right after) would then land on the same
+    // physical line as the prompt instead of starting fresh — breaking the
+    // "envelope is the last line of stderr" contract (tests/cli_contract.rs,
+    // `error_envelope_last_line_is_json` in tests/spec_compliance.rs).
+    writeln!(writer)?;
     Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
@@ -1662,6 +1670,24 @@ api_key = "work_key"
         let shown = String::from_utf8(writer).unwrap();
         assert!(shown.contains("Port 4 on SwitchA"), "got: {shown}");
         assert!(shown.contains("(y/N)"), "default must read as No: {shown}");
+    }
+
+    #[test]
+    fn confirm_destructive_terminates_the_prompt_line_with_a_newline() {
+        // The user's Enter is echoed by the terminal, not by this writer, so
+        // the prompt's own `write!` leaves the stream mid-line unless
+        // `confirm_destructive` terminates it itself. A subsequent
+        // `eprintln!` (e.g. the confirmation_required envelope printed on
+        // decline) must start on a fresh line, not get appended to the
+        // prompt.
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(
+            shown.ends_with('\n'),
+            "prompt output must end with a newline so a following line starts clean: {shown:?}"
+        );
     }
 
     // --- mask_api_key ---

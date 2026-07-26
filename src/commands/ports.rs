@@ -494,6 +494,12 @@ pub fn check_cyclable(port: &PortEntry, device_mac: &str) -> Result<(), ApiError
         .unwrap_or_else(|| "?".into());
     let mac = format_mac(device_mac);
 
+    // `port_poe` is `#[serde(default)] bool` (see src/api/types.rs), so
+    // firmware that simply omits the key also lands here, indistinguishable
+    // from a genuinely non-PoE port. That is deliberate: for a command that
+    // cuts power, failing closed is the right direction. It does mean the
+    // message/hint below can fire for PoE-capable hardware whose firmware
+    // didn't report the field, not only for true non-PoE ports.
     if !port.port_poe {
         return Err(ApiError::Conflict(format!(
             "Port {idx} on {mac} does not support PoE. \
