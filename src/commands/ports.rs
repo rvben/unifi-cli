@@ -1,6 +1,6 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{DeviceWithPorts, PortEntry, UnifiClient, format_bytes, format_mac};
+use crate::api::{ApiError, DeviceWithPorts, PortEntry, UnifiClient, format_bytes, format_mac};
 use crate::output::{OutputConfig, use_color};
 
 /// One port, flattened with the device that owns it. Every `ports` subcommand
@@ -209,6 +209,143 @@ pub async fn list(
     Ok(())
 }
 
+/// Locate a port by index within a device's port table.
+pub fn find_port(device: &DeviceWithPorts, port_idx: u32) -> Result<&PortEntry, ApiError> {
+    device
+        .port_table
+        .iter()
+        .find(|p| p.port_idx == Some(port_idx))
+        .ok_or_else(|| {
+            let mac = device
+                .mac
+                .as_deref()
+                .map(format_mac)
+                .unwrap_or_else(|| "device".into());
+            ApiError::NotFound(format!("Port {port_idx} on {mac}"))
+        })
+}
+
+pub async fn show(
+    client: &UnifiClient,
+    mac: &str,
+    port_idx: u32,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let device = client.get_device_ports(mac).await?;
+    let p = find_port(&device, port_idx)?;
+    let device_mac = device
+        .mac
+        .as_deref()
+        .map(format_mac)
+        .unwrap_or_else(|| "-".into());
+    let device_name = device
+        .name
+        .as_deref()
+        .or(device.model.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    let attached_mac = p
+        .last_connection
+        .as_ref()
+        .and_then(|lc| lc.mac.as_deref())
+        .map(format_mac);
+
+    if out.is_json() {
+        out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
+            "device_mac": device_mac,
+            "device_name": device_name,
+            "port_idx": p.port_idx,
+            "name": p.name,
+            "media": p.media,
+            "up": p.up,
+            "speed": p.speed,
+            "full_duplex": p.full_duplex,
+            "autoneg": p.autoneg,
+            "enable": p.enable,
+            "is_uplink": p.is_uplink,
+            "stp_state": p.stp_state,
+            "port_poe": p.port_poe,
+            "poe_enable": p.poe_enable,
+            "poe_mode": p.poe_mode,
+            "poe_class": p.poe_class,
+            "poe_power": p.poe_power,
+            "poe_voltage": p.poe_voltage,
+            "poe_current": p.poe_current,
+            "poe_good": p.poe_good,
+            "attached_mac": attached_mac,
+            "tx_bytes": p.tx_bytes,
+            "rx_bytes": p.rx_bytes,
+            "tx_errors": p.tx_errors,
+            "rx_errors": p.rx_errors,
+        }))?);
+        return Ok(());
+    }
+
+    let color = use_color();
+    let label = |l: &str| -> String {
+        if color {
+            format!("{}", l.dimmed())
+        } else {
+            l.to_string()
+        }
+    };
+    let title = format!("Port {port_idx} on {device_name} ({device_mac})");
+    if color {
+        println!("{}", title.bold());
+    } else {
+        println!("{title}");
+    }
+    println!(
+        "  {}  {}",
+        label("Name:    "),
+        p.name.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  {}  {}",
+        label("Link:    "),
+        if p.up { "up" } else { "down" }
+    );
+    println!("  {}  {}", label("Speed:   "), speed_cell(p));
+    println!(
+        "  {}  {}",
+        label("Media:   "),
+        p.media.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  {}  {}",
+        label("PoE:     "),
+        if p.port_poe {
+            poe_cell(p)
+        } else {
+            "not supported".into()
+        }
+    );
+    if p.port_poe {
+        println!(
+            "  {}  {}",
+            label("PoE mode:"),
+            p.poe_mode.as_deref().unwrap_or("-")
+        );
+        println!(
+            "  {}  {}",
+            label("PoE class"),
+            p.poe_class.as_deref().unwrap_or("-")
+        );
+        if let Some(v) = p.poe_voltage {
+            println!("  {}  {v:.2} V", label("Voltage: "));
+        }
+        if let Some(c) = p.poe_current {
+            println!("  {}  {c:.2} mA", label("Current: "));
+        }
+    }
+    println!(
+        "  {}  {}",
+        label("Attached:"),
+        attached_mac.as_deref().unwrap_or("-")
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +478,32 @@ mod tests {
             value, before,
             "a None projection must leave the value untouched"
         );
+    }
+
+    fn device_with(ports: serde_json::Value) -> DeviceWithPorts {
+        serde_json::from_value(serde_json::json!({
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "name": "SwitchA",
+            "port_table": ports
+        }))
+        .expect("fixture must parse")
+    }
+
+    #[test]
+    fn find_port_returns_the_matching_entry() {
+        let d = device_with(serde_json::json!([
+            {"port_idx": 1, "port_poe": true},
+            {"port_idx": 5, "port_poe": true, "poe_mode": "auto"}
+        ]));
+        let p = find_port(&d, 5).expect("port 5 exists");
+        assert_eq!(p.port_idx, Some(5));
+        assert_eq!(p.poe_mode.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn find_port_missing_is_not_found() {
+        let d = device_with(serde_json::json!([{"port_idx": 1}]));
+        let err = find_port(&d, 99).expect_err("port 99 does not exist");
+        assert!(matches!(err, crate::api::ApiError::NotFound(_)));
     }
 }

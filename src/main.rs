@@ -255,6 +255,13 @@ enum PortsCommand {
         #[arg(short = 'i', long, default_value = "2")]
         interval: u64,
     },
+    /// Show details for a single port
+    Show {
+        /// MAC address of the switch or router
+        mac: String,
+        /// Port index (see `unifi ports list <MAC>`)
+        port: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1317,6 +1324,9 @@ async fn main() {
                     };
                     commands::ports::list(&client, mac.as_deref(), out, pagination).await
                 }
+            }
+            PortsCommand::Show { mac, port } => {
+                commands::ports::show(&client, &mac, port, out).await
             }
         },
         Command::Events(cmd) => match cmd {

@@ -177,6 +177,40 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
 
     // ports
     m.insert("ports list", f(fields::PORTS_LIST, false, None));
+    m.insert(
+        "ports show",
+        f(
+            &[
+                ("device_mac", "string"),
+                ("device_name", "string"),
+                ("port_idx", "integer"),
+                ("name", "string"),
+                ("media", "string"),
+                ("up", "boolean"),
+                ("speed", "integer"),
+                ("full_duplex", "boolean"),
+                ("autoneg", "boolean"),
+                ("enable", "boolean"),
+                ("is_uplink", "boolean"),
+                ("stp_state", "string"),
+                ("port_poe", "boolean"),
+                ("poe_enable", "boolean"),
+                ("poe_mode", "string"),
+                ("poe_class", "string"),
+                ("poe_power", "number"),
+                ("poe_voltage", "number"),
+                ("poe_current", "number"),
+                ("poe_good", "boolean"),
+                ("attached_mac", "string"),
+                ("tx_bytes", "integer"),
+                ("rx_bytes", "integer"),
+                ("tx_errors", "integer"),
+                ("rx_errors", "integer"),
+            ],
+            false,
+            None,
+        ),
+    );
 
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));

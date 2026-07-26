@@ -1791,6 +1791,239 @@ mod command_output {
         assert!(err.to_string().contains("Not found"));
     }
 
+    // --- Ports show (single-port detail) ---
+
+    #[tokio::test]
+    async fn ports_show_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true},
+                        {
+                            "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
+                            "speed": 1000, "full_duplex": true, "autoneg": true, "enable": true,
+                            "is_uplink": false, "stp_state": "forwarding",
+                            "port_poe": true, "poe_enable": true, "poe_mode": "auto",
+                            "poe_class": "4", "poe_power": 5.2, "poe_voltage": 53.5,
+                            "poe_current": 120.3, "poe_good": true,
+                            "last_connection": {"mac": "aabbccddeeff", "connected": true},
+                            "tx_bytes": 100, "rx_bytes": 200, "tx_errors": 0, "rx_errors": 2
+                        }
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        unifi_cli::commands::ports::show(&client, "9c:05:d6:bc:06:43", 5, out_table())
+            .await
+            .unwrap();
+    }
+
+    // Drives the real `unifi` binary so the JSON this command actually prints
+    // can be inspected, and cross-checks it against what `unifi schema`
+    // publishes for "ports show" — the two are supposed to be the same
+    // contract, and nothing else in this suite would catch them drifting
+    // apart.
+    #[tokio::test]
+    async fn ports_show_json_matches_schema_output_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{
+                        "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
+                        "speed": 1000, "full_duplex": true, "autoneg": true, "enable": true,
+                        "is_uplink": false, "stp_state": "forwarding",
+                        "port_poe": true, "poe_enable": true, "poe_mode": "auto",
+                        "poe_class": "4", "poe_power": 5.2, "poe_voltage": 53.5,
+                        "poe_current": 120.3, "poe_good": true,
+                        "last_connection": {"mac": "aabbccddeeff", "connected": true},
+                        "tx_bytes": 100, "rx_bytes": 200, "tx_errors": 0, "rx_errors": 2
+                    }]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "show",
+                "9c:05:d6:bc:06:43",
+                "5",
+                "--output",
+                "json",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout was not valid JSON ({e}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+        let obj = body
+            .as_object()
+            .expect("ports show must emit a JSON object");
+
+        // Values that were previously fetched and thrown away.
+        assert_eq!(obj["device_mac"], "9c:05:d6:bc:06:43");
+        assert_eq!(obj["port_idx"], 5);
+        assert_eq!(obj["poe_mode"], "auto");
+        assert_eq!(obj["poe_class"], "4");
+        assert_eq!(obj["poe_voltage"], 53.5);
+        assert_eq!(obj["poe_current"], 120.3);
+        assert_eq!(obj["poe_good"], true);
+        assert_eq!(
+            obj["attached_mac"], "aa:bb:cc:dd:ee:ff",
+            "attached_mac must be read from last_connection.mac and formatted"
+        );
+        assert_eq!(obj["tx_errors"], 0);
+        assert_eq!(obj["rx_errors"], 2);
+
+        // The schema's published output_fields must exactly match the keys
+        // this JSON branch actually emits: no undiscoverable field, and no
+        // documented field that never appears.
+        let schema_output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .arg("schema")
+            .output()
+            .expect("failed to run unifi schema");
+        let schema: serde_json::Value = serde_json::from_slice(&schema_output.stdout)
+            .expect("unifi schema must print valid JSON");
+        let ports_show = schema["commands"]
+            .as_array()
+            .expect("schema must have a commands array")
+            .iter()
+            .find(|c| c["name"] == "ports show")
+            .expect("schema must publish a \"ports show\" command");
+        let mut declared: Vec<&str> = ports_show["output_fields"]
+            .as_array()
+            .expect("ports show must declare output_fields")
+            .iter()
+            .map(|f| f["name"].as_str().expect("output field must have a name"))
+            .collect();
+        declared.sort_unstable();
+        let mut emitted: Vec<&str> = obj.keys().map(String::as_str).collect();
+        emitted.sort_unstable();
+        assert_eq!(
+            emitted, declared,
+            "ports show output_fields in the schema must exactly match the JSON branch's keys"
+        );
+    }
+
+    // `autoneg`/`enable`/`is_uplink`/`poe_good` are tri-state: a firmware that
+    // omits the key must serialize as JSON null, not fall back to `false`,
+    // since a missing key must not read as a confident "disabled". Likewise
+    // `attached_mac` must be null when no device has ever linked to the port.
+    #[tokio::test]
+    async fn ports_show_omitted_tri_state_fields_serialize_as_null() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:ee:ff", "name": "USW-Lite-8",
+                    "port_table": [
+                        {"port_idx": 3, "name": "Port 3", "media": "GE", "up": false}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "show",
+                "aa:bb:cc:dd:ee:ff",
+                "3",
+                "--output",
+                "json",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(output.status.success());
+
+        let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        for field in ["autoneg", "enable", "is_uplink", "poe_good", "attached_mac"] {
+            assert!(
+                body[field].is_null(),
+                "{field} must be null when firmware omits it, not false: {body}"
+            );
+        }
+    }
+
+    // Locates `unifi ports cycle <MAC> 99` uses the same `find_port` lookup;
+    // a bogus port index must be reported as not-found (exit 4) rather than
+    // firing a command at the controller for a port that does not exist.
+    #[tokio::test]
+    async fn ports_show_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:ee:ff", "name": "USW-Lite-8",
+                    "port_table": [{"port_idx": 1}]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "show",
+                "aa:bb:cc:dd:ee:ff",
+                "99",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "a nonexistent port must exit 4 (not found), got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Not found"),
+            "stderr must explain the port was not found: {stderr}"
+        );
+    }
+
     // --- Ports list (top-level) ---
     //
     // Drives the real `unifi` binary against a wiremock server so the JSON
