@@ -21,24 +21,45 @@ pub struct Pagination {
     pub fields: Option<Vec<String>>,
 }
 
+/// Derive a port row's formatted device MAC and display name: `name` ->
+/// `model` -> `name_fallback`. Shared by `show` and `collect_rows_with_fallback`
+/// so this three-tier fallback can never drift between the two call sites.
+fn device_identity(device: &DeviceWithPorts, name_fallback: &str) -> (String, String) {
+    let device_mac = device
+        .mac
+        .as_deref()
+        .map(format_mac)
+        .unwrap_or_else(|| "-".into());
+    let device_name = device
+        .name
+        .as_deref()
+        .or(device.model.as_deref())
+        .unwrap_or(name_fallback)
+        .to_string();
+    (device_mac, device_name)
+}
+
 /// Flatten devices into port rows, skipping devices with no port table.
+/// `ports list` / `ports find` fall back to `"-"` for a device with neither
+/// `name` nor `model`.
 pub fn collect_rows(devices: &[DeviceWithPorts]) -> Vec<PortRow<'_>> {
+    collect_rows_with_fallback(devices, "-")
+}
+
+/// Same flattening as `collect_rows`, but with a caller-chosen fallback for a
+/// device that has neither `name` nor `model`. `devices ports` keeps its
+/// historical `"Device"` label here rather than duplicating the whole
+/// flattening loop just to change one fallback string.
+pub fn collect_rows_with_fallback<'a>(
+    devices: &'a [DeviceWithPorts],
+    name_fallback: &str,
+) -> Vec<PortRow<'a>> {
     let mut rows = Vec::new();
     for d in devices {
         if d.port_table.is_empty() {
             continue;
         }
-        let device_mac = d
-            .mac
-            .as_deref()
-            .map(format_mac)
-            .unwrap_or_else(|| "-".into());
-        let device_name = d
-            .name
-            .as_deref()
-            .or(d.model.as_deref())
-            .unwrap_or("-")
-            .to_string();
+        let (device_mac, device_name) = device_identity(d, name_fallback);
         for port in &d.port_table {
             rows.push(PortRow {
                 device_mac: device_mac.clone(),
@@ -103,18 +124,26 @@ fn speed_cell(p: &PortEntry) -> String {
     }
 }
 
-/// Render rows as a table. `show_device_col` is true only for the unfiltered
-/// listing; the filtered table stays byte-identical to what `devices ports`
-/// has always printed.
-pub fn render_text(rows: &[&PortRow], show_device_col: bool, out: &OutputConfig) {
-    let color = use_color();
-    let dev_w = rows
-        .iter()
+/// Device column width, in characters. Callers that paginate must compute
+/// this from the full result set, not just the page handed to `render_text`
+/// — otherwise two `--offset` pages of the same query can render the column
+/// at different widths.
+pub fn device_col_width(rows: &[&PortRow]) -> usize {
+    rows.iter()
         .map(|r| r.device_name.len())
         .max()
         .unwrap_or(6)
         .max(6)
-        + 2;
+        + 2
+}
+
+/// Render rows as a table. `show_device_col` is true only for the unfiltered
+/// listing; the filtered table stays byte-identical to what `devices ports`
+/// has always printed. `dev_w` is the Device column width; pass
+/// `device_col_width` of the *full* result set, not just `rows`, so a
+/// paginated caller renders a stable width across pages.
+pub fn render_text(rows: &[&PortRow], show_device_col: bool, dev_w: usize, out: &OutputConfig) {
+    let color = use_color();
 
     let header = if show_device_col {
         format!(
@@ -207,7 +236,12 @@ pub async fn list(
             "offset": pagination.offset,
         }))?);
     } else {
-        render_text(&page, mac.is_none(), &out);
+        // Computed from the full `rows`, not the paginated `page`, so two
+        // `--offset` pages of the same query render the Device column at the
+        // same width.
+        let full_refs: Vec<&PortRow> = rows.iter().collect();
+        let dev_w = device_col_width(&full_refs);
+        render_text(&page, mac.is_none(), dev_w, &out);
     }
     Ok(())
 }
@@ -360,7 +394,9 @@ pub async fn find(
         out.print_data(&serde_json::to_string_pretty(&items)?);
     } else {
         let refs: Vec<&PortRow> = hits.iter().map(|(r, _)| *r).collect();
-        render_text(&refs, true, &out);
+        // `find` never paginates, so `refs` is already the full result set.
+        let dev_w = device_col_width(&refs);
+        render_text(&refs, true, dev_w, &out);
     }
     Ok(())
 }
@@ -373,17 +409,7 @@ pub async fn show(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let device = client.get_device_ports(mac).await?;
     let p = find_port(&device, port_idx)?;
-    let device_mac = device
-        .mac
-        .as_deref()
-        .map(format_mac)
-        .unwrap_or_else(|| "-".into());
-    let device_name = device
-        .name
-        .as_deref()
-        .or(device.model.as_deref())
-        .unwrap_or("-")
-        .to_string();
+    let (device_mac, device_name) = device_identity(&device, "-");
     let attached_mac = p
         .last_connection
         .as_ref()
@@ -680,6 +706,26 @@ mod tests {
         assert_eq!(
             rows[2].device_name, "-",
             "device_name must fall back to '-' when both name and model are absent"
+        );
+    }
+
+    #[test]
+    fn collect_rows_with_fallback_uses_the_caller_supplied_fallback() {
+        // `devices ports` restores the historical "Device" label for a
+        // device with neither `name` nor `model`; `collect_rows` (used by
+        // `ports list` / `ports find`) must keep falling back to "-".
+        let devices = vec![device(serde_json::json!({
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "port_table": [{"port_idx": 1}]
+        }))];
+
+        let fallback_rows = collect_rows_with_fallback(&devices, "Device");
+        assert_eq!(fallback_rows[0].device_name, "Device");
+
+        let default_rows = collect_rows(&devices);
+        assert_eq!(
+            default_rows[0].device_name, "-",
+            "collect_rows must still fall back to '-', unaffected by the new parameter"
         );
     }
 

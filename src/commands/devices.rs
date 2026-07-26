@@ -1,6 +1,7 @@
 use owo_colors::OwoColorize;
 
 use crate::api::{Device, UnifiClient, format_mac, format_uptime};
+use crate::commands::ports::{self, PortRow};
 use crate::output::{OutputConfig, use_color};
 
 pub struct Pagination {
@@ -273,17 +274,19 @@ pub async fn ports(
     }
 
     let devices = vec![device];
-    let rows = crate::commands::ports::collect_rows(&devices);
+    // Historical label for a device with neither `name` nor `model`; `ports
+    // list` / `ports find` keep "-" via `collect_rows`.
+    let rows = ports::collect_rows_with_fallback(&devices, "Device");
 
     if out.is_json() {
-        let items: Vec<serde_json::Value> =
-            rows.iter().map(crate::commands::ports::row_json).collect();
+        let items: Vec<serde_json::Value> = rows.iter().map(ports::row_json).collect();
         out.print_data(&serde_json::to_string_pretty(&items)?);
     } else {
         let label = &rows[0].device_name;
         out.print_message(&format!("Ports for {label}:\n"));
-        let refs: Vec<&crate::commands::ports::PortRow> = rows.iter().collect();
-        crate::commands::ports::render_text(&refs, false, &out);
+        let refs: Vec<&PortRow> = rows.iter().collect();
+        let dev_w = ports::device_col_width(&refs);
+        ports::render_text(&refs, false, dev_w, &out);
     }
     Ok(())
 }

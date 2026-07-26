@@ -310,12 +310,16 @@ pub struct PortEntry {
     #[serde(default, deserialize_with = "deserialize_string_or_number_f64")]
     pub poe_current: Option<f64>,
     pub poe_good: Option<bool>,
-    /// Option, not a defaulted bool: a firmware that omits these keys must not
-    /// be reported as "auto-negotiation off" or "port administratively
-    /// disabled". Matches `poe_good` above; contrast `up`/`poe_enable`, where
-    /// an absent key genuinely does mean false.
+    /// Auto-negotiation state. `Option`, not a defaulted bool, like `enable`
+    /// and `is_uplink` below: a firmware that omits this key must not be
+    /// reported as "auto-negotiation off". Matches `poe_good` above; contrast
+    /// `up`/`poe_enable`, where an absent key genuinely does mean false.
     pub autoneg: Option<bool>,
+    /// Administrative enable state. Same tri-state rationale as `autoneg`: an
+    /// absent key must not be reported as "port administratively disabled".
     pub enable: Option<bool>,
+    /// Whether this port is the switch's uplink. Same tri-state rationale as
+    /// `autoneg`: an absent key must not be reported as "not an uplink".
     pub is_uplink: Option<bool>,
     pub stp_state: Option<String>,
     pub tx_errors: Option<u64>,

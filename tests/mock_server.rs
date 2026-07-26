@@ -538,6 +538,7 @@ mod client_api {
                      "port_table": [{"port_idx": 1}, {"port_idx": 2}]}
                 ]
             })))
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -1791,6 +1792,58 @@ mod command_output {
         assert!(err.to_string().contains("Not found"));
     }
 
+    // `devices::ports` used to derive its own `name -> model -> "Device"`
+    // device-label fallback; routing it through the shared `collect_rows`
+    // silently changed the fallback to "-" for a device with neither `name`
+    // nor `model`, and nothing caught it. Drives the real binary (JSON is
+    // easiest to assert on) so the regression is locked in at the command
+    // level, not just in the `collect_rows_with_fallback` unit test in
+    // `src/commands/ports.rs`.
+    #[tokio::test]
+    async fn devices_ports_falls_back_to_device_label_when_name_and_model_absent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:ee:ff",
+                    "port_table": [{"port_idx": 1}]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "devices",
+                "ports",
+                "aa:bb:cc:dd:ee:ff",
+                "-o",
+                "json",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "devices ports failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let items = body
+            .as_array()
+            .expect("devices ports must emit a bare JSON array");
+        assert_eq!(
+            items[0]["device_name"], "Device",
+            "devices ports must keep its historical \"Device\" fallback, not \"-\": {items:?}"
+        );
+    }
+
     // --- Ports show (single-port detail) ---
 
     #[tokio::test]
@@ -1824,6 +1877,72 @@ mod command_output {
         unifi_cli::commands::ports::show(&client, "9c:05:d6:bc:06:43", 5, out_table())
             .await
             .unwrap();
+    }
+
+    // `ports_show_table` above only smoke-tests that the text branch doesn't
+    // panic (matching the pre-existing convention for other `show`-style
+    // commands in this file). But `ports show`'s text branch is new code with
+    // real formatting logic (speed_cell, poe_cell, voltage/current, the
+    // attached MAC), so it gets its own test that spawns the real binary
+    // (same pattern as `ports_list_pagination_reports_full_total_and_truncated_items`
+    // and `devices_ports_bare_array_vs_ports_list_envelope`) and asserts on
+    // the actual rendered text.
+    #[tokio::test]
+    async fn ports_show_text_output_renders_expected_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{
+                        "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
+                        "speed": 1000, "full_duplex": true,
+                        "port_poe": true, "poe_enable": true, "poe_mode": "auto",
+                        "poe_class": "4", "poe_power": 5.2, "poe_voltage": 53.5,
+                        "poe_current": 120.3,
+                        "last_connection": {"mac": "aabbccddeeff", "connected": true}
+                    }]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "show",
+                "9c:05:d6:bc:06:43",
+                "5",
+                "--output",
+                "text",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            text.contains("Port 5 on USW-24-PoE (9c:05:d6:bc:06:43)"),
+            "title line: {text}"
+        );
+        assert!(text.contains("Port 5"), "port name: {text}");
+        assert!(text.contains("1000FD"), "speed+duplex formatting: {text}");
+        assert!(text.contains("GE"), "media: {text}");
+        assert!(text.contains("5.2W"), "PoE wattage: {text}");
+        assert!(text.contains("auto"), "PoE mode: {text}");
+        assert!(text.contains("53.50 V"), "PoE voltage: {text}");
+        assert!(text.contains("120.30 mA"), "PoE current: {text}");
+        assert!(text.contains("aa:bb:cc:dd:ee:ff"), "attached MAC: {text}");
     }
 
     // Drives the real `unifi` binary so the JSON this command actually prints
@@ -2099,6 +2218,71 @@ mod command_output {
         );
         assert_eq!(body["limit"], 3);
         assert_eq!(body["offset"], 1);
+    }
+
+    // `render_text`'s Device column width used to be derived from whatever
+    // page it was handed, which for `ports list` is the already-paginated
+    // page. Two `--offset` pages of the same query could then render the
+    // column at different widths. The device names below are chosen so the
+    // longest one falls on the second page only; if the width regressed back
+    // to being page-local, the two headers would render at different widths
+    // and this comparison would fail.
+    #[tokio::test]
+    async fn ports_list_device_column_width_is_stable_across_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchA",
+                     "port_table": [{"port_idx": 1}, {"port_idx": 2}]},
+                    {"mac": "aa:bb:cc:dd:ee:02", "name": "A-Very-Long-Switch-Name",
+                     "port_table": [{"port_idx": 1}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let run_text = |limit: &str, offset: &str| -> String {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args([
+                    "--host",
+                    &server.uri(),
+                    "--api-key",
+                    "test-key",
+                    "ports",
+                    "list",
+                    "--output",
+                    "text",
+                    "--limit",
+                    limit,
+                    "--offset",
+                    offset,
+                ])
+                .output()
+                .expect("failed to run the unifi binary");
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+
+        // Page 1: only SwitchA's two ports (the long name lives on page 2).
+        let page1 = run_text("2", "0");
+        // Page 2: only the long-named device's one port.
+        let page2 = run_text("1", "2");
+
+        fn header(s: &str) -> &str {
+            s.lines()
+                .find(|l| l.contains("Device"))
+                .expect("text output must have a header row containing \"Device\"")
+        }
+        assert_eq!(
+            header(&page1),
+            header(&page2),
+            "the Device column width must come from the full result set, not the page, \
+             so two --offset pages of the same query render an identical header:\n\
+             page1: {page1}\npage2: {page2}"
+        );
     }
 
     // `devices ports <MAC>` is documented as an alias for `ports list <MAC>`
@@ -2474,14 +2658,17 @@ mod command_output {
         // must reject before `confirm` is ever consulted, so a callback that
         // would approve proves nothing about ordering unless it's wired to run
         // second.
-        let err = unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 9, out_table(), |_| {
-            Ok(true)
-        })
-        .await
-        .unwrap_err();
+        let err =
+            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 9, out_table(), |_| {
+                Ok(true)
+            })
+            .await
+            .unwrap_err();
         let api_err = err
             .downcast_ref::<unifi_cli::api::ApiError>()
-            .unwrap_or_else(|| panic!("cycle must reject a non-PoE port as an ApiError, got {err}"));
+            .unwrap_or_else(|| {
+                panic!("cycle must reject a non-PoE port as an ApiError, got {err}")
+            });
         assert!(
             matches!(api_err, unifi_cli::api::ApiError::Conflict(_)),
             "expected Conflict, got {api_err:?}"
@@ -2525,7 +2712,9 @@ mod command_output {
         .unwrap_err();
         let api_err = err
             .downcast_ref::<unifi_cli::api::ApiError>()
-            .unwrap_or_else(|| panic!("cycle must report a missing port as an ApiError, got {err}"));
+            .unwrap_or_else(|| {
+                panic!("cycle must report a missing port as an ApiError, got {err}")
+            });
         assert!(
             matches!(api_err, unifi_cli::api::ApiError::NotFound(_)),
             "expected NotFound, got {api_err:?}"

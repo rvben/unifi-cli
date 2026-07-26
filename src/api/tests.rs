@@ -146,6 +146,17 @@ fn api_error_display_auth() {
 }
 
 #[test]
+fn api_error_display_conflict_has_no_prefix() {
+    // Unlike Auth/NotFound (sentence fragments that get a prefix added),
+    // Conflict messages are written whole, to be read by an operator as-is.
+    let err = ApiError::Conflict("Port 5 on aa:bb:cc:dd:ee:ff does not support PoE.".into());
+    assert_eq!(
+        err.to_string(),
+        "Port 5 on aa:bb:cc:dd:ee:ff does not support PoE."
+    );
+}
+
+#[test]
 fn api_error_display_other() {
     let err = ApiError::Other("something went wrong".into());
     assert_eq!(err.to_string(), "something went wrong");
