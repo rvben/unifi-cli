@@ -298,3 +298,18 @@ fn every_published_output_field_is_accepted_by_fields() {
         );
     }
 }
+
+#[test]
+fn ports_cycle_requires_yes_without_a_tty() {
+    let out = unifi()
+        .args(["ports", "cycle", "aa:bb:cc:dd:ee:ff", "5"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run binary");
+
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        error_envelope(&out.stderr)["error"]["kind"].as_str(),
+        Some("confirmation_required")
+    );
+}

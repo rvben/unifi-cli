@@ -270,6 +270,13 @@ enum PortsCommand {
         #[arg(long)]
         fields: Option<String>,
     },
+    /// Power-cycle a single PoE port
+    Cycle {
+        /// MAC address of the switch (not the attached device)
+        mac: String,
+        /// Port index (see `unifi ports list <MAC>`)
+        port: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1339,6 +1346,15 @@ async fn main() {
             }
             PortsCommand::Find { identifier, .. } => {
                 commands::ports::find(&client, &identifier, out, requested_fields).await
+            }
+            PortsCommand::Cycle { mac, port } => {
+                require_confirmation(cli.yes, "power-cycle");
+                // Task 9 replaces this always-proceed callback with the real
+                // TTY prompt. require_confirmation has already exited for the
+                // piped-without---yes case by this point.
+                commands::ports::cycle(&client, &mac, port, out, |_| Ok(true))
+                    .await
+                    .map(|_| ())
             }
         },
         Command::Events(cmd) => match cmd {

@@ -212,6 +212,19 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         ),
     );
     m.insert("ports find", f(fields::PORTS_FIND, false, None));
+    m.insert(
+        "ports cycle",
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+                ("port_idx", "integer"),
+            ],
+            true,
+            None,
+        ),
+    );
 
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));

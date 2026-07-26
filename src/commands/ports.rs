@@ -486,6 +486,94 @@ pub async fn show(
     Ok(())
 }
 
+/// Reject a power-cycle that cannot succeed, before any HTTP call.
+pub fn check_cyclable(port: &PortEntry, device_mac: &str) -> Result<(), ApiError> {
+    let idx = port
+        .port_idx
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| "?".into());
+    let mac = format_mac(device_mac);
+
+    if !port.port_poe {
+        return Err(ApiError::Conflict(format!(
+            "Port {idx} on {mac} does not support PoE. \
+             Run `unifi ports list {mac}` to see PoE-capable ports."
+        )));
+    }
+    // Only an explicit "off" blocks. An absent or unrecognised poe_mode
+    // proceeds: the field is not guaranteed across firmware revisions.
+    if port.poe_mode.as_deref() == Some("off") {
+        return Err(ApiError::Conflict(format!(
+            "PoE is administratively disabled on port {idx} of {mac} (poe_mode=off)"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether the cycle actually happened. `Declined` is not an error at this
+/// layer — the caller decides how to report a refused confirmation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CycleOutcome {
+    Cycled,
+    Declined,
+}
+
+/// Power-cycle one PoE port.
+///
+/// `confirm` receives a human-readable summary of what is about to lose power
+/// and returns whether to proceed. Taking it as a callback keeps the device
+/// fetch and the guard rails to exactly one pass: the prompt needs the same
+/// port data the checks do, so resolving it twice would mean two round trips
+/// to the controller and two chances for the answers to disagree.
+pub async fn cycle<F>(
+    client: &UnifiClient,
+    mac: &str,
+    port_idx: u32,
+    out: OutputConfig,
+    confirm: F,
+) -> Result<CycleOutcome, Box<dyn std::error::Error>>
+where
+    F: FnOnce(&str) -> std::io::Result<bool>,
+{
+    let device = client.get_device_ports(mac).await?;
+    let port = find_port(&device, port_idx)?;
+    let device_mac = device.mac.as_deref().unwrap_or(mac).to_string();
+    check_cyclable(port, &device_mac)?;
+
+    if !confirm(&cycle_summary(&device, port))? {
+        return Ok(CycleOutcome::Declined);
+    }
+
+    client.power_cycle_port(&device_mac, port_idx).await?;
+    out.print_result(
+        &serde_json::json!({
+            "status": "ok",
+            "action": "power-cycle",
+            "mac": format_mac(&device_mac),
+            "port_idx": port_idx,
+        }),
+        &format!(
+            "Power-cycling port {port_idx} on {}",
+            format_mac(&device_mac)
+        ),
+    );
+    Ok(CycleOutcome::Cycled)
+}
+
+/// One-line description of what is about to lose power, shown at the prompt.
+pub fn cycle_summary(device: &DeviceWithPorts, port: &PortEntry) -> String {
+    let device_mac = device
+        .mac
+        .as_deref()
+        .map(format_mac)
+        .unwrap_or_else(|| "-".into());
+    let idx = port
+        .port_idx
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| "?".into());
+    format!("Port {idx} on {device_mac}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +733,53 @@ mod tests {
         let d = device_with(serde_json::json!([{"port_idx": 1}]));
         let err = find_port(&d, 99).expect_err("port 99 does not exist");
         assert!(matches!(err, crate::api::ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn check_cyclable_rejects_non_poe_port() {
+        let d = device_with(serde_json::json!([{"port_idx": 9, "port_poe": false}]));
+        let p = find_port(&d, 9).unwrap();
+        let err = check_cyclable(p, "aa:bb:cc:dd:ee:ff").expect_err("SFP+ has no PoE");
+        match err {
+            crate::api::ApiError::Conflict(msg) => {
+                assert!(msg.contains("does not support PoE"), "got: {msg}")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_cyclable_rejects_poe_mode_off() {
+        let d = device_with(serde_json::json!([
+            {"port_idx": 4, "port_poe": true, "poe_mode": "off"}
+        ]));
+        let p = find_port(&d, 4).unwrap();
+        let err = check_cyclable(p, "aa:bb:cc:dd:ee:ff").expect_err("PoE is off");
+        match err {
+            crate::api::ApiError::Conflict(msg) => {
+                assert!(msg.contains("poe_mode=off"), "got: {msg}")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_cyclable_allows_absent_poe_mode() {
+        // poe_mode is not guaranteed across firmware. A missing value must not
+        // block a port that already passed the port_poe check.
+        let d = device_with(serde_json::json!([{"port_idx": 4, "port_poe": true}]));
+        let p = find_port(&d, 4).unwrap();
+        assert!(check_cyclable(p, "aa:bb:cc:dd:ee:ff").is_ok());
+    }
+
+    #[test]
+    fn check_cyclable_allows_empty_powered_port() {
+        // The live happy-path target: PoE-capable, auto, nothing attached.
+        let d = device_with(serde_json::json!([
+            {"port_idx": 4, "port_poe": true, "poe_mode": "auto", "up": false}
+        ]));
+        let p = find_port(&d, 4).unwrap();
+        assert!(check_cyclable(p, "74:ac:b9:ec:b4:5e").is_ok());
     }
 
     // `_id` is required by `LegacyClient` (every other fixture in this codebase
