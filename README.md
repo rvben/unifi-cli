@@ -183,8 +183,9 @@ MAC of the attached device (`attached_mac`).
 
 `ports cycle` is destructive. On a terminal it shows what is about to lose
 power and asks for confirmation; when piped it requires `--yes` and
-otherwise exits 2 with `kind: confirmation_required`. It refuses **before
-contacting the controller** when:
+otherwise exits 2 with `kind: confirmation_required`. It reads the port
+table first, then refuses **without ever sending the power-cycle command**
+when:
 
 - the port is not PoE-capable (an SFP+ port, say) → `kind: conflict`, exit 6
 - the port's PoE is administratively off → `kind: conflict`, exit 6
