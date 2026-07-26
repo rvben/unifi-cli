@@ -567,11 +567,30 @@ pub fn cycle_summary(device: &DeviceWithPorts, port: &PortEntry) -> String {
         .as_deref()
         .map(format_mac)
         .unwrap_or_else(|| "-".into());
+    let device_name = device
+        .name
+        .as_deref()
+        .or(device.model.as_deref())
+        .unwrap_or("-");
     let idx = port
         .port_idx
         .map(|i| i.to_string())
         .unwrap_or_else(|| "?".into());
-    format!("Port {idx} on {device_mac}")
+    let attached = port
+        .last_connection
+        .as_ref()
+        .filter(|lc| lc.connected.unwrap_or(false))
+        .and_then(|lc| lc.mac.as_deref())
+        .map(format_mac)
+        .unwrap_or_else(|| "nothing attached".into());
+    let draw = match port.poe_power {
+        Some(w) if w > 0.0 => format!("{w:.2} W"),
+        _ => "0 W".into(),
+    };
+    let class = port.poe_class.as_deref().unwrap_or("-");
+    format!(
+        "Port {idx} on {device_name} ({device_mac})\n  attached: {attached}  •  {draw}  •  {class}"
+    )
 }
 
 #[cfg(test)]

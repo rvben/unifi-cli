@@ -385,6 +385,25 @@ fn require_confirmation(yes: bool, action: &str) {
     }
 }
 
+/// Prompt for confirmation of a destructive action. Returns true only on an
+/// explicit yes; an empty line, EOF, or anything else declines.
+///
+/// Separate from `prompt_line`, which returns `InitError` and belongs to the
+/// config-init flow. Reader/writer are injected so this is unit-testable
+/// without a TTY.
+fn confirm_destructive(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    summary: &str,
+) -> std::io::Result<bool> {
+    writeln!(writer, "{summary}")?;
+    write!(writer, "Power-cycle this port? (y/N): ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
 fn print_schema() {
     schema::print_schema(Cli::command());
 }
@@ -1349,12 +1368,35 @@ async fn main() {
             }
             PortsCommand::Cycle { mac, port } => {
                 require_confirmation(cli.yes, "power-cycle");
-                // Task 9 replaces this always-proceed callback with the real
-                // TTY prompt. require_confirmation has already exited for the
-                // piped-without---yes case by this point.
-                commands::ports::cycle(&client, &mac, port, out, |_| Ok(true))
-                    .await
-                    .map(|_| ())
+                let skip_prompt = cli.yes;
+                let outcome = commands::ports::cycle(&client, &mac, port, out, |summary| {
+                    if skip_prompt {
+                        return Ok(true);
+                    }
+                    // Reached only on a TTY: require_confirmation already
+                    // exited for the piped-without---yes case.
+                    let mut stdin = std::io::stdin().lock();
+                    let mut stderr = std::io::stderr();
+                    confirm_destructive(&mut stdin, &mut stderr, summary)
+                })
+                .await;
+
+                // main() returns (), so `?` cannot be used here; match keeps
+                // this arm's value the same `Result<(), Box<dyn Error>>` every
+                // other arm produces, so errors still flow through the single
+                // `if let Err(e) = result` handler below.
+                match outcome {
+                    Ok(commands::ports::CycleOutcome::Cycled) => Ok(()),
+                    Ok(commands::ports::CycleOutcome::Declined) => {
+                        print_error_envelope(
+                            "confirmation_required",
+                            "Aborted: confirmation declined.",
+                            None,
+                        );
+                        std::process::exit(exit_codes::CONFIRMATION_REQUIRED);
+                    }
+                    Err(e) => Err(e),
+                }
             }
         },
         Command::Events(cmd) => match cmd {
@@ -1584,6 +1626,42 @@ api_key = "work_key"
 
         let ConfigValues { host, .. } = load_config_from(&path, Some("work"));
         assert_eq!(host.as_deref(), Some("work.example.com"));
+    }
+
+    // --- confirm_destructive ---
+
+    #[test]
+    fn confirm_destructive_accepts_y_and_yes() {
+        for input in ["y\n", "Y\n", "yes\n", "YES\n"] {
+            let mut reader = std::io::BufReader::new(input.as_bytes());
+            let mut writer: Vec<u8> = Vec::new();
+            assert!(
+                confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                "{input:?} must confirm"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_destructive_declines_everything_else() {
+        for input in ["n\n", "no\n", "\n", "maybe\n", ""] {
+            let mut reader = std::io::BufReader::new(input.as_bytes());
+            let mut writer: Vec<u8> = Vec::new();
+            assert!(
+                !confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                "{input:?} must decline"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_destructive_shows_the_summary_and_default_no() {
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(shown.contains("Port 4 on SwitchA"), "got: {shown}");
+        assert!(shown.contains("(y/N)"), "default must read as No: {shown}");
     }
 
     // --- mask_api_key ---
