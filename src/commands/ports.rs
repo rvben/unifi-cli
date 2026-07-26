@@ -801,6 +801,70 @@ mod tests {
         assert!(check_cyclable(p, "74:ac:b9:ec:b4:5e").is_ok());
     }
 
+    // `cycle_summary` is the text a human reads before authorising a power
+    // cut. Untested, it carries real logic that would be easy to invert or
+    // drop silently: the `connected` filter on `last_connection`, and the
+    // watt formatting.
+
+    #[test]
+    fn cycle_summary_shows_the_attached_mac_when_connected() {
+        let d = device_with(serde_json::json!([{
+            "port_idx": 4, "port_poe": true,
+            "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}
+        }]));
+        let p = find_port(&d, 4).unwrap();
+        let summary = cycle_summary(&d, p);
+        assert!(
+            summary.contains("d8:3a:dd:2b:fa:8a"),
+            "a connected last_connection must show the formatted attached MAC: {summary}"
+        );
+    }
+
+    #[test]
+    fn cycle_summary_reads_nothing_attached_for_a_stale_record() {
+        // connected: false is history, not the device's current location; the
+        // summary must not read as if a live device would lose power.
+        let d = device_with(serde_json::json!([{
+            "port_idx": 4, "port_poe": true,
+            "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}
+        }]));
+        let p = find_port(&d, 4).unwrap();
+        let summary = cycle_summary(&d, p);
+        assert!(
+            summary.contains("nothing attached"),
+            "a stale (disconnected) last_connection must read as unattached: {summary}"
+        );
+        assert!(
+            !summary.contains("d8:3a:dd:2b:fa:8a"),
+            "a stale MAC must not appear as if it were live: {summary}"
+        );
+    }
+
+    #[test]
+    fn cycle_summary_reads_nothing_attached_when_no_last_connection() {
+        let d = device_with(serde_json::json!([{"port_idx": 4, "port_poe": true}]));
+        let p = find_port(&d, 4).unwrap();
+        let summary = cycle_summary(&d, p);
+        assert!(
+            summary.contains("nothing attached"),
+            "an absent last_connection must read as unattached: {summary}"
+        );
+    }
+
+    #[test]
+    fn cycle_summary_shows_the_wattage_for_a_powered_port() {
+        let d = device_with(serde_json::json!([{
+            "port_idx": 4, "port_poe": true, "poe_enable": true,
+            "poe_power": 5.25, "poe_class": "4"
+        }]));
+        let p = find_port(&d, 4).unwrap();
+        let summary = cycle_summary(&d, p);
+        assert!(
+            summary.contains("5.25 W"),
+            "draw must be formatted to two decimal places: {summary}"
+        );
+    }
+
     // `_id` is required by `LegacyClient` (every other fixture in this codebase
     // supplies it); the plan's literal fixture omitted it, so it is added here
     // to make the fixture actually deserialize.

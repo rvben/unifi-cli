@@ -2356,6 +2356,182 @@ mod command_output {
         assert!(message.contains("Main-Bedroom"), "got: {message}");
     }
 
+    // --- Ports cycle (mutation orchestration) ---
+    //
+    // `power_cycle_port_sends_correct_command` (in `client_api` above) only
+    // covers the client method's endpoint and body. Nothing exercised the
+    // orchestration in `commands::ports::cycle` that decides *whether* to call
+    // it at all — and that orchestration is the only place in this CLI that
+    // cuts power to physical hardware. These four cases pin down the guard-rail
+    // ordering (find_port -> check_cyclable -> confirm -> POST) as a tested
+    // property rather than a code-reading exercise: the `.expect(0)` mounts on
+    // decline/conflict/not-found assert, via wiremock's mount-drop
+    // verification, that no HTTP write happens on any of the three
+    // non-cycling paths.
+
+    #[tokio::test]
+    async fn ports_cycle_confirmed_cycles_the_port() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{"port_idx": 5, "port_poe": true, "poe_mode": "auto"}]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .and(body_json(serde_json::json!({
+                "cmd": "power-cycle",
+                "mac": "9c:05:d6:bc:06:43",
+                "port_idx": 5
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let outcome =
+            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 5, out_table(), |_| {
+                Ok(true)
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome, unifi_cli::commands::ports::CycleOutcome::Cycled);
+    }
+
+    #[tokio::test]
+    async fn ports_cycle_declined_never_posts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{"port_idx": 5, "port_poe": true, "poe_mode": "auto"}]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let outcome =
+            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 5, out_table(), |_| {
+                Ok(false)
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome, unifi_cli::commands::ports::CycleOutcome::Declined);
+    }
+
+    #[tokio::test]
+    async fn ports_cycle_non_poe_port_is_conflict_and_never_posts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-Lite-8",
+                    "port_table": [{"port_idx": 9, "port_poe": false}]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        // The confirm callback returns `Ok(true)` deliberately: `check_cyclable`
+        // must reject before `confirm` is ever consulted, so a callback that
+        // would approve proves nothing about ordering unless it's wired to run
+        // second.
+        let err = unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 9, out_table(), |_| {
+            Ok(true)
+        })
+        .await
+        .unwrap_err();
+        let api_err = err
+            .downcast_ref::<unifi_cli::api::ApiError>()
+            .unwrap_or_else(|| panic!("cycle must reject a non-PoE port as an ApiError, got {err}"));
+        assert!(
+            matches!(api_err, unifi_cli::api::ApiError::Conflict(_)),
+            "expected Conflict, got {api_err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ports_cycle_missing_port_is_not_found_and_never_posts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{"port_idx": 1, "port_poe": true}]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let err = unifi_cli::commands::ports::cycle(
+            &client,
+            "9c:05:d6:bc:06:43",
+            99,
+            out_table(),
+            |_| Ok(true),
+        )
+        .await
+        .unwrap_err();
+        let api_err = err
+            .downcast_ref::<unifi_cli::api::ApiError>()
+            .unwrap_or_else(|| panic!("cycle must report a missing port as an ApiError, got {err}"));
+        assert!(
+            matches!(api_err, unifi_cli::api::ApiError::NotFound(_)),
+            "expected NotFound, got {api_err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn list_events_returns_stat_event_records() {
         let server = MockServer::start().await;
