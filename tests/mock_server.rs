@@ -1868,6 +1868,123 @@ mod command_output {
         assert_eq!(body["offset"], 1);
     }
 
+    // `devices ports <MAC>` is documented as an alias for `ports list <MAC>`
+    // that deliberately keeps the historical bare JSON array shape, while
+    // `ports list` emits the paginated `{items,total,limit,offset}` envelope.
+    // Wrapping `devices ports` in the envelope would break any consumer that
+    // indexes the top level, which the design explicitly forbids.
+    //
+    // Nothing else in this suite would catch that regression: the in-process
+    // `devices_ports_*` tests above only `.unwrap()`/`.unwrap_err()` and never
+    // capture stdout, and `devices_ports_and_ports_list_are_the_same_command`
+    // in `tests/cli_contract.rs` only asserts the exit code isn't a usage
+    // error. So this spawns the real compiled binary against a wiremock
+    // server (same pattern as `ports_list_pagination_reports_full_total_and_truncated_items`
+    // above) and parses actual stdout as JSON to assert on shape.
+    #[tokio::test]
+    async fn devices_ports_bare_array_vs_ports_list_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [
+                        {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456789, "rx_bytes": 987654321},
+                        {"port_idx": 2, "name": "Port 2", "media": "GE", "up": true, "speed": 100, "full_duplex": false, "poe_enable": false, "port_poe": true, "tx_bytes": 1000, "rx_bytes": 2000}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let run_json = |args: &[&str]| -> serde_json::Value {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args(["--host", &server.uri(), "--api-key", "test-key"])
+                .args(args)
+                .output()
+                .expect("failed to run the unifi binary");
+            assert!(
+                output.status.success(),
+                "{args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "{args:?} stdout was not valid JSON ({e}): {}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            })
+        };
+
+        let alias = run_json(&["devices", "ports", "9c:05:d6:bc:06:43", "-o", "json"]);
+        let canonical = run_json(&["ports", "list", "9c:05:d6:bc:06:43", "-o", "json"]);
+
+        // 1. `devices ports` must be a bare array, and rows must carry the
+        //    device_mac/device_name fields shared with `ports list`.
+        let alias_items = alias
+            .as_array()
+            .unwrap_or_else(|| panic!("devices ports must emit a bare JSON array, got: {alias}"));
+        assert!(
+            !alias_items.is_empty(),
+            "expected at least one port row from devices ports"
+        );
+        let alias_row = alias_items[0]
+            .as_object()
+            .expect("devices ports row must be a JSON object");
+        assert!(
+            alias_row.contains_key("device_mac"),
+            "devices ports row must carry device_mac: {alias_row:?}"
+        );
+        assert!(
+            alias_row.contains_key("device_name"),
+            "devices ports row must carry device_name: {alias_row:?}"
+        );
+
+        // 2. `ports list` must be the {items,total,limit,offset} envelope.
+        assert!(
+            canonical.is_object(),
+            "ports list must emit an {{items,total,limit,offset}} envelope object, got: {canonical}"
+        );
+        let items = canonical["items"]
+            .as_array()
+            .expect("ports list envelope must have an items array");
+        assert!(
+            canonical.get("total").is_some(),
+            "ports list envelope must have a total field"
+        );
+        assert!(
+            canonical.get("limit").is_some(),
+            "ports list envelope must have a limit field"
+        );
+        assert!(
+            canonical.get("offset").is_some(),
+            "ports list envelope must have an offset field"
+        );
+        assert!(
+            !items.is_empty(),
+            "expected at least one port row from ports list"
+        );
+
+        // 3. The two spellings must carry the same key set per row, locking
+        //    in the shared-field-set property alongside the envelope split.
+        let mut alias_keys: Vec<&str> = alias_row.keys().map(String::as_str).collect();
+        alias_keys.sort_unstable();
+        let mut canonical_keys: Vec<&str> = items[0]
+            .as_object()
+            .expect("ports list row must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        canonical_keys.sort_unstable();
+
+        assert_eq!(
+            alias_keys, canonical_keys,
+            "devices ports and ports list must share the same per-row field set"
+        );
+    }
+
     #[tokio::test]
     async fn list_events_returns_stat_event_records() {
         let server = MockServer::start().await;
