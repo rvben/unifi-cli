@@ -141,6 +141,15 @@ pub fn render_text(rows: &[&PortRow], show_device_col: bool, out: &OutputConfig)
             .unwrap_or_else(|| "-".into());
         let name = p.name.as_deref().unwrap_or("-");
         let link = if p.up { "up" } else { "down" };
+        let link_display = if color {
+            if p.up {
+                format!("{}", "up".green())
+            } else {
+                format!("{}", "down".dimmed())
+            }
+        } else {
+            link.to_string()
+        };
         let speed = speed_cell(p);
         let poe = poe_cell(p);
         let tx = p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
@@ -149,12 +158,12 @@ pub fn render_text(rows: &[&PortRow], show_device_col: bool, out: &OutputConfig)
         if show_device_col {
             println!(
                 " {:<dev_w$} {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                r.device_name, port, name, link, speed, poe, tx, rx
+                r.device_name, port, name, link_display, speed, poe, tx, rx
             );
         } else {
             println!(
                 " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                port, name, link, speed, poe, tx, rx
+                port, name, link_display, speed, poe, tx, rx
             );
         }
     }
@@ -198,4 +207,139 @@ pub async fn list(
         render_text(&page, mac.is_none(), &out);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `DeviceWithPorts` fixture from a JSON literal, exercising the
+    /// same `Deserialize` impl the API layer uses.
+    fn device(json: serde_json::Value) -> DeviceWithPorts {
+        serde_json::from_value(json).expect("test fixture must deserialize as DeviceWithPorts")
+    }
+
+    #[test]
+    fn collect_rows_flattens_multiple_devices_and_skips_empty_port_tables() {
+        let devices = vec![
+            device(serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:01", "name": "SwitchA",
+                "port_table": [{"port_idx": 1}, {"port_idx": 2}]
+            })),
+            device(serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:02", "name": "APWithNoPorts",
+                "port_table": []
+            })),
+            device(serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:03", "name": "SwitchC",
+                "port_table": [{"port_idx": 1}]
+            })),
+        ];
+
+        let rows = collect_rows(&devices);
+
+        assert_eq!(
+            rows.len(),
+            3,
+            "device with an empty port_table must contribute no rows"
+        );
+        assert_eq!(rows[0].device_name, "SwitchA");
+        assert_eq!(rows[0].port.port_idx, Some(1));
+        assert_eq!(rows[1].device_name, "SwitchA");
+        assert_eq!(rows[1].port.port_idx, Some(2));
+        assert_eq!(rows[2].device_name, "SwitchC");
+        assert_eq!(rows[2].port.port_idx, Some(1));
+        assert!(
+            rows.iter().all(|r| r.device_name != "APWithNoPorts"),
+            "a device with no ports must never appear in the flattened rows"
+        );
+    }
+
+    #[test]
+    fn collect_rows_formats_device_mac_and_falls_back_to_model_when_name_is_absent() {
+        let devices = vec![
+            device(serde_json::json!({
+                "mac": "9c05d6bc0643", "name": "USW-24-PoE",
+                "port_table": [{"port_idx": 1}]
+            })),
+            device(serde_json::json!({
+                "mac": "aabbccddeeff", "model": "USW-Lite-8",
+                "port_table": [{"port_idx": 1}]
+            })),
+            device(serde_json::json!({
+                "mac": "112233445566",
+                "port_table": [{"port_idx": 1}]
+            })),
+        ];
+
+        let rows = collect_rows(&devices);
+
+        assert_eq!(
+            rows[0].device_mac, "9c:05:d6:bc:06:43",
+            "device_mac must be formatted via format_mac, not passed through raw"
+        );
+        assert_eq!(rows[0].device_name, "USW-24-PoE");
+
+        assert_eq!(rows[1].device_mac, "aa:bb:cc:dd:ee:ff");
+        assert_eq!(
+            rows[1].device_name, "USW-Lite-8",
+            "device_name must fall back to model when name is absent"
+        );
+
+        assert_eq!(rows[2].device_mac, "11:22:33:44:55:66");
+        assert_eq!(
+            rows[2].device_name, "-",
+            "device_name must fall back to '-' when both name and model are absent"
+        );
+    }
+
+    #[test]
+    fn row_json_emits_exactly_the_fields_declared_in_ports_list() {
+        let devices = vec![device(serde_json::json!({
+            "mac": "aa:bb:cc:dd:ee:ff", "name": "SwitchA",
+            "port_table": [{
+                "port_idx": 1, "name": "Port 1", "media": "GE", "up": true,
+                "speed": 1000, "full_duplex": true, "poe_enable": true,
+                "poe_power": 4.5, "port_poe": true, "tx_bytes": 100, "rx_bytes": 200
+            }]
+        }))];
+        let rows = collect_rows(&devices);
+        let value = row_json(&rows[0]);
+        let obj = value.as_object().expect("row_json must emit a JSON object");
+
+        let mut emitted: Vec<&str> = obj.keys().map(String::as_str).collect();
+        emitted.sort_unstable();
+        let mut declared: Vec<&str> = crate::fields::names(crate::fields::PORTS_LIST);
+        declared.sort_unstable();
+
+        assert_eq!(
+            emitted, declared,
+            "row_json keys must exactly match fields::PORTS_LIST, so the two cannot drift"
+        );
+    }
+
+    #[test]
+    fn project_retains_only_the_requested_fields() {
+        let mut value = serde_json::json!({"a": 1, "b": 2, "c": 3});
+        project(&mut value, &Some(vec!["a".to_string(), "c".to_string()]));
+
+        let obj = value.as_object().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert!(obj.contains_key("a"));
+        assert!(obj.contains_key("c"));
+        assert!(!obj.contains_key("b"), "unrequested fields must be dropped");
+    }
+
+    #[test]
+    fn project_is_a_noop_when_fields_is_none() {
+        let mut value = serde_json::json!({"a": 1, "b": 2, "c": 3});
+        let before = value.clone();
+
+        project(&mut value, &None);
+
+        assert_eq!(
+            value, before,
+            "a None projection must leave the value untouched"
+        );
+    }
 }

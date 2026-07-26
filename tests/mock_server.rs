@@ -1791,6 +1791,83 @@ mod command_output {
         assert!(err.to_string().contains("Not found"));
     }
 
+    // --- Ports list (top-level) ---
+    //
+    // Drives the real `unifi` binary against a wiremock server so the JSON
+    // envelope it actually prints can be inspected. A regression that computed
+    // `total` from the truncated page (instead of the full flattened result)
+    // would let an agent mistake a partial page for a complete one, so this
+    // must observe real stdout rather than call `commands::ports::list`
+    // in-process and only check that it returns `Ok`.
+    #[tokio::test]
+    async fn ports_list_pagination_reports_full_total_and_truncated_items() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchA",
+                     "port_table": [{"port_idx": 1}, {"port_idx": 2}]},
+                    {"mac": "aa:bb:cc:dd:ee:02", "name": "SwitchB",
+                     "port_table": [{"port_idx": 1}, {"port_idx": 2}, {"port_idx": 3}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "list",
+                "--output",
+                "json",
+                "--limit",
+                "3",
+                "--offset",
+                "1",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert!(
+            output.status.success(),
+            "ports list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout was not valid JSON ({e}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+
+        let items = body["items"]
+            .as_array()
+            .expect("envelope must have an items array");
+        assert_eq!(
+            items.len(),
+            3,
+            "the page must be truncated to the requested limit"
+        );
+        assert_eq!(
+            body["total"], 5,
+            "total must reflect every port across every device, not just this page"
+        );
+        assert_ne!(
+            body["total"].as_u64().unwrap(),
+            items.len() as u64,
+            "an agent must be able to tell a truncated page from a complete result"
+        );
+        assert_eq!(body["limit"], 3);
+        assert_eq!(body["offset"], 1);
+    }
+
     #[tokio::test]
     async fn list_events_returns_stat_event_records() {
         let server = MockServer::start().await;

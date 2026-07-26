@@ -213,6 +213,7 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            PORTS_LIST,
         ] {
             let mut seen = names(table);
             let before = seen.len();
@@ -230,10 +231,11 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            PORTS_LIST,
         ] {
             for (name, ty) in table {
                 assert!(
-                    ["string", "integer", "boolean"].contains(ty),
+                    ["string", "integer", "boolean", "number"].contains(ty),
                     "field {name} has unexpected type {ty}"
                 );
             }
