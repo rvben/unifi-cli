@@ -152,6 +152,57 @@ unifi devices locate aa:bb:cc:dd:ee:ff        # Blink locate LED
 unifi devices locate aa:bb:cc:dd:ee:ff --off  # Stop blinking
 ```
 
+### Ports
+
+Find which switch port a device is plugged into, then power-cycle just that
+port instead of rebooting the whole switch:
+
+```bash
+# Which port is my Pi on? Matches by name (case-insensitive substring),
+# MAC, or IP.
+unifi ports find allsky
+unifi ports find d8:3a:dd:2b:fa:8a
+
+# Inspect it — PoE mode, class, voltage, current, and what's attached
+unifi ports show 8c:ed:e1:b0:74:e2 5
+
+# Bounce PoE on that port only — the rest of the switch is untouched
+unifi ports cycle 8c:ed:e1:b0:74:e2 5
+```
+
+`ports find`'s output feeds directly into `show` and `cycle`: `device_mac`
+and `port_idx` are the *switch's* MAC and port index, not the attached
+device's. A name matching more than one client returns `kind: conflict`
+(exit 6) listing the candidates rather than guessing. A device that has
+moved between switch ports appears once per port it has ever used, with a
+`connected` field distinguishing its current port from stale history.
+
+`ports show` exposes PoE telemetry the CLI previously discarded:
+`poe_mode`, `poe_class`, `poe_voltage`, `poe_current`, `poe_good`, and the
+MAC of the attached device (`attached_mac`).
+
+`ports cycle` is destructive. On a terminal it shows what is about to lose
+power and asks for confirmation; when piped it requires `--yes` and
+otherwise exits 2 with `kind: confirmation_required`. It refuses **before
+contacting the controller** when:
+
+- the port is not PoE-capable (an SFP+ port, say) → `kind: conflict`, exit 6
+- the port's PoE is administratively off → `kind: conflict`, exit 6
+- the device has no such port index → `kind: not_found`, exit 4
+
+List ports for one device, or across every device:
+
+```bash
+unifi ports list 8c:ed:e1:b0:74:e2
+unifi ports list --limit 20 --fields port_idx,poe_power
+```
+
+`ports list` returns the paginated `{items, total, limit, offset}` envelope
+used by the other list commands. `unifi devices ports <MAC>` remains an
+alias for `unifi ports list <MAC>`; it keeps its original bare-JSON-array
+shape for backward compatibility, and both emit the same per-row fields,
+including `device_mac` and `device_name`.
+
 ### Events
 
 ```bash
@@ -239,6 +290,7 @@ unifi schema    # Dumps all commands, arguments, output fields as JSON
 | 3 | Authentication error (401/403) |
 | 4 | Not found (404) |
 | 5 | API error (server error) |
+| 6 | Conflict (ambiguous match or failed precondition) |
 
 ## Development
 
