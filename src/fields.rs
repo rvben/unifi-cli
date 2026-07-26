@@ -67,6 +67,22 @@ pub const NETWORKS_LIST: &[Field] = &[
     ("default", "boolean"),
 ];
 
+pub const PORTS_LIST: &[Field] = &[
+    ("device_mac", "string"),
+    ("device_name", "string"),
+    ("port_idx", "integer"),
+    ("name", "string"),
+    ("media", "string"),
+    ("up", "boolean"),
+    ("speed", "integer"),
+    ("full_duplex", "boolean"),
+    ("poe_enable", "boolean"),
+    ("poe_power", "number"),
+    ("port_poe", "boolean"),
+    ("tx_bytes", "integer"),
+    ("rx_bytes", "integer"),
+];
+
 /// A `--fields` request naming one or more unknown fields.
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidFields {

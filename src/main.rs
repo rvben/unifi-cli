@@ -75,6 +75,10 @@ enum Command {
         command: Option<NetworksCommand>,
     },
 
+    /// Inspect and manage switch ports
+    #[command(subcommand)]
+    Ports(PortsCommand),
+
     /// View controller events
     #[command(subcommand)]
     Events(EventsCommand),
@@ -230,6 +234,30 @@ enum DevicesCommand {
 }
 
 #[derive(Subcommand)]
+enum PortsCommand {
+    /// List ports for one device, or across all devices
+    List {
+        /// MAC address of a switch or router. Omit to list every device's ports.
+        mac: Option<String>,
+        /// Maximum number of results to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
+        #[arg(long)]
+        fields: Option<String>,
+        /// Live-updating TUI view of port status (requires MAC)
+        #[arg(long, requires = "mac")]
+        live: bool,
+        /// Refresh interval in seconds (only with --live)
+        #[arg(short = 'i', long, default_value = "2")]
+        interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommand {
     /// Create or update the configuration file interactively
     Init,
@@ -346,6 +374,7 @@ fn validate_requested_fields(command: &Command) -> Result<Option<Vec<String>>, I
         Command::Clients(ClientsCommand::List { fields, .. }) => (fields, fields::CLIENTS_LIST),
         Command::Devices(DevicesCommand::List { fields, .. }) => (fields, fields::DEVICES_LIST),
         Command::Events(EventsCommand::List { fields, .. }) => (fields, fields::EVENTS_LIST),
+        Command::Ports(PortsCommand::List { fields, .. }) => (fields, fields::PORTS_LIST),
         _ => return Ok(None),
     };
 
@@ -1268,6 +1297,28 @@ async fn main() {
             }
         },
         Command::Networks { .. } => commands::networks::list(&mut client, out).await,
+        Command::Ports(cmd) => match cmd {
+            PortsCommand::List {
+                mac,
+                limit,
+                offset,
+                fields: _,
+                live,
+                interval,
+            } => {
+                if live {
+                    let mac = mac.expect("clap requires --live to be paired with a MAC");
+                    unifi_cli::tui::run_ports(&client, &mac, interval).await
+                } else {
+                    let pagination = commands::ports::Pagination {
+                        limit,
+                        offset,
+                        fields: requested_fields,
+                    };
+                    commands::ports::list(&client, mac.as_deref(), out, pagination).await
+                }
+            }
+        },
         Command::Events(cmd) => match cmd {
             EventsCommand::List {
                 limit,
@@ -2487,6 +2538,34 @@ api_key = "work_key"
             }
             _ => panic!("expected Devices Ports"),
         }
+    }
+
+    #[test]
+    fn cli_parses_ports_list_without_mac() {
+        let cli = Cli::parse_from(["unifi", "ports", "list"]);
+        match cli.command {
+            Command::Ports(PortsCommand::List { mac, limit, .. }) => {
+                assert!(mac.is_none());
+                assert_eq!(limit, 100);
+            }
+            _ => panic!("expected Ports List"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_ports_list_with_mac() {
+        let cli = Cli::parse_from(["unifi", "ports", "list", "aa:bb:cc:dd:ee:ff"]);
+        match cli.command {
+            Command::Ports(PortsCommand::List { mac, .. }) => {
+                assert_eq!(mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+            }
+            _ => panic!("expected Ports List"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_ports_live_without_mac() {
+        assert!(Cli::try_parse_from(["unifi", "ports", "list", "--live"]).is_err());
     }
 
     #[test]

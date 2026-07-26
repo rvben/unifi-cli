@@ -159,6 +159,41 @@ fn clients_list_accepts_every_documented_field() {
     }
 }
 
+// --- `ports` surface ---
+
+#[test]
+fn ports_list_rejects_unknown_field() {
+    let out = unifi()
+        .args(["ports", "list", "--fields", "bogus"])
+        .output()
+        .expect("failed to run binary");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected usage exit code 2, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        error_envelope(&out.stderr)["error"]["kind"].as_str(),
+        Some("config_error")
+    );
+}
+
+#[test]
+fn ports_live_requires_a_mac() {
+    let out = unifi()
+        .args(["ports", "list", "--live"])
+        .output()
+        .expect("failed to run binary");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "--live without a MAC must be a usage error"
+    );
+}
+
 // --- subcommand surface consistency ---
 
 #[test]

@@ -186,6 +186,9 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         ),
     );
 
+    // ports
+    m.insert("ports list", f(fields::PORTS_LIST, false, None));
+
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));
     m.insert("events list", f(fields::EVENTS_LIST, false, None));
