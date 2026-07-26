@@ -211,6 +211,7 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
             None,
         ),
     );
+    m.insert("ports find", f(fields::PORTS_FIND, false, None));
 
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));

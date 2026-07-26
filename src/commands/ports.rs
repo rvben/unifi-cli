@@ -1,6 +1,9 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{ApiError, DeviceWithPorts, PortEntry, UnifiClient, format_bytes, format_mac};
+use crate::api::{
+    ApiError, DeviceWithPorts, LegacyClient, PortEntry, UnifiClient, format_bytes, format_mac,
+    normalize_mac,
+};
 use crate::output::{OutputConfig, use_color};
 
 /// One port, flattened with the device that owns it. Every `ports` subcommand
@@ -223,6 +226,143 @@ pub fn find_port(device: &DeviceWithPorts, port_idx: u32) -> Result<&PortEntry, 
                 .unwrap_or_else(|| "device".into());
             ApiError::NotFound(format!("Port {port_idx} on {mac}"))
         })
+}
+
+/// Normalize `identifier` and return it only if it already has MAC shape (12
+/// hex digits once separators are stripped). Shared by `resolve_identifier`
+/// and `find` so a MAC identifier is recognized identically in both places
+/// without duplicating the predicate.
+fn identifier_as_mac(identifier: &str) -> Option<String> {
+    let normalized = normalize_mac(identifier);
+    (normalized.len() == 12 && normalized.chars().all(|c| c.is_ascii_hexdigit()))
+        .then_some(normalized)
+}
+
+/// Resolve a MAC, IP, or client name to a normalized MAC.
+///
+/// Ordered, stopping at the first tier that matches: normalized MAC equality,
+/// then exact IP, then case-insensitive name, then hostname. Follows the
+/// `protect cameras show <id-or-name>` precedent rather than the MAC-only
+/// convention of `clients show`, because the whole point of `find` is not
+/// having to look the MAC up first.
+pub fn resolve_identifier(identifier: &str, clients: &[LegacyClient]) -> Result<String, ApiError> {
+    if let Some(mac) = identifier_as_mac(identifier) {
+        return Ok(mac);
+    }
+
+    if let Some(c) = clients.iter().find(|c| c.ip.as_deref() == Some(identifier))
+        && let Some(mac) = c.mac.as_deref()
+    {
+        return Ok(normalize_mac(mac));
+    }
+
+    let wanted = identifier.to_lowercase();
+    let by_name: Vec<&LegacyClient> = clients
+        .iter()
+        .filter(|c| {
+            c.name
+                .as_deref()
+                .is_some_and(|n| n.to_lowercase().contains(&wanted))
+                || c.hostname
+                    .as_deref()
+                    .is_some_and(|h| h.to_lowercase().contains(&wanted))
+        })
+        .collect();
+
+    match by_name.as_slice() {
+        [] => Err(ApiError::NotFound(format!(
+            "No client matching '{identifier}'"
+        ))),
+        [one] => one
+            .mac
+            .as_deref()
+            .map(normalize_mac)
+            .ok_or_else(|| ApiError::NotFound(format!("Client '{identifier}' has no MAC"))),
+        many => {
+            let list = many
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} ({})",
+                        c.name.as_deref().or(c.hostname.as_deref()).unwrap_or("-"),
+                        c.mac
+                            .as_deref()
+                            .map(format_mac)
+                            .unwrap_or_else(|| "-".into())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ApiError::Conflict(format!(
+                "'{identifier}' matches {} clients: {list}",
+                many.len()
+            )))
+        }
+    }
+}
+
+/// Rows whose `last_connection.mac` matches, connected first so a stale record
+/// reads as history rather than as the device's current location.
+pub fn matching_rows<'a>(
+    rows: &'a [PortRow<'a>],
+    normalized_mac: &str,
+) -> Vec<(&'a PortRow<'a>, bool)> {
+    let mut hits: Vec<(&PortRow, bool)> = rows
+        .iter()
+        .filter_map(|r| {
+            let lc = r.port.last_connection.as_ref()?;
+            let m = lc.mac.as_deref()?;
+            (normalize_mac(m) == normalized_mac).then(|| (r, lc.connected.unwrap_or(false)))
+        })
+        .collect();
+    hits.sort_by_key(|(_, connected)| !*connected);
+    hits
+}
+
+/// Find which switch port a device is attached to, by MAC, IP, or client
+/// name.
+pub async fn find(
+    client: &UnifiClient,
+    identifier: &str,
+    out: OutputConfig,
+    fields: Option<Vec<String>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // A MAC identifier resolves locally, so the common scripted path stays a
+    // single round trip.
+    let target = if let Some(mac) = identifier_as_mac(identifier) {
+        mac
+    } else {
+        let clients = client.list_clients_legacy().await?;
+        resolve_identifier(identifier, &clients)?
+    };
+
+    let devices = client.list_all_device_ports().await?;
+    let rows = collect_rows(&devices);
+    let hits = matching_rows(&rows, &target);
+
+    if hits.is_empty() {
+        return Err(Box::new(ApiError::NotFound(format!(
+            "No switch port with {} attached",
+            format_mac(&target)
+        ))));
+    }
+
+    if out.is_json() {
+        let items: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(r, connected)| {
+                let mut v = row_json(r);
+                v["connected"] = (*connected).into();
+                project(&mut v, &fields);
+                v
+            })
+            .collect();
+        out.print_data(&serde_json::to_string_pretty(&items)?);
+    } else {
+        let refs: Vec<&PortRow> = hits.iter().map(|(r, _)| *r).collect();
+        render_text(&refs, true, &out);
+    }
+    Ok(())
 }
 
 pub async fn show(
@@ -505,5 +645,109 @@ mod tests {
         let d = device_with(serde_json::json!([{"port_idx": 1}]));
         let err = find_port(&d, 99).expect_err("port 99 does not exist");
         assert!(matches!(err, crate::api::ApiError::NotFound(_)));
+    }
+
+    // `_id` is required by `LegacyClient` (every other fixture in this codebase
+    // supplies it); the plan's literal fixture omitted it, so it is added here
+    // to make the fixture actually deserialize.
+    fn clients_fixture() -> Vec<crate::api::LegacyClient> {
+        serde_json::from_value(serde_json::json!([
+            {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "allsky",   "ip": "10.0.0.5"},
+            {"_id": "2", "mac": "f4:e2:c6:65:47:6c", "name": "bedroom-ap",   "ip": "10.0.0.6"},
+            {"_id": "3", "mac": "c4:f7:c1:61:de:31", "name": "Main-Bedroom", "ip": "10.0.0.7"}
+        ]))
+        .expect("fixture must parse")
+    }
+
+    #[test]
+    fn resolve_identifier_accepts_any_mac_format() {
+        let c = clients_fixture();
+        // A MAC resolves without consulting the client list at all.
+        assert_eq!(
+            resolve_identifier("D8-3A-DD-2B-FA-8A", &c).unwrap(),
+            "d83add2bfa8a"
+        );
+    }
+
+    #[test]
+    fn resolve_identifier_matches_ip_then_name() {
+        let c = clients_fixture();
+        assert_eq!(resolve_identifier("10.0.0.5", &c).unwrap(), "d83add2bfa8a");
+        assert_eq!(resolve_identifier("ALLSKY", &c).unwrap(), "d83add2bfa8a");
+    }
+
+    #[test]
+    fn resolve_identifier_ambiguous_name_is_conflict() {
+        let c = clients_fixture();
+        let err = resolve_identifier("bedroom", &c).expect_err("ambiguous");
+        match err {
+            crate::api::ApiError::Conflict(msg) => {
+                assert!(msg.contains("matches 2 clients"), "got: {msg}");
+                assert!(msg.contains("bedroom-ap"), "got: {msg}");
+                assert!(msg.contains("Main-Bedroom"), "got: {msg}");
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_identifier_unknown_is_not_found() {
+        let c = clients_fixture();
+        let err = resolve_identifier("nothing-here", &c).expect_err("unknown");
+        assert!(matches!(err, crate::api::ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn matching_rows_sort_connected_first() {
+        let devices: Vec<DeviceWithPorts> = serde_json::from_value(serde_json::json!([{
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "name": "SwitchA",
+            "port_table": [
+                {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}},
+                {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}},
+                {"port_idx": 9, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
+            ]
+        }]))
+        .expect("fixture must parse");
+        let rows = collect_rows(&devices);
+        let hits = matching_rows(&rows, "d83add2bfa8a");
+        assert_eq!(hits.len(), 2, "device appears on two ports");
+        assert_eq!(
+            hits[0].0.port.port_idx,
+            Some(7),
+            "connected port sorts first"
+        );
+        assert!(hits[0].1, "first hit is connected");
+        assert!(!hits[1].1, "second hit is the stale record");
+    }
+
+    #[test]
+    fn find_json_row_matches_exactly_the_fields_declared_in_ports_find() {
+        // Exercises the same construction `find` uses (`row_json` plus the
+        // manually-inserted `connected` key) without needing an HTTP mock, so
+        // a drift between the two can never sneak past this test.
+        let devices = vec![device(serde_json::json!({
+            "mac": "aa:bb:cc:dd:ee:ff", "name": "SwitchA",
+            "port_table": [{
+                "port_idx": 7,
+                "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}
+            }]
+        }))];
+        let rows = collect_rows(&devices);
+        let hits = matching_rows(&rows, "d83add2bfa8a");
+        let (row, connected) = hits[0];
+        let mut value = row_json(row);
+        value["connected"] = connected.into();
+
+        let obj = value.as_object().expect("must emit a JSON object");
+        let mut emitted: Vec<&str> = obj.keys().map(String::as_str).collect();
+        emitted.sort_unstable();
+        let mut declared: Vec<&str> = crate::fields::names(crate::fields::PORTS_FIND);
+        declared.sort_unstable();
+
+        assert_eq!(
+            emitted, declared,
+            "find's emitted keys must exactly match fields::PORTS_FIND"
+        );
     }
 }

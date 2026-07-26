@@ -2218,6 +2218,144 @@ mod command_output {
         );
     }
 
+    // --- Ports find (reverse lookup) ---
+
+    // A MAC identifier must resolve locally so the common scripted path stays
+    // a single round trip; mounting `/stat/sta` with `.expect(0)` turns an
+    // accidental client-list fetch into a test failure instead of a silent,
+    // unnoticed second request. This also locks in connected-first sorting
+    // and the exact `PORTS_FIND` field set end to end, through the real
+    // binary and JSON output, not just the in-process helpers.
+    #[tokio::test]
+    async fn ports_find_by_mac_sorts_connected_first_and_skips_client_lookup() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [
+                        {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}},
+                        {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}},
+                        {"port_idx": 9, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"}, "data": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "find",
+                "d8:3a:dd:2b:fa:8a",
+                "-o",
+                "json",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports find failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout was not valid JSON ({e}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+        let items = body
+            .as_array()
+            .expect("ports find must emit a bare JSON array, like `networks list`");
+        assert_eq!(items.len(), 2, "the device appears on two ports");
+        assert_eq!(
+            items[0]["port_idx"], 7,
+            "the connected port must sort first"
+        );
+        assert_eq!(items[0]["connected"], true);
+        assert_eq!(items[1]["port_idx"], 2, "the stale record sorts last");
+        assert_eq!(items[1]["connected"], false);
+
+        let mut emitted: Vec<&str> = items[0]
+            .as_object()
+            .expect("row must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        emitted.sort_unstable();
+        let mut declared: Vec<&str> = unifi_cli::fields::names(unifi_cli::fields::PORTS_FIND);
+        declared.sort_unstable();
+        assert_eq!(
+            emitted, declared,
+            "ports find rows must carry exactly the PORTS_FIND field set"
+        );
+    }
+
+    // Ambiguity is never guessed: a name matching more than one client must
+    // exit 6 (conflict) and name the candidates, rather than silently picking
+    // one.
+    #[tokio::test]
+    async fn ports_find_ambiguous_name_exits_with_conflict() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "1", "mac": "f4:e2:c6:65:47:6c", "name": "bedroom-ap", "ip": "10.0.0.6"},
+                    {"_id": "2", "mac": "c4:f7:c1:61:de:31", "name": "Main-Bedroom", "ip": "10.0.0.7"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "find",
+                "bedroom",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(6),
+            "an ambiguous name must exit 6 (conflict), got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let last_line = stderr.trim_end().lines().last().unwrap_or("");
+        let envelope: serde_json::Value =
+            serde_json::from_str(last_line).expect("last stderr line must be valid JSON");
+        assert_eq!(envelope["error"]["kind"], "conflict");
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error envelope must carry a message");
+        assert!(message.contains("bedroom-ap"), "got: {message}");
+        assert!(message.contains("Main-Bedroom"), "got: {message}");
+    }
+
     #[tokio::test]
     async fn list_events_returns_stat_event_records() {
         let server = MockServer::start().await;

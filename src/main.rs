@@ -262,6 +262,14 @@ enum PortsCommand {
         /// Port index (see `unifi ports list <MAC>`)
         port: u32,
     },
+    /// Find which switch port a device is attached to
+    Find {
+        /// MAC address, IP address, or client name
+        identifier: String,
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
+        #[arg(long)]
+        fields: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -382,6 +390,7 @@ fn validate_requested_fields(command: &Command) -> Result<Option<Vec<String>>, I
         Command::Devices(DevicesCommand::List { fields, .. }) => (fields, fields::DEVICES_LIST),
         Command::Events(EventsCommand::List { fields, .. }) => (fields, fields::EVENTS_LIST),
         Command::Ports(PortsCommand::List { fields, .. }) => (fields, fields::PORTS_LIST),
+        Command::Ports(PortsCommand::Find { fields, .. }) => (fields, fields::PORTS_FIND),
         _ => return Ok(None),
     };
 
@@ -1327,6 +1336,9 @@ async fn main() {
             }
             PortsCommand::Show { mac, port } => {
                 commands::ports::show(&client, &mac, port, out).await
+            }
+            PortsCommand::Find { identifier, .. } => {
+                commands::ports::find(&client, &identifier, out, requested_fields).await
             }
         },
         Command::Events(cmd) => match cmd {
