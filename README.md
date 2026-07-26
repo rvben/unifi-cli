@@ -191,6 +191,14 @@ when:
 - the port's PoE is administratively off → `kind: conflict`, exit 6
 - the device has no such port index → `kind: not_found`, exit 4
 
+The off interval — how long the port stays unpowered — is chosen by the
+switch firmware, not by this CLI. The power-cycle command takes only the
+target port, with no duration parameter, on either the legacy endpoint or
+the Integration API, so the interval isn't configurable and varies by
+device model and firmware version. IEEE 802.3 PoE detection timing imposes
+a floor regardless: expect the port to sit dark for roughly 1-2 seconds at
+minimum before power returns.
+
 List ports for one device, or across every device:
 
 ```bash
