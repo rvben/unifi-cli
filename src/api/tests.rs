@@ -850,8 +850,9 @@ fn port_entry_parses_poe_telemetry_with_string_numbers() {
     assert_eq!(p.poe_current, Some(93.00));
     assert_eq!(p.poe_good, Some(true));
     assert_eq!(p.stp_state.as_deref(), Some("forwarding"));
-    assert!(p.autoneg);
-    assert!(!p.is_uplink);
+    assert_eq!(p.autoneg, Some(true));
+    assert_eq!(p.enable, Some(true));
+    assert_eq!(p.is_uplink, Some(false));
     let lc = p.last_connection.expect("last_connection present");
     assert_eq!(lc.mac.as_deref(), Some("f4:e2:c6:65:47:6c"));
     assert_eq!(lc.connected, Some(true));
@@ -873,4 +874,8 @@ fn port_entry_tolerates_absent_last_connection() {
     assert!(p.last_connection.is_none());
     assert_eq!(p.poe_voltage, None);
     assert!(!p.up);
+    // Absent tri-state keys must read as unknown, never as a confident "no".
+    assert_eq!(p.enable, None, "absent enable must not read as disabled");
+    assert_eq!(p.autoneg, None);
+    assert_eq!(p.is_uplink, None);
 }
