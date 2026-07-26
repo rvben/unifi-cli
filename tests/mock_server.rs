@@ -1,4 +1,4 @@
-use wiremock::matchers::{method, path, path_regex};
+use wiremock::matchers::{body_json, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // Helper to create a UnifiClient pointing at the mock server
@@ -343,6 +343,32 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn power_cycle_port_sends_correct_command() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .and(body_json(serde_json::json!({
+                "cmd": "power-cycle",
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "port_idx": 5
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        client
+            .power_cycle_port("AA-BB-CC-DD-EE-FF", 5)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn upgrade_device_sends_correct_command() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -495,6 +521,30 @@ mod client_api {
         let client = mock_client(&server).await;
         let err = client.get_sysinfo().await.unwrap_err();
         assert!(err.to_string().contains("No sysinfo returned"));
+    }
+
+    #[tokio::test]
+    async fn list_all_device_ports_returns_every_device() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"mac": "aa:bb:cc:dd:ee:ff", "name": "SwitchA",
+                     "port_table": [{"port_idx": 1, "port_poe": true}]},
+                    {"mac": "11:22:33:44:55:66", "name": "SwitchB",
+                     "port_table": [{"port_idx": 1}, {"port_idx": 2}]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let devices = client.list_all_device_ports().await.unwrap();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[1].port_table.len(), 2);
     }
 }
 
