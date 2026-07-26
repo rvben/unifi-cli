@@ -104,6 +104,7 @@ pub mod exit_codes {
     pub const AUTH_ERROR: i32 = 3;
     pub const NOT_FOUND: i32 = 4;
     pub const API_ERROR: i32 = 5;
+    pub const CONFLICT: i32 = 6;
 }
 
 /// Map an error to a specific exit code by downcasting to ApiError.
@@ -113,6 +114,7 @@ pub fn exit_code_for_error(err: &(dyn std::error::Error + 'static)) -> i32 {
             crate::api::ApiError::Auth(_) => exit_codes::AUTH_ERROR,
             crate::api::ApiError::NotFound(_) => exit_codes::NOT_FOUND,
             crate::api::ApiError::Api { .. } => exit_codes::API_ERROR,
+            crate::api::ApiError::Conflict(_) => exit_codes::CONFLICT,
             crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
                 exit_codes::GENERAL_ERROR
             }
@@ -129,6 +131,7 @@ pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static
             crate::api::ApiError::Auth(_) => ("auth_error", exit_codes::AUTH_ERROR),
             crate::api::ApiError::NotFound(_) => ("not_found", exit_codes::NOT_FOUND),
             crate::api::ApiError::Api { .. } => ("api_error", exit_codes::API_ERROR),
+            crate::api::ApiError::Conflict(_) => ("conflict", exit_codes::CONFLICT),
             crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
                 ("general_error", exit_codes::GENERAL_ERROR)
             }
@@ -214,5 +217,19 @@ mod tests {
         });
         assert!(envelope["error"]["kind"].as_str().is_some());
         assert!(envelope["error"]["message"].as_str().is_some());
+    }
+
+    #[test]
+    fn exit_code_for_conflict() {
+        let err = ApiError::Conflict("port has no PoE".into());
+        assert_eq!(exit_code_for_error(&err), exit_codes::CONFLICT);
+    }
+
+    #[test]
+    fn error_kind_and_code_conflict() {
+        let err = ApiError::Conflict("port has no PoE".into());
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "conflict");
+        assert_eq!(code, 6);
     }
 }

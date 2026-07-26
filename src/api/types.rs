@@ -485,9 +485,16 @@ pub type RtspsStreams = std::collections::HashMap<String, Option<String>>;
 #[derive(Debug)]
 pub enum ApiError {
     Http(reqwest::Error),
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+    },
     NotFound(String),
     Auth(String),
+    /// A request that cannot succeed against the resource's current state,
+    /// rejected locally before any HTTP call. Published by `unifi schema`
+    /// as kind `conflict`, exit code 6.
+    Conflict(String),
     Other(String),
 }
 
@@ -570,6 +577,7 @@ impl fmt::Display for ApiError {
                     "\n  Hint: Check your API key. Generate one in UniFi Settings > API"
                 )
             }
+            ApiError::Conflict(msg) => write!(f, "{msg}"),
             ApiError::Other(msg) => write!(f, "{msg}"),
         }
     }
