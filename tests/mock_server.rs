@@ -2540,6 +2540,85 @@ mod command_output {
         assert!(message.contains("Main-Bedroom"), "got: {message}");
     }
 
+    // `find`'s JSON output has always carried `connected`; only the text
+    // table lacked it, leaving the connected-first sort order as the sole
+    // (easy-to-miss) signal for which row is the device's *current* port —
+    // a distinction that matters because this lookup feeds the destructive
+    // `ports cycle`. Two distinctly-named single-port devices (rather than
+    // one device with two ports) so each rendered row can be identified by
+    // its device name, independent of the connected-first sort this test
+    // does not itself re-verify (that is `ports_find_by_mac_sorts_connected_first_and_skips_client_lookup`'s job).
+    #[tokio::test]
+    async fn ports_find_text_output_shows_connected_column() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchConnected",
+                     "port_table": [
+                        {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}}
+                     ]},
+                    {"mac": "aa:bb:cc:dd:ee:02", "name": "SwitchStale",
+                     "port_table": [
+                        {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}}
+                     ]}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "find",
+                "d8:3a:dd:2b:fa:8a",
+                "-o",
+                "text",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports find failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+        let header = stdout
+            .lines()
+            .find(|l| l.contains("Device"))
+            .expect("text output must have a header row containing \"Device\"");
+        assert!(
+            header.contains("Connected"),
+            "find's header must carry a Connected column: {header}"
+        );
+
+        let connected_row = stdout
+            .lines()
+            .find(|l| l.contains("SwitchConnected"))
+            .expect("expected a row for the connected device");
+        let stale_row = stdout
+            .lines()
+            .find(|l| l.contains("SwitchStale"))
+            .expect("expected a row for the stale device");
+
+        assert!(
+            connected_row.trim_end().ends_with("yes"),
+            "the connected row's Connected column must render \"yes\": {connected_row}"
+        );
+        assert!(
+            stale_row.trim_end().ends_with('-'),
+            "the stale row's Connected column must render \"-\": {stale_row}"
+        );
+    }
+
     // --- Ports cycle (mutation orchestration) ---
     //
     // `power_cycle_port_sends_correct_command` (in `client_api` above) only

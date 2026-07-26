@@ -143,9 +143,37 @@ pub fn device_col_width(rows: &[&PortRow]) -> usize {
 /// `device_col_width` of the *full* result set, not just `rows`, so a
 /// paginated caller renders a stable width across pages.
 pub fn render_text(rows: &[&PortRow], show_device_col: bool, dev_w: usize, out: &OutputConfig) {
+    render_rows(rows, show_device_col, dev_w, None, out);
+}
+
+/// Same table as `render_text`, with an extra `Connected` column (`yes`/`-`)
+/// appended after RX, aligned by index with `rows`. Only `ports find` calls
+/// this: `find`'s entire purpose is telling the operator which port a device
+/// is on *now*, and previously only the connected-first sort order
+/// distinguished that from stale history. `list` and `devices ports` keep
+/// calling `render_text` above, unaffected by this column's existence.
+pub fn render_text_with_connected(
+    rows: &[&PortRow],
+    dev_w: usize,
+    connected: &[bool],
+    out: &OutputConfig,
+) {
+    render_rows(rows, true, dev_w, Some(connected), out);
+}
+
+/// Shared implementation behind `render_text` and `render_text_with_connected`.
+/// `connected` is `None` for `render_text`'s two callers, so their output is
+/// untouched; `Some` only from `render_text_with_connected`.
+fn render_rows(
+    rows: &[&PortRow],
+    show_device_col: bool,
+    dev_w: usize,
+    connected: Option<&[bool]>,
+    out: &OutputConfig,
+) {
     let color = use_color();
 
-    let header = if show_device_col {
+    let mut header = if show_device_col {
         format!(
             "{:<dev_w$} {:<6} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
             "Device", "Port", "Name", "Link", "Speed", "PoE", "TX", "RX"
@@ -156,7 +184,11 @@ pub fn render_text(rows: &[&PortRow], show_device_col: bool, dev_w: usize, out: 
             "Port", "Name", "Link", "Speed", "PoE", "TX", "RX"
         )
     };
-    let rule_w = if show_device_col { 70 + dev_w } else { 70 };
+    let mut rule_w = if show_device_col { 70 + dev_w } else { 70 };
+    if connected.is_some() {
+        header.push_str(&format!(" {:<9}", "Connected"));
+        rule_w += 10;
+    }
     if color {
         println!("{}", header.bold());
         println!("{}", "-".repeat(rule_w).dimmed());
@@ -165,7 +197,7 @@ pub fn render_text(rows: &[&PortRow], show_device_col: bool, dev_w: usize, out: 
         println!("{}", "-".repeat(rule_w));
     }
 
-    for r in rows {
+    for (i, r) in rows.iter().enumerate() {
         let p = r.port;
         let port = p
             .port_idx
@@ -187,17 +219,33 @@ pub fn render_text(rows: &[&PortRow], show_device_col: bool, dev_w: usize, out: 
         let tx = p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
         let rx = p.rx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
 
-        if show_device_col {
-            println!(
+        let mut line = if show_device_col {
+            format!(
                 " {:<dev_w$} {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
                 r.device_name, port, name, link_display, speed, poe, tx, rx
-            );
+            )
         } else {
-            println!(
+            format!(
                 " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
                 port, name, link_display, speed, poe, tx, rx
-            );
+            )
+        };
+        if let Some(flags) = connected {
+            let is_connected = flags[i];
+            let cell = if color {
+                if is_connected {
+                    format!("{}", "yes".green())
+                } else {
+                    format!("{}", "-".dimmed())
+                }
+            } else if is_connected {
+                "yes".to_string()
+            } else {
+                "-".to_string()
+            };
+            line.push_str(&format!(" {cell:<9}"));
         }
+        println!("{line}");
     }
     out.print_message(&format!("\n{} ports", rows.len()));
 }
@@ -394,9 +442,10 @@ pub async fn find(
         out.print_data(&serde_json::to_string_pretty(&items)?);
     } else {
         let refs: Vec<&PortRow> = hits.iter().map(|(r, _)| *r).collect();
+        let connected: Vec<bool> = hits.iter().map(|(_, c)| *c).collect();
         // `find` never paginates, so `refs` is already the full result set.
         let dev_w = device_col_width(&refs);
-        render_text(&refs, true, dev_w, &out);
+        render_text_with_connected(&refs, dev_w, &connected, &out);
     }
     Ok(())
 }
