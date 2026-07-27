@@ -2490,9 +2490,13 @@ mod command_output {
         );
     }
 
-    // Ambiguity is never guessed: a name matching more than one client must
-    // exit 6 (conflict) and name the candidates, rather than silently picking
-    // one.
+    // Ambiguity is judged by port occupancy, not by how many client records a
+    // name matches: `bedroom` genuinely matches two devices here, and both
+    // are actually attached to a switch port (unlike the "one interface
+    // never shows up" fixtures below), so this must still exit 6 (conflict)
+    // and name both candidates. Modeled on a live-controller case — two
+    // physically distinct bedroom devices on the same switch — reported
+    // against the pre-fix behavior in the original bug report.
     #[tokio::test]
     async fn ports_find_ambiguous_name_exits_with_conflict() {
         let server = MockServer::start().await;
@@ -2504,6 +2508,20 @@ mod command_output {
                     {"_id": "1", "mac": "f4:e2:c6:65:47:6c", "name": "bedroom-ap", "ip": "10.0.0.6"},
                     {"_id": "2", "mac": "c4:f7:c1:61:de:31", "name": "Main-Bedroom", "ip": "10.0.0.7"}
                 ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "port_table": [
+                        {"port_idx": 3, "last_connection": {"mac": "f4:e2:c6:65:47:6c", "connected": true}},
+                        {"port_idx": 4, "last_connection": {"mac": "c4:f7:c1:61:de:31", "connected": true}}
+                    ]
+                }]
             })))
             .mount(&server)
             .await;
@@ -2538,6 +2556,135 @@ mod command_output {
             .expect("error envelope must carry a message");
         assert!(message.contains("bedroom-ap"), "got: {message}");
         assert!(message.contains("Main-Bedroom"), "got: {message}");
+    }
+
+    // The live-testing case that prompted this whole restructure: `allsky`
+    // matches two client records (a Raspberry Pi's wired and wireless
+    // interfaces, MACs one bit apart in the last octet), but only the wired
+    // interface ever shows up in a port table. That must resolve cleanly to
+    // the one candidate that is actually on a port, not conflict.
+    #[tokio::test]
+    async fn ports_find_name_matches_two_clients_only_one_on_a_port_resolves_without_conflict() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "allsky", "ip": "10.0.0.5"},
+                    {"_id": "2", "mac": "d8:3a:dd:2b:fa:8b", "name": "allsky", "ip": "10.0.0.9"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "port_table": [
+                        {"port_idx": 5, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "find",
+                "allsky",
+                "-o",
+                "json",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports find must resolve the single ported candidate, not conflict: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let items: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout was not valid JSON ({e}): {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+        let items = items
+            .as_array()
+            .expect("ports find must emit a bare JSON array");
+        assert_eq!(items.len(), 1, "only the wired interface is on a port");
+        assert_eq!(items[0]["port_idx"], 5);
+        assert_eq!(items[0]["connected"], true);
+    }
+
+    // The other client record sharing the name never appears in any port
+    // table at all — not "only the wireless interface", but no candidate on
+    // a port whatsoever — so this must be not_found, not a conflict.
+    #[tokio::test]
+    async fn ports_find_name_matches_clients_none_on_a_port_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "eink", "ip": "10.0.0.15"},
+                    {"_id": "2", "mac": "d8:3a:dd:2b:fa:8b", "name": "eink", "ip": "10.0.0.16"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "port_table": [
+                        {"port_idx": 1, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "find",
+                "eink",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "neither candidate is on any port, so this must exit 4 (not_found), got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let last_line = stderr.trim_end().lines().last().unwrap_or("");
+        let envelope: serde_json::Value =
+            serde_json::from_str(last_line).expect("last stderr line must be valid JSON");
+        assert_eq!(envelope["error"]["kind"], "not_found");
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error envelope must carry a message");
+        assert!(message.contains("eink"), "got: {message}");
     }
 
     // `find`'s JSON output has always carried `connected`; only the text

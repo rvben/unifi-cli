@@ -320,22 +320,31 @@ fn identifier_as_mac(identifier: &str) -> Option<String> {
         .then_some(normalized)
 }
 
-/// Resolve a MAC, IP, or client name to a normalized MAC.
+/// Resolve a MAC, IP, or client name to every candidate MAC it could refer
+/// to. Deliberately does *not* decide ambiguity here: two client records can
+/// share a name because they are two interfaces (wired and wireless, say) of
+/// one physical device, and only one of them may ever appear in a switch's
+/// port table. `find` decides ambiguity from port occupancy instead, after
+/// looking up every candidate this returns.
 ///
 /// Ordered, stopping at the first tier that matches: normalized MAC equality,
-/// then exact IP, then case-insensitive name, then hostname. Follows the
+/// then exact IP, then case-insensitive name/hostname substring (all matches
+/// in that last tier are returned together). Follows the
 /// `protect cameras show <id-or-name>` precedent rather than the MAC-only
 /// convention of `clients show`, because the whole point of `find` is not
 /// having to look the MAC up first.
-pub fn resolve_identifier(identifier: &str, clients: &[LegacyClient]) -> Result<String, ApiError> {
+pub fn resolve_candidates(
+    identifier: &str,
+    clients: &[LegacyClient],
+) -> Result<Vec<String>, ApiError> {
     if let Some(mac) = identifier_as_mac(identifier) {
-        return Ok(mac);
+        return Ok(vec![mac]);
     }
 
     if let Some(c) = clients.iter().find(|c| c.ip.as_deref() == Some(identifier))
         && let Some(mac) = c.mac.as_deref()
     {
-        return Ok(normalize_mac(mac));
+        return Ok(vec![normalize_mac(mac)]);
     }
 
     let wanted = identifier.to_lowercase();
@@ -351,36 +360,44 @@ pub fn resolve_identifier(identifier: &str, clients: &[LegacyClient]) -> Result<
         })
         .collect();
 
-    match by_name.as_slice() {
-        [] => Err(ApiError::NotFound(format!(
+    if by_name.is_empty() {
+        return Err(ApiError::NotFound(format!(
             "No client matching '{identifier}'"
-        ))),
-        [one] => one
-            .mac
-            .as_deref()
-            .map(normalize_mac)
-            .ok_or_else(|| ApiError::NotFound(format!("Client '{identifier}' has no MAC"))),
-        many => {
-            let list = many
-                .iter()
-                .map(|c| {
-                    format!(
-                        "{} ({})",
-                        c.name.as_deref().or(c.hostname.as_deref()).unwrap_or("-"),
-                        c.mac
-                            .as_deref()
-                            .map(format_mac)
-                            .unwrap_or_else(|| "-".into())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(ApiError::Conflict(format!(
-                "'{identifier}' matches {} clients: {list}",
-                many.len()
-            )))
-        }
+        )));
     }
+
+    let macs: Vec<String> = by_name
+        .iter()
+        .filter_map(|c| c.mac.as_deref().map(normalize_mac))
+        .collect();
+    if macs.is_empty() {
+        return Err(ApiError::NotFound(format!(
+            "Client '{identifier}' has no MAC"
+        )));
+    }
+    Ok(macs)
+}
+
+/// Describe one `find` candidate for a conflict message: its name/hostname,
+/// formatted MAC, and the switch port it was found on (the connected-first
+/// row, i.e. `hits[0]`). Only called once a candidate is already known to
+/// have at least one port match.
+fn candidate_descriptor(mac: &str, clients: &[LegacyClient], row: &PortRow) -> String {
+    let label = clients
+        .iter()
+        .find(|c| c.mac.as_deref().map(normalize_mac).as_deref() == Some(mac))
+        .and_then(|c| c.name.as_deref().or(c.hostname.as_deref()))
+        .unwrap_or("-");
+    let port = row
+        .port
+        .port_idx
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "{label} ({}) on {} port {port}",
+        format_mac(mac),
+        row.device_name
+    )
 }
 
 /// Rows whose `last_connection.mac` matches, connected first so a stale record
@@ -403,6 +420,13 @@ pub fn matching_rows<'a>(
 
 /// Find which switch port a device is attached to, by MAC, IP, or client
 /// name.
+///
+/// Resolution and port lookup interleave rather than picking a single client
+/// up front: a name can match more than one client record while only one of
+/// them is ever attached to a switch port (a device's wired and wireless
+/// interfaces commonly share a name and report separately). Ambiguity is
+/// judged by port occupancy, computed after fetching the port tables, not by
+/// how many client records the name matched.
 pub async fn find(
     client: &UnifiClient,
     identifier: &str,
@@ -410,24 +434,50 @@ pub async fn find(
     fields: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // A MAC identifier resolves locally, so the common scripted path stays a
-    // single round trip.
-    let target = if let Some(mac) = identifier_as_mac(identifier) {
-        mac
+    // single round trip: no client lookup is needed to know which MAC to
+    // look for on the port tables.
+    let (candidates, clients) = if let Some(mac) = identifier_as_mac(identifier) {
+        (vec![mac], Vec::new())
     } else {
         let clients = client.list_clients_legacy().await?;
-        resolve_identifier(identifier, &clients)?
+        let candidates = resolve_candidates(identifier, &clients)?;
+        (candidates, clients)
     };
 
     let devices = client.list_all_device_ports().await?;
     let rows = collect_rows(&devices);
-    let hits = matching_rows(&rows, &target);
 
-    if hits.is_empty() {
-        return Err(Box::new(ApiError::NotFound(format!(
-            "No switch port with {} attached",
-            format_mac(&target)
-        ))));
-    }
+    // Port matches for every candidate, keeping only the ones actually on a
+    // port. A candidate that matched the name/IP but never appears in any
+    // port table (e.g. a client's WiFi interface, when only its wired
+    // interface is on a switch) is not noise worth surfacing here.
+    let mut ported: Vec<(String, Vec<(&PortRow, bool)>)> = candidates
+        .into_iter()
+        .filter_map(|mac| {
+            let hits = matching_rows(&rows, &mac);
+            (!hits.is_empty()).then_some((mac, hits))
+        })
+        .collect();
+
+    let hits = match ported.len() {
+        0 => {
+            return Err(Box::new(ApiError::NotFound(format!(
+                "No switch port with '{identifier}' attached"
+            ))));
+        }
+        1 => ported.pop().expect("checked len == 1 above").1,
+        _ => {
+            let list = ported
+                .iter()
+                .map(|(mac, hits)| candidate_descriptor(mac, &clients, hits[0].0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Box::new(ApiError::Conflict(format!(
+                "'{identifier}' matches {} devices on switch ports: {list}",
+                ported.len()
+            ))));
+        }
+    };
 
     if out.is_json() {
         let items: Vec<serde_json::Value> = hits
@@ -1047,40 +1097,49 @@ mod tests {
     }
 
     #[test]
-    fn resolve_identifier_accepts_any_mac_format() {
+    fn resolve_candidates_accepts_any_mac_format() {
         let c = clients_fixture();
         // A MAC resolves without consulting the client list at all.
         assert_eq!(
-            resolve_identifier("D8-3A-DD-2B-FA-8A", &c).unwrap(),
-            "d83add2bfa8a"
+            resolve_candidates("D8-3A-DD-2B-FA-8A", &c).unwrap(),
+            vec!["d83add2bfa8a"]
         );
     }
 
     #[test]
-    fn resolve_identifier_matches_ip_then_name() {
+    fn resolve_candidates_matches_ip_then_name() {
         let c = clients_fixture();
-        assert_eq!(resolve_identifier("10.0.0.5", &c).unwrap(), "d83add2bfa8a");
-        assert_eq!(resolve_identifier("ALLSKY", &c).unwrap(), "d83add2bfa8a");
+        assert_eq!(
+            resolve_candidates("10.0.0.5", &c).unwrap(),
+            vec!["d83add2bfa8a"]
+        );
+        assert_eq!(
+            resolve_candidates("ALLSKY", &c).unwrap(),
+            vec!["d83add2bfa8a"]
+        );
+    }
+
+    // `resolve_candidates` no longer decides ambiguity by itself — a name
+    // matching multiple client records is not an error here, since `find`
+    // only calls it a conflict once it also knows more than one candidate
+    // sits on a switch port. This replaces the old
+    // `resolve_identifier_ambiguous_name_is_conflict`, which asserted the
+    // opposite (that a name-match count alone was a `Conflict`).
+    #[test]
+    fn resolve_candidates_returns_every_name_match_without_erroring() {
+        let c = clients_fixture();
+        let macs = resolve_candidates("bedroom", &c).expect("both are valid candidates");
+        assert_eq!(
+            macs,
+            vec!["f4e2c665476c".to_string(), "c4f7c161de31".to_string()],
+            "both bedroom-ap and Main-Bedroom must come back as candidates"
+        );
     }
 
     #[test]
-    fn resolve_identifier_ambiguous_name_is_conflict() {
+    fn resolve_candidates_unknown_is_not_found() {
         let c = clients_fixture();
-        let err = resolve_identifier("bedroom", &c).expect_err("ambiguous");
-        match err {
-            crate::api::ApiError::Conflict(msg) => {
-                assert!(msg.contains("matches 2 clients"), "got: {msg}");
-                assert!(msg.contains("bedroom-ap"), "got: {msg}");
-                assert!(msg.contains("Main-Bedroom"), "got: {msg}");
-            }
-            other => panic!("expected Conflict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_identifier_unknown_is_not_found() {
-        let c = clients_fixture();
-        let err = resolve_identifier("nothing-here", &c).expect_err("unknown");
+        let err = resolve_candidates("nothing-here", &c).expect_err("unknown");
         assert!(matches!(err, crate::api::ApiError::NotFound(_)));
     }
 

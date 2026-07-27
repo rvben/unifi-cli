@@ -172,10 +172,14 @@ unifi ports cycle 8c:ed:e1:b0:74:e2 5
 
 `ports find`'s output feeds directly into `show` and `cycle`: `device_mac`
 and `port_idx` are the *switch's* MAC and port index, not the attached
-device's. A name matching more than one client returns `kind: conflict`
-(exit 6) listing the candidates rather than guessing. A device that has
-moved between switch ports appears once per port it has ever used, with a
-`connected` field distinguishing its current port from stale history.
+device's. A name is ambiguous only when it matches more than one device
+that's actually on a switch port — that returns `kind: conflict` (exit 6)
+listing the candidates rather than guessing. Other client records sharing
+the name (a device's WiFi interface reporting under the same name as its
+wired one, say) don't cause a conflict if they're not themselves on a port.
+A device that has moved between switch ports appears once per port it has
+ever used, with a `connected` field distinguishing its current port from
+stale history.
 
 `ports show` exposes PoE telemetry the CLI previously discarded:
 `poe_mode`, `poe_class`, `poe_voltage`, `poe_current`, `poe_good`, and the
