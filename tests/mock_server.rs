@@ -2641,7 +2641,10 @@ mod command_output {
                 "meta": {"rc": "ok"},
                 "data": [{
                     "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
-                    "port_table": [{"port_idx": 5, "port_poe": true, "poe_mode": "auto"}]
+                    "port_table": [{
+                        "port_idx": 5, "port_poe": true, "poe_mode": "auto",
+                        "poe_enable": true
+                    }]
                 }]
             })))
             .expect(1)
@@ -2681,7 +2684,10 @@ mod command_output {
                 "meta": {"rc": "ok"},
                 "data": [{
                     "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
-                    "port_table": [{"port_idx": 5, "port_poe": true, "poe_mode": "auto"}]
+                    "port_table": [{
+                        "port_idx": 5, "port_poe": true, "poe_mode": "auto",
+                        "poe_enable": true
+                    }]
                 }]
             })))
             .expect(1)
@@ -2747,6 +2753,60 @@ mod command_output {
             .downcast_ref::<unifi_cli::api::ApiError>()
             .unwrap_or_else(|| {
                 panic!("cycle must reject a non-PoE port as an ApiError, got {err}")
+            });
+        assert!(
+            matches!(api_err, unifi_cli::api::ApiError::Conflict(_)),
+            "expected Conflict, got {api_err:?}"
+        );
+    }
+
+    // Mirrors `ports_cycle_non_poe_port_is_conflict_and_never_posts` for the
+    // third guard rail: a port that is PoE-capable and not administratively
+    // off, but that the controller reports as not currently delivering power
+    // (poe_enable: false). This is the fixture from the live UCG-Max finding
+    // that motivated the guard — see `check_cyclable` in
+    // `src/commands/ports.rs` for what was actually observed.
+    #[tokio::test]
+    async fn ports_cycle_poe_enable_false_is_conflict_and_never_posts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "74:ac:b9:ec:b4:5e", "name": "USW Lite 8 PoE",
+                    "port_table": [{
+                        "port_idx": 4, "port_poe": true, "poe_mode": "auto",
+                        "poe_enable": false, "poe_power": 0.0, "up": false
+                    }]
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/proxy/network/api/s/default/cmd/devmgr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        // `Ok(true)` deliberately, same reasoning as the non-PoE case above:
+        // proves `check_cyclable` rejects before `confirm` is ever consulted.
+        let err =
+            unifi_cli::commands::ports::cycle(&client, "74:ac:b9:ec:b4:5e", 4, out_table(), |_| {
+                Ok(true)
+            })
+            .await
+            .unwrap_err();
+        let api_err = err
+            .downcast_ref::<unifi_cli::api::ApiError>()
+            .unwrap_or_else(|| {
+                panic!("cycle must reject a poe_enable=false port as an ApiError, got {err}")
             });
         assert!(
             matches!(api_err, unifi_cli::api::ApiError::Conflict(_)),

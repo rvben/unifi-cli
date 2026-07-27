@@ -189,6 +189,7 @@ when:
 
 - the port is not PoE-capable (an SFP+ port, say) → `kind: conflict`, exit 6
 - the port's PoE is administratively off → `kind: conflict`, exit 6
+- the port isn't currently delivering PoE (`poe_enable: false`) → `kind: conflict`, exit 6
 - the device has no such port index → `kind: not_found`, exit 4
 
 The off interval — how long the port stays unpowered — is chosen by the

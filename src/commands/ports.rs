@@ -588,6 +588,22 @@ pub fn check_cyclable(port: &PortEntry, device_mac: &str) -> Result<(), ApiError
             "PoE is administratively disabled on port {idx} of {mac} (poe_mode=off)"
         )));
     }
+    // Observed against a live UCG-Max controller: a port with port_poe: true,
+    // poe_mode: "auto", and poe_enable: false rejected `power-cycle` with
+    // HTTP 400 api.err.InvalidTargetPort. poe_enable was the only attribute
+    // that differed from ports that do have power to cycle, so it is used
+    // here as the guard — that inference has not been confirmed by a
+    // successful cycle against a poe_enable: true port, since doing so would
+    // require firing at a port with a live device attached. Surfacing this
+    // locally as `conflict` avoids the alternative: the controller's 400
+    // otherwise falls through to `api_error` (see error_for_status), which
+    // src/schema.rs advertises as retryable even though retrying cannot help.
+    if !port.poe_enable {
+        return Err(ApiError::Conflict(format!(
+            "Port {idx} on {mac} is not currently delivering PoE (poe_enable=false), \
+             so there is no power to cycle."
+        )));
+    }
     Ok(())
 }
 
@@ -886,20 +902,72 @@ mod tests {
     #[test]
     fn check_cyclable_allows_absent_poe_mode() {
         // poe_mode is not guaranteed across firmware. A missing value must not
-        // block a port that already passed the port_poe check.
-        let d = device_with(serde_json::json!([{"port_idx": 4, "port_poe": true}]));
+        // block a port that already passed the port_poe check. poe_enable is
+        // set explicitly here so this test stays about poe_mode alone, not
+        // about the separate poe_enable guard below.
+        let d = device_with(serde_json::json!([
+            {"port_idx": 4, "port_poe": true, "poe_enable": true}
+        ]));
         let p = find_port(&d, 4).unwrap();
         assert!(check_cyclable(p, "aa:bb:cc:dd:ee:ff").is_ok());
     }
 
     #[test]
-    fn check_cyclable_allows_empty_powered_port() {
-        // The live happy-path target: PoE-capable, auto, nothing attached.
+    fn check_cyclable_allows_a_port_actually_delivering_power() {
+        // The genuinely cyclable case: PoE-capable, auto, and delivering
+        // power right now.
+        let d = device_with(serde_json::json!([
+            {"port_idx": 4, "port_poe": true, "poe_mode": "auto", "poe_enable": true}
+        ]));
+        let p = find_port(&d, 4).unwrap();
+        assert!(check_cyclable(p, "aa:bb:cc:dd:ee:ff").is_ok());
+    }
+
+    #[test]
+    fn check_cyclable_rejects_poe_enable_false() {
+        // This fixture is the live UCG-Max finding that prompted this guard:
+        // PoE-capable, mode "auto", passing both prior checks, but not
+        // currently delivering power (poe_enable defaults to false here,
+        // matching what the controller reported). Firing power-cycle at it
+        // was rejected with HTTP 400 api.err.InvalidTargetPort instead of
+        // succeeding, which is why this must be rejected locally too rather
+        // than treated as the earlier "happy path" this test used to assert.
         let d = device_with(serde_json::json!([
             {"port_idx": 4, "port_poe": true, "poe_mode": "auto", "up": false}
         ]));
         let p = find_port(&d, 4).unwrap();
-        assert!(check_cyclable(p, "74:ac:b9:ec:b4:5e").is_ok());
+        let err = check_cyclable(p, "74:ac:b9:ec:b4:5e").expect_err("poe_enable is false");
+        match err {
+            crate::api::ApiError::Conflict(msg) => {
+                assert!(msg.contains("not currently delivering PoE"), "got: {msg}")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_cyclable_poe_mode_off_message_wins_over_poe_enable_false() {
+        // poe_mode: "off" implies poe_enable: false (confirmed explicitly
+        // here rather than relying on the default), so both guards would
+        // fire. The administratively-disabled message must win: it is the
+        // more specific and more useful of the two, and the poe_mode check
+        // runs first in `check_cyclable`.
+        let d = device_with(serde_json::json!([
+            {"port_idx": 4, "port_poe": true, "poe_mode": "off", "poe_enable": false}
+        ]));
+        let p = find_port(&d, 4).unwrap();
+        let err = check_cyclable(p, "aa:bb:cc:dd:ee:ff").expect_err("PoE is off");
+        match err {
+            crate::api::ApiError::Conflict(msg) => {
+                assert!(msg.contains("poe_mode=off"), "got: {msg}");
+                assert!(
+                    !msg.contains("not currently delivering PoE"),
+                    "the administratively-disabled message must win over the \
+                     poe_enable=false message: {msg}"
+                );
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
     }
 
     // `cycle_summary` is the text a human reads before authorising a power
