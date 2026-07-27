@@ -160,14 +160,14 @@ port instead of rebooting the whole switch:
 ```bash
 # Which port is my Pi on? Matches by name (case-insensitive substring),
 # MAC, or IP.
-unifi ports find allsky
-unifi ports find d8:3a:dd:2b:fa:8a
+unifi ports find garage-pi
+unifi ports find aa:bb:cc:dd:ee:10
 
 # Inspect it — PoE mode, class, voltage, current, and what's attached
-unifi ports show 8c:ed:e1:b0:74:e2 5
+unifi ports show aa:bb:cc:dd:ee:ff 5
 
 # Bounce PoE on that port only — the rest of the switch is untouched
-unifi ports cycle 8c:ed:e1:b0:74:e2 5
+unifi ports cycle aa:bb:cc:dd:ee:ff 5
 ```
 
 `ports find`'s output feeds directly into `show` and `cycle`: `device_mac`
@@ -207,7 +207,7 @@ minimum before power returns.
 List ports for one device, or across every device:
 
 ```bash
-unifi ports list 8c:ed:e1:b0:74:e2
+unifi ports list aa:bb:cc:dd:ee:ff
 unifi ports list --limit 20 --fields port_idx,poe_power
 ```
 

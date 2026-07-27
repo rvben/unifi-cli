@@ -849,7 +849,7 @@ fn port_entry_parses_poe_telemetry_with_string_numbers() {
         "tx_errors": 0,
         "rx_errors": 0,
         "last_connection": {
-            "mac": "f4:e2:c6:65:47:6c",
+            "mac": "aa:bb:cc:dd:ee:20",
             "connected": true,
             "last_seen": 1783622695
         }
@@ -865,7 +865,7 @@ fn port_entry_parses_poe_telemetry_with_string_numbers() {
     assert_eq!(p.enable, Some(true));
     assert_eq!(p.is_uplink, Some(false));
     let lc = p.last_connection.expect("last_connection present");
-    assert_eq!(lc.mac.as_deref(), Some("f4:e2:c6:65:47:6c"));
+    assert_eq!(lc.mac.as_deref(), Some("aa:bb:cc:dd:ee:20"));
     assert_eq!(lc.connected, Some(true));
 }
 

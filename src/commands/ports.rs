@@ -986,7 +986,7 @@ mod tests {
             {"port_idx": 4, "port_poe": true, "poe_mode": "auto", "up": false}
         ]));
         let p = find_port(&d, 4).unwrap();
-        let err = check_cyclable(p, "74:ac:b9:ec:b4:5e").expect_err("poe_enable is false");
+        let err = check_cyclable(p, "aa:bb:cc:dd:ee:fe").expect_err("poe_enable is false");
         match err {
             crate::api::ApiError::Conflict(msg) => {
                 assert!(msg.contains("not currently delivering PoE"), "got: {msg}")
@@ -1029,12 +1029,12 @@ mod tests {
     fn cycle_summary_shows_the_attached_mac_when_connected() {
         let d = device_with(serde_json::json!([{
             "port_idx": 4, "port_poe": true,
-            "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}
+            "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}
         }]));
         let p = find_port(&d, 4).unwrap();
         let summary = cycle_summary(&d, p);
         assert!(
-            summary.contains("d8:3a:dd:2b:fa:8a"),
+            summary.contains("aa:bb:cc:dd:ee:10"),
             "a connected last_connection must show the formatted attached MAC: {summary}"
         );
     }
@@ -1045,7 +1045,7 @@ mod tests {
         // summary must not read as if a live device would lose power.
         let d = device_with(serde_json::json!([{
             "port_idx": 4, "port_poe": true,
-            "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}
+            "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": false}
         }]));
         let p = find_port(&d, 4).unwrap();
         let summary = cycle_summary(&d, p);
@@ -1054,7 +1054,7 @@ mod tests {
             "a stale (disconnected) last_connection must read as unattached: {summary}"
         );
         assert!(
-            !summary.contains("d8:3a:dd:2b:fa:8a"),
+            !summary.contains("aa:bb:cc:dd:ee:10"),
             "a stale MAC must not appear as if it were live: {summary}"
         );
     }
@@ -1089,9 +1089,9 @@ mod tests {
     // to make the fixture actually deserialize.
     fn clients_fixture() -> Vec<crate::api::LegacyClient> {
         serde_json::from_value(serde_json::json!([
-            {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "allsky",   "ip": "10.0.0.5"},
-            {"_id": "2", "mac": "f4:e2:c6:65:47:6c", "name": "bedroom-ap",   "ip": "10.0.0.6"},
-            {"_id": "3", "mac": "c4:f7:c1:61:de:31", "name": "Main-Bedroom", "ip": "10.0.0.7"}
+            {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi",   "ip": "10.0.0.5"},
+            {"_id": "2", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap",   "ip": "10.0.0.6"},
+            {"_id": "3", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "10.0.0.7"}
         ]))
         .expect("fixture must parse")
     }
@@ -1101,8 +1101,8 @@ mod tests {
         let c = clients_fixture();
         // A MAC resolves without consulting the client list at all.
         assert_eq!(
-            resolve_candidates("D8-3A-DD-2B-FA-8A", &c).unwrap(),
-            vec!["d83add2bfa8a"]
+            resolve_candidates("AA-BB-CC-DD-EE-10", &c).unwrap(),
+            vec!["aabbccddee10"]
         );
     }
 
@@ -1111,11 +1111,11 @@ mod tests {
         let c = clients_fixture();
         assert_eq!(
             resolve_candidates("10.0.0.5", &c).unwrap(),
-            vec!["d83add2bfa8a"]
+            vec!["aabbccddee10"]
         );
         assert_eq!(
-            resolve_candidates("ALLSKY", &c).unwrap(),
-            vec!["d83add2bfa8a"]
+            resolve_candidates("GARAGE-PI", &c).unwrap(),
+            vec!["aabbccddee10"]
         );
     }
 
@@ -1128,11 +1128,11 @@ mod tests {
     #[test]
     fn resolve_candidates_returns_every_name_match_without_erroring() {
         let c = clients_fixture();
-        let macs = resolve_candidates("bedroom", &c).expect("both are valid candidates");
+        let macs = resolve_candidates("office", &c).expect("both are valid candidates");
         assert_eq!(
             macs,
-            vec!["f4e2c665476c".to_string(), "c4f7c161de31".to_string()],
-            "both bedroom-ap and Main-Bedroom must come back as candidates"
+            vec!["aabbccddee20".to_string(), "aabbccddee21".to_string()],
+            "both office-ap and Main-Office must come back as candidates"
         );
     }
 
@@ -1149,14 +1149,14 @@ mod tests {
             "mac": "aa:bb:cc:dd:ee:ff",
             "name": "SwitchA",
             "port_table": [
-                {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}},
-                {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}},
+                {"port_idx": 2, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": false}},
+                {"port_idx": 7, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}},
                 {"port_idx": 9, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
             ]
         }]))
         .expect("fixture must parse");
         let rows = collect_rows(&devices);
-        let hits = matching_rows(&rows, "d83add2bfa8a");
+        let hits = matching_rows(&rows, "aabbccddee10");
         assert_eq!(hits.len(), 2, "device appears on two ports");
         assert_eq!(
             hits[0].0.port.port_idx,
@@ -1176,11 +1176,11 @@ mod tests {
             "mac": "aa:bb:cc:dd:ee:ff", "name": "SwitchA",
             "port_table": [{
                 "port_idx": 7,
-                "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}
+                "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}
             }]
         }))];
         let rows = collect_rows(&devices);
-        let hits = matching_rows(&rows, "d83add2bfa8a");
+        let hits = matching_rows(&rows, "aabbccddee10");
         let (row, connected) = hits[0];
         let mut value = row_json(row);
         value["connected"] = connected.into();

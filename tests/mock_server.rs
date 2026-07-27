@@ -2420,8 +2420,8 @@ mod command_output {
                 "data": [{
                     "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
                     "port_table": [
-                        {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}},
-                        {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}},
+                        {"port_idx": 2, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": false}},
+                        {"port_idx": 7, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}},
                         {"port_idx": 9, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
                     ]
                 }]
@@ -2445,7 +2445,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "find",
-                "d8:3a:dd:2b:fa:8a",
+                "aa:bb:cc:dd:ee:10",
                 "-o",
                 "json",
             ])
@@ -2491,11 +2491,11 @@ mod command_output {
     }
 
     // Ambiguity is judged by port occupancy, not by how many client records a
-    // name matches: `bedroom` genuinely matches two devices here, and both
+    // name matches: `office` genuinely matches two devices here, and both
     // are actually attached to a switch port (unlike the "one interface
     // never shows up" fixtures below), so this must still exit 6 (conflict)
     // and name both candidates. Modeled on a live-controller case — two
-    // physically distinct bedroom devices on the same switch — reported
+    // physically distinct office devices on the same switch — reported
     // against the pre-fix behavior in the original bug report.
     #[tokio::test]
     async fn ports_find_ambiguous_name_exits_with_conflict() {
@@ -2505,8 +2505,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "f4:e2:c6:65:47:6c", "name": "bedroom-ap", "ip": "10.0.0.6"},
-                    {"_id": "2", "mac": "c4:f7:c1:61:de:31", "name": "Main-Bedroom", "ip": "10.0.0.7"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap", "ip": "10.0.0.6"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "10.0.0.7"}
                 ]
             })))
             .mount(&server)
@@ -2518,8 +2518,8 @@ mod command_output {
                 "data": [{
                     "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
                     "port_table": [
-                        {"port_idx": 3, "last_connection": {"mac": "f4:e2:c6:65:47:6c", "connected": true}},
-                        {"port_idx": 4, "last_connection": {"mac": "c4:f7:c1:61:de:31", "connected": true}}
+                        {"port_idx": 3, "last_connection": {"mac": "aa:bb:cc:dd:ee:20", "connected": true}},
+                        {"port_idx": 4, "last_connection": {"mac": "aa:bb:cc:dd:ee:21", "connected": true}}
                     ]
                 }]
             })))
@@ -2534,7 +2534,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "find",
-                "bedroom",
+                "office",
             ])
             .output()
             .expect("failed to run the unifi binary");
@@ -2554,11 +2554,11 @@ mod command_output {
         let message = envelope["error"]["message"]
             .as_str()
             .expect("error envelope must carry a message");
-        assert!(message.contains("bedroom-ap"), "got: {message}");
-        assert!(message.contains("Main-Bedroom"), "got: {message}");
+        assert!(message.contains("office-ap"), "got: {message}");
+        assert!(message.contains("Main-Office"), "got: {message}");
     }
 
-    // The live-testing case that prompted this whole restructure: `allsky`
+    // A device whose wired and wireless interfaces share a name: `garage-pi`
     // matches two client records (a Raspberry Pi's wired and wireless
     // interfaces, MACs one bit apart in the last octet), but only the wired
     // interface ever shows up in a port table. That must resolve cleanly to
@@ -2571,8 +2571,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "allsky", "ip": "10.0.0.5"},
-                    {"_id": "2", "mac": "d8:3a:dd:2b:fa:8b", "name": "allsky", "ip": "10.0.0.9"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi", "ip": "10.0.0.5"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "garage-pi", "ip": "10.0.0.9"}
                 ]
             })))
             .mount(&server)
@@ -2584,7 +2584,7 @@ mod command_output {
                 "data": [{
                     "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
                     "port_table": [
-                        {"port_idx": 5, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}}
+                        {"port_idx": 5, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}}
                     ]
                 }]
             })))
@@ -2599,7 +2599,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "find",
-                "allsky",
+                "garage-pi",
                 "-o",
                 "json",
             ])
@@ -2636,8 +2636,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "d8:3a:dd:2b:fa:8a", "name": "eink", "ip": "10.0.0.15"},
-                    {"_id": "2", "mac": "d8:3a:dd:2b:fa:8b", "name": "eink", "ip": "10.0.0.16"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "lobby-display", "ip": "10.0.0.15"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "lobby-display", "ip": "10.0.0.16"}
                 ]
             })))
             .mount(&server)
@@ -2664,7 +2664,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "find",
-                "eink",
+                "lobby-display",
             ])
             .output()
             .expect("failed to run the unifi binary");
@@ -2684,7 +2684,7 @@ mod command_output {
         let message = envelope["error"]["message"]
             .as_str()
             .expect("error envelope must carry a message");
-        assert!(message.contains("eink"), "got: {message}");
+        assert!(message.contains("lobby-display"), "got: {message}");
     }
 
     // `find`'s JSON output has always carried `connected`; only the text
@@ -2705,11 +2705,11 @@ mod command_output {
                 "data": [
                     {"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchConnected",
                      "port_table": [
-                        {"port_idx": 7, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": true}}
+                        {"port_idx": 7, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}}
                      ]},
                     {"mac": "aa:bb:cc:dd:ee:02", "name": "SwitchStale",
                      "port_table": [
-                        {"port_idx": 2, "last_connection": {"mac": "d8:3a:dd:2b:fa:8a", "connected": false}}
+                        {"port_idx": 2, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": false}}
                      ]}
                 ]
             })))
@@ -2724,7 +2724,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "find",
-                "d8:3a:dd:2b:fa:8a",
+                "aa:bb:cc:dd:ee:10",
                 "-o",
                 "text",
             ])
@@ -2921,7 +2921,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "74:ac:b9:ec:b4:5e", "name": "USW Lite 8 PoE",
+                    "mac": "aa:bb:cc:dd:ee:fe", "name": "USW Lite 8 PoE",
                     "port_table": [{
                         "port_idx": 4, "port_poe": true, "poe_mode": "auto",
                         "poe_enable": false, "poe_power": 0.0, "up": false
@@ -2945,7 +2945,7 @@ mod command_output {
         // `Ok(true)` deliberately, same reasoning as the non-PoE case above:
         // proves `check_cyclable` rejects before `confirm` is ever consulted.
         let err =
-            unifi_cli::commands::ports::cycle(&client, "74:ac:b9:ec:b4:5e", 4, out_table(), |_| {
+            unifi_cli::commands::ports::cycle(&client, "aa:bb:cc:dd:ee:fe", 4, out_table(), |_| {
                 Ok(true)
             })
             .await
