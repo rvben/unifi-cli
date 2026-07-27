@@ -124,6 +124,29 @@ fn speed_cell(p: &PortEntry) -> String {
     }
 }
 
+/// Right-pad a table cell to `width` visible columns, deriving the padding
+/// from `plain`'s length rather than `rendered`'s.
+///
+/// This exists because `format!("{:<width$}", rendered)` counts *bytes*: a
+/// coloured cell like `"up".green()` renders as `"\x1b[32mup\x1b[39m"`, 12
+/// bytes for 2 visible characters, which `{:<6}` sees as already over width
+/// and pads with nothing. Every coloured cell in this module's tables must
+/// go through this instead of a `{:<N}` specifier.
+///
+/// `rendered` is `plain` itself on the uncoloured path (see call sites), so
+/// that path pads identically to the `{:<width$}` it replaces — this must
+/// stay true, since existing tests assert on uncoloured output byte-for-byte.
+fn pad_visible(rendered: &str, plain: &str, width: usize) -> String {
+    let pad = width.saturating_sub(plain.len());
+    format!("{rendered}{}", " ".repeat(pad))
+}
+
+/// "port" for exactly one row, "ports" otherwise — the row-count trailer's
+/// singular/plural noun.
+fn port_noun(count: usize) -> &'static str {
+    if count == 1 { "port" } else { "ports" }
+}
+
 /// Device column width, in characters. Callers that paginate must compute
 /// this from the full result set, not just the page handed to `render_text`
 /// — otherwise two `--offset` pages of the same query can render the column
@@ -172,6 +195,10 @@ fn render_rows(
     out: &OutputConfig,
 ) {
     let color = use_color();
+    // Must match the `{:<N}` widths the header below uses for these two
+    // columns, so `pad_visible` reproduces them exactly.
+    const LINK_W: usize = 6;
+    const CONNECTED_W: usize = 9;
 
     let mut header = if show_device_col {
         format!(
@@ -205,7 +232,7 @@ fn render_rows(
             .unwrap_or_else(|| "-".into());
         let name = p.name.as_deref().unwrap_or("-");
         let link = if p.up { "up" } else { "down" };
-        let link_display = if color {
+        let link_rendered = if color {
             if p.up {
                 format!("{}", "up".green())
             } else {
@@ -214,6 +241,7 @@ fn render_rows(
         } else {
             link.to_string()
         };
+        let link_cell = pad_visible(&link_rendered, link, LINK_W);
         let speed = speed_cell(p);
         let poe = poe_cell(p);
         let tx = p.tx_bytes.map(format_bytes).unwrap_or_else(|| "-".into());
@@ -221,33 +249,33 @@ fn render_rows(
 
         let mut line = if show_device_col {
             format!(
-                " {:<dev_w$} {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                r.device_name, port, name, link_display, speed, poe, tx, rx
+                " {:<dev_w$} {:<5} {:<16} {link_cell} {:<10} {:<8} {:>10} {:>10}",
+                r.device_name, port, name, speed, poe, tx, rx
             )
         } else {
             format!(
-                " {:<5} {:<16} {:<6} {:<10} {:<8} {:>10} {:>10}",
-                port, name, link_display, speed, poe, tx, rx
+                " {:<5} {:<16} {link_cell} {:<10} {:<8} {:>10} {:>10}",
+                port, name, speed, poe, tx, rx
             )
         };
         if let Some(flags) = connected {
             let is_connected = flags[i];
-            let cell = if color {
+            let plain = if is_connected { "yes" } else { "-" };
+            let rendered = if color {
                 if is_connected {
                     format!("{}", "yes".green())
                 } else {
                     format!("{}", "-".dimmed())
                 }
-            } else if is_connected {
-                "yes".to_string()
             } else {
-                "-".to_string()
+                plain.to_string()
             };
-            line.push_str(&format!(" {cell:<9}"));
+            let cell = pad_visible(&rendered, plain, CONNECTED_W);
+            line.push_str(&format!(" {cell}"));
         }
         println!("{line}");
     }
-    out.print_message(&format!("\n{} ports", rows.len()));
+    out.print_message(&format!("\n{} {}", rows.len(), port_noun(rows.len())));
 }
 
 pub async fn list(
@@ -892,6 +920,70 @@ mod tests {
             value, before,
             "a None projection must leave the value untouched"
         );
+    }
+
+    // `pad_visible` is what makes coloured Link/Connected cells line up with
+    // the header at a TTY. `use_color()` reads `stdout().is_terminal()`
+    // directly with no override, so a unit test cannot force colour on for
+    // `render_rows` itself without adding a flag/env override the task this
+    // was written for explicitly ruled out ("no new flags"). Testing the
+    // padding helper directly, with a hand-built ANSI-escaped string standing
+    // in for what `owo_colors` would emit, exercises the actual defect
+    // (padding computed from byte length instead of visible width) without
+    // needing a real TTY.
+    #[test]
+    fn pad_visible_pads_by_plain_width_not_escaped_byte_length() {
+        // The real thing `render_rows` hands `pad_visible` on the coloured
+        // path: `"up".green()` rendered to a `String`, several bytes of ANSI
+        // escapes wrapped around 2 visible characters. A `{:<6}` specifier
+        // sees this as already over width 6 (that was the bug) and pads with
+        // nothing at all.
+        let escaped = format!("{}", "up".green());
+        assert!(
+            escaped.len() > "up".len(),
+            "fixture must actually carry escape bytes, or this test proves nothing: {escaped:?}"
+        );
+
+        let padded = pad_visible(&escaped, "up", 6);
+
+        assert!(
+            padded.starts_with(&escaped),
+            "the coloured text itself must be emitted untouched: {padded:?}"
+        );
+        let visible_padding = &padded[escaped.len()..];
+        assert_eq!(
+            visible_padding, "    ",
+            "padding must be derived from \"up\".len() (2), not the escaped \
+             string's byte length: {padded:?}"
+        );
+    }
+
+    #[test]
+    fn pad_visible_matches_the_uncoloured_output_it_replaces() {
+        // On the uncoloured path every call site passes `rendered == plain`,
+        // so this must reproduce exactly what the old `{:<width$}` specifier
+        // produced — the uncoloured path must not change at all.
+        assert_eq!(pad_visible("up", "up", 6), format!("{:<6}", "up"));
+        assert_eq!(pad_visible("down", "down", 6), format!("{:<6}", "down"));
+        assert_eq!(pad_visible("yes", "yes", 9), format!("{:<9}", "yes"));
+        assert_eq!(pad_visible("-", "-", 9), format!("{:<9}", "-"));
+    }
+
+    #[test]
+    fn pad_visible_pads_nothing_when_plain_already_fills_the_width() {
+        assert_eq!(pad_visible("down", "down", 4), "down");
+    }
+
+    #[test]
+    fn port_noun_is_singular_for_exactly_one_row() {
+        assert_eq!(port_noun(1), "port");
+    }
+
+    #[test]
+    fn port_noun_is_plural_for_zero_or_many_rows() {
+        assert_eq!(port_noun(0), "ports");
+        assert_eq!(port_noun(2), "ports");
+        assert_eq!(port_noun(100), "ports");
     }
 
     fn device_with(ports: serde_json::Value) -> DeviceWithPorts {

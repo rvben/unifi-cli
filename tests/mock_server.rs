@@ -2143,6 +2143,86 @@ mod command_output {
         );
     }
 
+    // The row-count trailer must read "1 port" for a single row and "N ports"
+    // otherwise — it used to say "1 ports" unconditionally. Spawns the real
+    // binary (rather than calling `render_text` in-process) so this observes
+    // literal stderr text, the same surface an operator actually reads.
+    #[tokio::test]
+    async fn ports_list_trailer_is_singular_for_exactly_one_row() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchA",
+                          "port_table": [{"port_idx": 1}]}]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "list",
+                "--output",
+                "text",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.trim_end().ends_with("1 port"),
+            "a single row must be reported as \"1 port\", not \"1 ports\": {stderr:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ports_list_trailer_is_plural_for_multiple_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{"mac": "aa:bb:cc:dd:ee:01", "name": "SwitchA",
+                          "port_table": [{"port_idx": 1}, {"port_idx": 2}]}]
+            })))
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "list",
+                "--output",
+                "text",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "ports list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.trim_end().ends_with("2 ports"),
+            "two rows must be reported as \"2 ports\": {stderr:?}"
+        );
+    }
+
     // --- Ports list (top-level) ---
     //
     // Drives the real `unifi` binary against a wiremock server so the JSON
