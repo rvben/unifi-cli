@@ -339,6 +339,18 @@ impl UnifiClient {
         Ok(())
     }
 
+    /// Power-cycle a single PoE port. `mac` is the **switch's** MAC, not the
+    /// attached device's.
+    pub async fn power_cycle_port(&self, mac: &str, port_idx: u32) -> Result<(), ApiError> {
+        let formatted = format_mac(&normalize_mac(mac));
+        self.post_legacy_cmd(
+            "devmgr",
+            serde_json::json!({"cmd": "power-cycle", "mac": formatted, "port_idx": port_idx}),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn upgrade_device(&self, mac: &str) -> Result<(), ApiError> {
         let formatted = format_mac(&normalize_mac(mac));
         self.post_legacy_cmd(
@@ -405,6 +417,13 @@ impl UnifiClient {
                     .is_some_and(|m| normalize_mac(m) == normalized)
             })
             .ok_or_else(|| ApiError::NotFound(format!("Device with MAC {mac}")))
+    }
+
+    /// Every device that reports a port table, in one request. `/stat/device`
+    /// already returns all devices with their port tables, so the unfiltered
+    /// listing costs no more than the filtered one.
+    pub async fn list_all_device_ports(&self) -> Result<Vec<DeviceWithPorts>, ApiError> {
+        self.get_legacy("/stat/device").await
     }
 
     // All clients with bandwidth data (legacy endpoint for richer stats)

@@ -67,6 +67,42 @@ pub const NETWORKS_LIST: &[Field] = &[
     ("default", "boolean"),
 ];
 
+pub const PORTS_LIST: &[Field] = &[
+    ("device_mac", "string"),
+    ("device_name", "string"),
+    ("port_idx", "integer"),
+    ("name", "string"),
+    ("media", "string"),
+    ("up", "boolean"),
+    ("speed", "integer"),
+    ("full_duplex", "boolean"),
+    ("poe_enable", "boolean"),
+    ("poe_power", "number"),
+    ("port_poe", "boolean"),
+    ("tx_bytes", "integer"),
+    ("rx_bytes", "integer"),
+];
+
+/// `ports find` rows: the `PORTS_LIST` set plus `connected`, which
+/// distinguishes a live attachment from a stale record. Kept separate from
+/// `PORTS_LIST` so the `devices ports` alias gains exactly two new keys.
+pub const PORTS_FIND: &[Field] = &[
+    ("device_mac", "string"),
+    ("device_name", "string"),
+    ("port_idx", "integer"),
+    ("name", "string"),
+    ("media", "string"),
+    ("up", "boolean"),
+    ("speed", "integer"),
+    ("full_duplex", "boolean"),
+    ("poe_enable", "boolean"),
+    ("poe_power", "number"),
+    ("port_poe", "boolean"),
+    ("tx_bytes", "integer"),
+    ("rx_bytes", "integer"),
+    ("connected", "boolean"),
+];
+
 /// A `--fields` request naming one or more unknown fields.
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidFields {
@@ -197,6 +233,8 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            PORTS_LIST,
+            PORTS_FIND,
         ] {
             let mut seen = names(table);
             let before = seen.len();
@@ -214,10 +252,12 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            PORTS_LIST,
+            PORTS_FIND,
         ] {
             for (name, ty) in table {
                 assert!(
-                    ["string", "integer", "boolean"].contains(ty),
+                    ["string", "integer", "boolean", "number"].contains(ty),
                     "field {name} has unexpected type {ty}"
                 );
             }

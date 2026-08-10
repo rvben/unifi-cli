@@ -302,8 +302,41 @@ pub struct PortEntry {
     pub poe_power: Option<f64>,
     #[serde(default)]
     pub port_poe: bool,
+    /// "auto", "off", "passthrough", "passive24v". Absent on some firmware.
+    pub poe_mode: Option<String>,
+    pub poe_class: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_f64")]
+    pub poe_voltage: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_string_or_number_f64")]
+    pub poe_current: Option<f64>,
+    pub poe_good: Option<bool>,
+    /// Auto-negotiation state. `Option`, not a defaulted bool, like `enable`
+    /// and `is_uplink` below: a firmware that omits this key must not be
+    /// reported as "auto-negotiation off". Matches `poe_good` above; contrast
+    /// `up`/`poe_enable`, where an absent key genuinely does mean false.
+    pub autoneg: Option<bool>,
+    /// Administrative enable state. Same tri-state rationale as `autoneg`: an
+    /// absent key must not be reported as "port administratively disabled".
+    pub enable: Option<bool>,
+    /// Whether this port is the switch's uplink. Same tri-state rationale as
+    /// `autoneg`: an absent key must not be reported as "not an uplink".
+    pub is_uplink: Option<bool>,
+    pub stp_state: Option<String>,
+    pub tx_errors: Option<u64>,
+    pub rx_errors: Option<u64>,
+    /// Absent entirely on a port nothing has linked to within retention.
+    pub last_connection: Option<LastConnection>,
     pub tx_bytes: Option<u64>,
     pub rx_bytes: Option<u64>,
+}
+
+/// The device most recently seen on a port. `connected` distinguishes a live
+/// attachment from a stale record of a device that has since moved.
+#[derive(Debug, Deserialize)]
+pub struct LastConnection {
+    pub mac: Option<String>,
+    pub connected: Option<bool>,
+    pub last_seen: Option<u64>,
 }
 
 fn deserialize_string_or_number_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
@@ -485,9 +518,16 @@ pub type RtspsStreams = std::collections::HashMap<String, Option<String>>;
 #[derive(Debug)]
 pub enum ApiError {
     Http(reqwest::Error),
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+    },
     NotFound(String),
     Auth(String),
+    /// A request that cannot succeed against the resource's current state,
+    /// rejected locally before any HTTP call. Published by `unifi schema`
+    /// as kind `conflict`, exit code 6.
+    Conflict(String),
     Other(String),
 }
 
@@ -570,6 +610,7 @@ impl fmt::Display for ApiError {
                     "\n  Hint: Check your API key. Generate one in UniFi Settings > API"
                 )
             }
+            ApiError::Conflict(msg) => write!(f, "{msg}"),
             ApiError::Other(msg) => write!(f, "{msg}"),
         }
     }

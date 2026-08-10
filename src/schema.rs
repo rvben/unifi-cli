@@ -157,20 +157,9 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     m.insert(
         "devices ports",
         f(
-            &[
-                ("port_idx", "integer"),
-                ("name", "string"),
-                ("media", "string"),
-                ("up", "boolean"),
-                ("speed", "integer"),
-                ("full_duplex", "boolean"),
-                ("poe_enable", "boolean"),
-                ("poe_power", "number"),
-                ("tx_bytes", "integer"),
-                ("rx_bytes", "integer"),
-            ],
+            fields::PORTS_LIST,
             false,
-            None,
+            Some("Alias for `ports list`; returns a bare JSON array for backward compatibility."),
         ),
     );
     m.insert(
@@ -180,6 +169,57 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("status", "string"),
                 ("action", "string"),
                 ("mac", "string"),
+            ],
+            true,
+            None,
+        ),
+    );
+
+    // ports
+    m.insert("ports list", f(fields::PORTS_LIST, false, None));
+    m.insert(
+        "ports show",
+        f(
+            &[
+                ("device_mac", "string"),
+                ("device_name", "string"),
+                ("port_idx", "integer"),
+                ("name", "string"),
+                ("media", "string"),
+                ("up", "boolean"),
+                ("speed", "integer"),
+                ("full_duplex", "boolean"),
+                ("autoneg", "boolean"),
+                ("enable", "boolean"),
+                ("is_uplink", "boolean"),
+                ("stp_state", "string"),
+                ("port_poe", "boolean"),
+                ("poe_enable", "boolean"),
+                ("poe_mode", "string"),
+                ("poe_class", "string"),
+                ("poe_power", "number"),
+                ("poe_voltage", "number"),
+                ("poe_current", "number"),
+                ("poe_good", "boolean"),
+                ("attached_mac", "string"),
+                ("tx_bytes", "integer"),
+                ("rx_bytes", "integer"),
+                ("tx_errors", "integer"),
+                ("rx_errors", "integer"),
+            ],
+            false,
+            None,
+        ),
+    );
+    m.insert("ports find", f(fields::PORTS_FIND, false, None));
+    m.insert(
+        "ports cycle",
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("mac", "string"),
+                ("port_idx", "integer"),
             ],
             true,
             None,
@@ -507,7 +547,7 @@ pub fn print_schema(cmd: clap::Command) {
                 "kind": "confirmation_required",
                 "exit_code": 2,
                 "retryable": false,
-                "description": "Destructive command requires --yes flag when stdin is not a terminal",
+                "description": "Confirmation for a destructive command was not obtained: either --yes was omitted while stdin is not a terminal, or the operator declined at an interactive confirmation prompt",
             },
             {
                 "kind": "auth_error",

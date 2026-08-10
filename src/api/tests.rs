@@ -146,6 +146,17 @@ fn api_error_display_auth() {
 }
 
 #[test]
+fn api_error_display_conflict_has_no_prefix() {
+    // Unlike Auth/NotFound (sentence fragments that get a prefix added),
+    // Conflict messages are written whole, to be read by an operator as-is.
+    let err = ApiError::Conflict("Port 5 on aa:bb:cc:dd:ee:ff does not support PoE.".into());
+    assert_eq!(
+        err.to_string(),
+        "Port 5 on aa:bb:cc:dd:ee:ff does not support PoE."
+    );
+}
+
+#[test]
 fn api_error_display_other() {
     let err = ApiError::Other("something went wrong".into());
     assert_eq!(err.to_string(), "something went wrong");
@@ -811,4 +822,71 @@ fn legacy_client_clean_name_no_mac() {
     let json = r#"{"_id": "x", "name": "device ee:ff"}"#;
     let client: LegacyClient = serde_json::from_str(json).unwrap();
     assert_eq!(client.clean_name(), "device ee:ff");
+}
+
+// --- PortEntry PoE telemetry ---
+
+#[test]
+fn port_entry_parses_poe_telemetry_with_string_numbers() {
+    // The controller returns poe_voltage/poe_current/poe_power as JSON
+    // strings on some firmware, the same quirk PR #3 fixed for poe_power.
+    let json = serde_json::json!({
+        "port_idx": 3,
+        "name": "Port 3",
+        "up": true,
+        "port_poe": true,
+        "poe_enable": true,
+        "poe_mode": "auto",
+        "poe_class": "Class 3",
+        "poe_power": "5.00",
+        "poe_voltage": "53.75",
+        "poe_current": "93.00",
+        "poe_good": true,
+        "autoneg": true,
+        "enable": true,
+        "is_uplink": false,
+        "stp_state": "forwarding",
+        "tx_errors": 0,
+        "rx_errors": 0,
+        "last_connection": {
+            "mac": "aa:bb:cc:dd:ee:20",
+            "connected": true,
+            "last_seen": 1783622695
+        }
+    });
+    let p: PortEntry = serde_json::from_value(json).expect("PortEntry must parse");
+    assert_eq!(p.poe_mode.as_deref(), Some("auto"));
+    assert_eq!(p.poe_class.as_deref(), Some("Class 3"));
+    assert_eq!(p.poe_voltage, Some(53.75));
+    assert_eq!(p.poe_current, Some(93.00));
+    assert_eq!(p.poe_good, Some(true));
+    assert_eq!(p.stp_state.as_deref(), Some("forwarding"));
+    assert_eq!(p.autoneg, Some(true));
+    assert_eq!(p.enable, Some(true));
+    assert_eq!(p.is_uplink, Some(false));
+    let lc = p.last_connection.expect("last_connection present");
+    assert_eq!(lc.mac.as_deref(), Some("aa:bb:cc:dd:ee:20"));
+    assert_eq!(lc.connected, Some(true));
+}
+
+#[test]
+fn port_entry_tolerates_absent_last_connection() {
+    // A port nothing has ever linked to omits last_connection entirely.
+    // This is exactly how the empty test-target port was identified.
+    let json = serde_json::json!({
+        "port_idx": 4,
+        "name": "Port 4",
+        "up": false,
+        "port_poe": true,
+        "poe_enable": false,
+        "poe_mode": "auto"
+    });
+    let p: PortEntry = serde_json::from_value(json).expect("PortEntry must parse");
+    assert!(p.last_connection.is_none());
+    assert_eq!(p.poe_voltage, None);
+    assert!(!p.up);
+    // Absent tri-state keys must read as unknown, never as a confident "no".
+    assert_eq!(p.enable, None, "absent enable must not read as disabled");
+    assert_eq!(p.autoneg, None);
+    assert_eq!(p.is_uplink, None);
 }

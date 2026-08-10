@@ -75,6 +75,10 @@ enum Command {
         command: Option<NetworksCommand>,
     },
 
+    /// Inspect and manage switch ports
+    #[command(subcommand)]
+    Ports(PortsCommand),
+
     /// View controller events
     #[command(subcommand)]
     Events(EventsCommand),
@@ -230,6 +234,52 @@ enum DevicesCommand {
 }
 
 #[derive(Subcommand)]
+enum PortsCommand {
+    /// List ports for one device, or across all devices
+    List {
+        /// MAC address of a switch or router. Omit to list every device's ports.
+        mac: Option<String>,
+        /// Maximum number of results to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
+        #[arg(long)]
+        fields: Option<String>,
+        /// Live-updating TUI view of port status (requires MAC)
+        #[arg(long, requires = "mac")]
+        live: bool,
+        /// Refresh interval in seconds (only with --live)
+        #[arg(short = 'i', long, default_value = "2")]
+        interval: u64,
+    },
+    /// Show details for a single port
+    Show {
+        /// MAC address of the switch or router
+        mac: String,
+        /// Port index (see `unifi ports list <MAC>`)
+        port: u32,
+    },
+    /// Find which switch port a device is attached to
+    Find {
+        /// MAC address, IP address, or client name
+        identifier: String,
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
+        #[arg(long)]
+        fields: Option<String>,
+    },
+    /// Power-cycle a single PoE port
+    Cycle {
+        /// MAC address of the switch (not the attached device)
+        mac: String,
+        /// Port index (see `unifi ports list <MAC>`)
+        port: u32,
+    },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommand {
     /// Create or update the configuration file interactively
     Init,
@@ -335,6 +385,33 @@ fn require_confirmation(yes: bool, action: &str) {
     }
 }
 
+/// Prompt for confirmation of a destructive action. Returns true only on an
+/// explicit yes; an empty line, EOF, or anything else declines.
+///
+/// Separate from `prompt_line`, which returns `InitError` and belongs to the
+/// config-init flow. Reader/writer are injected so this is unit-testable
+/// without a TTY.
+fn confirm_destructive(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    summary: &str,
+) -> std::io::Result<bool> {
+    writeln!(writer, "{summary}")?;
+    write!(writer, "Power-cycle this port? (y/N): ")?;
+    writer.flush()?;
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    // The user's Enter is echoed by the terminal, not written to this stream,
+    // so without this the prompt line above stays unterminated on our writer.
+    // With stdin a TTY and stderr redirected, a decline's error envelope
+    // (printed with `eprintln!` right after) would then land on the same
+    // physical line as the prompt instead of starting fresh — breaking the
+    // "envelope is the last line of stderr" contract (tests/cli_contract.rs,
+    // `error_envelope_last_line_is_json` in tests/spec_compliance.rs).
+    writeln!(writer)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
 fn print_schema() {
     schema::print_schema(Cli::command());
 }
@@ -346,6 +423,8 @@ fn validate_requested_fields(command: &Command) -> Result<Option<Vec<String>>, I
         Command::Clients(ClientsCommand::List { fields, .. }) => (fields, fields::CLIENTS_LIST),
         Command::Devices(DevicesCommand::List { fields, .. }) => (fields, fields::DEVICES_LIST),
         Command::Events(EventsCommand::List { fields, .. }) => (fields, fields::EVENTS_LIST),
+        Command::Ports(PortsCommand::List { fields, .. }) => (fields, fields::PORTS_LIST),
+        Command::Ports(PortsCommand::Find { fields, .. }) => (fields, fields::PORTS_FIND),
         _ => return Ok(None),
     };
 
@@ -1268,6 +1347,66 @@ async fn main() {
             }
         },
         Command::Networks { .. } => commands::networks::list(&mut client, out).await,
+        Command::Ports(cmd) => match cmd {
+            PortsCommand::List {
+                mac,
+                limit,
+                offset,
+                fields: _,
+                live,
+                interval,
+            } => {
+                if live {
+                    let mac = mac.expect("clap requires --live to be paired with a MAC");
+                    unifi_cli::tui::run_ports(&client, &mac, interval).await
+                } else {
+                    let pagination = commands::ports::Pagination {
+                        limit,
+                        offset,
+                        fields: requested_fields,
+                    };
+                    commands::ports::list(&client, mac.as_deref(), out, pagination).await
+                }
+            }
+            PortsCommand::Show { mac, port } => {
+                commands::ports::show(&client, &mac, port, out).await
+            }
+            PortsCommand::Find { identifier, .. } => {
+                commands::ports::find(&client, &identifier, out, requested_fields).await
+            }
+            PortsCommand::Cycle { mac, port } => {
+                require_confirmation(cli.yes, "power-cycle");
+                let skip_prompt = cli.yes;
+                let outcome = commands::ports::cycle(&client, &mac, port, out, |summary| {
+                    if skip_prompt {
+                        return Ok(true);
+                    }
+                    // Reached only on a TTY: require_confirmation already
+                    // exited for the piped-without---yes case.
+                    let mut stdin = std::io::stdin().lock();
+                    let mut stderr = std::io::stderr();
+                    confirm_destructive(&mut stdin, &mut stderr, summary)
+                })
+                .await;
+
+                // main() returns (), so `?` cannot be used here; match keeps
+                // this arm's value the same `Result<(), Box<dyn Error>>` every
+                // other arm produces, so errors still flow through the single
+                // `if let Err(e) = result` handler below.
+                match outcome {
+                    Ok(commands::ports::CycleOutcome::Cycled) => Ok(()),
+                    Ok(commands::ports::CycleOutcome::Declined) => {
+                        print_error_envelope(
+                            "confirmation_required",
+                            "Aborted: confirmation declined.",
+                            None,
+                        );
+                        std::process::exit(exit_codes::CONFIRMATION_REQUIRED);
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        },
         Command::Events(cmd) => match cmd {
             EventsCommand::List {
                 limit,
@@ -1495,6 +1634,60 @@ api_key = "work_key"
 
         let ConfigValues { host, .. } = load_config_from(&path, Some("work"));
         assert_eq!(host.as_deref(), Some("work.example.com"));
+    }
+
+    // --- confirm_destructive ---
+
+    #[test]
+    fn confirm_destructive_accepts_y_and_yes() {
+        for input in ["y\n", "Y\n", "yes\n", "YES\n"] {
+            let mut reader = std::io::BufReader::new(input.as_bytes());
+            let mut writer: Vec<u8> = Vec::new();
+            assert!(
+                confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                "{input:?} must confirm"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_destructive_declines_everything_else() {
+        for input in ["n\n", "no\n", "\n", "maybe\n", ""] {
+            let mut reader = std::io::BufReader::new(input.as_bytes());
+            let mut writer: Vec<u8> = Vec::new();
+            assert!(
+                !confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                "{input:?} must decline"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_destructive_shows_the_summary_and_default_no() {
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(shown.contains("Port 4 on SwitchA"), "got: {shown}");
+        assert!(shown.contains("(y/N)"), "default must read as No: {shown}");
+    }
+
+    #[test]
+    fn confirm_destructive_terminates_the_prompt_line_with_a_newline() {
+        // The user's Enter is echoed by the terminal, not by this writer, so
+        // the prompt's own `write!` leaves the stream mid-line unless
+        // `confirm_destructive` terminates it itself. A subsequent
+        // `eprintln!` (e.g. the confirmation_required envelope printed on
+        // decline) must start on a fresh line, not get appended to the
+        // prompt.
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(
+            shown.ends_with('\n'),
+            "prompt output must end with a newline so a following line starts clean: {shown:?}"
+        );
     }
 
     // --- mask_api_key ---
@@ -2487,6 +2680,34 @@ api_key = "work_key"
             }
             _ => panic!("expected Devices Ports"),
         }
+    }
+
+    #[test]
+    fn cli_parses_ports_list_without_mac() {
+        let cli = Cli::parse_from(["unifi", "ports", "list"]);
+        match cli.command {
+            Command::Ports(PortsCommand::List { mac, limit, .. }) => {
+                assert!(mac.is_none());
+                assert_eq!(limit, 100);
+            }
+            _ => panic!("expected Ports List"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_ports_list_with_mac() {
+        let cli = Cli::parse_from(["unifi", "ports", "list", "aa:bb:cc:dd:ee:ff"]);
+        match cli.command {
+            Command::Ports(PortsCommand::List { mac, .. }) => {
+                assert_eq!(mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+            }
+            _ => panic!("expected Ports List"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_ports_live_without_mac() {
+        assert!(Cli::try_parse_from(["unifi", "ports", "list", "--live"]).is_err());
     }
 
     #[test]
