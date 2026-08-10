@@ -114,6 +114,7 @@ pub fn exit_code_for_error(err: &(dyn std::error::Error + 'static)) -> i32 {
             crate::api::ApiError::Auth(_) => exit_codes::AUTH_ERROR,
             crate::api::ApiError::NotFound(_) => exit_codes::NOT_FOUND,
             crate::api::ApiError::Api { .. } => exit_codes::API_ERROR,
+            crate::api::ApiError::Unsupported { .. } => exit_codes::NOT_FOUND,
             crate::api::ApiError::Conflict(_) => exit_codes::CONFLICT,
             crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
                 exit_codes::GENERAL_ERROR
@@ -143,6 +144,10 @@ pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static
                 ("client_error", exit_codes::API_ERROR)
             }
             crate::api::ApiError::Api { .. } => ("api_error", exit_codes::API_ERROR),
+            // The whole API is absent, not one record, so this shares
+            // not_found's exit code but keeps a distinct kind: there is no
+            // other identifier worth trying.
+            crate::api::ApiError::Unsupported { .. } => ("unsupported", exit_codes::NOT_FOUND),
             crate::api::ApiError::Conflict(_) => ("conflict", exit_codes::CONFLICT),
             crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
                 ("general_error", exit_codes::GENERAL_ERROR)
@@ -259,6 +264,53 @@ mod tests {
             assert_eq!(kind, "api_error", "status {status}");
             assert_eq!(code, exit_codes::API_ERROR, "status {status}");
         }
+    }
+
+    // An absent application shares not_found's exit code (nothing is there to
+    // find) but must keep its own kind: with not_found an agent can sensibly
+    // try another identifier, here there is no identifier that would work.
+    #[test]
+    fn error_kind_and_code_unsupported_is_distinct_from_not_found() {
+        let err = ApiError::Unsupported {
+            endpoint: "/proxy/protect/integration/v1/cameras".into(),
+            content_type: "text/html".into(),
+        };
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "unsupported");
+        assert_eq!(code, exit_codes::NOT_FOUND);
+        assert_eq!(exit_code_for_error(&err), exit_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn unsupported_message_names_the_endpoint_and_the_content_type() {
+        let err = ApiError::Unsupported {
+            endpoint: "/proxy/protect/integration/v1/cameras".into(),
+            content_type: "text/html".into(),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("/proxy/protect/integration/v1/cameras"),
+            "got: {message}"
+        );
+        assert!(message.contains("text/html"), "got: {message}");
+        assert!(
+            message.contains("Protect"),
+            "a Protect endpoint names the application that is missing: {message}"
+        );
+    }
+
+    #[test]
+    fn unsupported_message_for_a_network_endpoint_does_not_blame_protect() {
+        let err = ApiError::Unsupported {
+            endpoint: "/proxy/network/api/s/default/stat/device".into(),
+            content_type: "text/html".into(),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("/proxy/network/api/s/default/stat/device"),
+            "got: {message}"
+        );
+        assert!(!message.contains("Protect"), "got: {message}");
     }
 
     #[test]

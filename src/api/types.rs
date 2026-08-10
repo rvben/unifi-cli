@@ -528,6 +528,15 @@ pub enum ApiError {
     /// rejected locally before any HTTP call. Published by `unifi schema`
     /// as kind `conflict`, exit code 6.
     Conflict(String),
+    /// The controller answered a JSON endpoint with something else, which is
+    /// how UniFi OS reports an application it does not have: the request is
+    /// proxied to the web UI and returns 200 with an HTML page. Distinct from
+    /// `NotFound` because the whole API is absent, not one record, so there is
+    /// no other identifier worth trying. Published as kind `unsupported`.
+    Unsupported {
+        endpoint: String,
+        content_type: String,
+    },
     Other(String),
 }
 
@@ -611,6 +620,24 @@ impl fmt::Display for ApiError {
                 )
             }
             ApiError::Conflict(msg) => write!(f, "{msg}"),
+            ApiError::Unsupported {
+                endpoint,
+                content_type,
+            } => {
+                write!(
+                    f,
+                    "This controller does not serve {endpoint}: it answered with {content_type} \
+                     instead of JSON"
+                )?;
+                if endpoint.contains("/protect/") {
+                    write!(
+                        f,
+                        "\n  Hint: UniFi OS proxies the request to its web UI when the Protect \
+                         application is not installed on the controller"
+                    )?;
+                }
+                Ok(())
+            }
             ApiError::Other(msg) => write!(f, "{msg}"),
         }
     }

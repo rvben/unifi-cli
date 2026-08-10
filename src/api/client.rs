@@ -11,6 +11,37 @@ pub fn error_for_status(status: u16, message: String) -> ApiError {
     }
 }
 
+/// Decode a successful response as JSON, refusing a body that is not JSON.
+///
+/// UniFi OS answers a request for an application the controller does not have
+/// by proxying it to the web UI, which returns 200 with an HTML page. Parsing
+/// that as JSON produces "error decoding response body", which names neither
+/// the endpoint nor the reason, so the caller cannot tell a missing
+/// application from a transport fault. Checking the content type first turns it
+/// into an error that says which endpoint answered and with what.
+async fn json_or_unsupported<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    endpoint: &str,
+) -> Result<T, ApiError> {
+    let raw = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !raw.to_ascii_lowercase().contains("json") {
+        let content_type = match raw.split(';').next().map(str::trim) {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => "no content type".to_string(),
+        };
+        return Err(ApiError::Unsupported {
+            endpoint: endpoint.to_string(),
+            content_type,
+        });
+    }
+    Ok(resp.json().await?)
+}
+
 /// Valid RTSPS quality levels accepted by the Protect API.
 const VALID_QUALITIES: &[&str] = &["high", "medium", "low", "package"];
 
@@ -120,18 +151,19 @@ impl UnifiClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, path).await
     }
 
     async fn get_legacy<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>, ApiError> {
-        let url = format!("{}/proxy/network/api/s/default{path}", self.base_url);
+        let endpoint = format!("/proxy/network/api/s/default{path}");
+        let url = format!("{}{endpoint}", self.base_url);
         let resp = self.http.get(&url).send().await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        let legacy: LegacyResponse<T> = resp.json().await?;
+        let legacy: LegacyResponse<T> = json_or_unsupported(resp, &endpoint).await?;
         if legacy.meta.rc != "ok" {
             return Err(ApiError::Api {
                 status: 200,
@@ -146,17 +178,15 @@ impl UnifiClient {
         manager: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, ApiError> {
-        let url = format!(
-            "{}/proxy/network/api/s/default/cmd/{manager}",
-            self.base_url
-        );
+        let endpoint = format!("/proxy/network/api/s/default/cmd/{manager}");
+        let url = format!("{}{endpoint}", self.base_url);
         let resp = self.http.post(&url).json(&body).send().await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, &endpoint).await
     }
 
     async fn put_legacy<T: serde::Serialize>(
@@ -164,14 +194,15 @@ impl UnifiClient {
         path: &str,
         body: &T,
     ) -> Result<serde_json::Value, ApiError> {
-        let url = format!("{}/proxy/network/api/s/default{path}", self.base_url);
+        let endpoint = format!("/proxy/network/api/s/default{path}");
+        let url = format!("{}{endpoint}", self.base_url);
         let resp = self.http.put(&url).json(body).send().await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, &endpoint).await
     }
 
     async fn post_legacy<T: serde::Serialize>(
@@ -179,14 +210,15 @@ impl UnifiClient {
         path: &str,
         body: &T,
     ) -> Result<serde_json::Value, ApiError> {
-        let url = format!("{}/proxy/network/api/s/default{path}", self.base_url);
+        let endpoint = format!("/proxy/network/api/s/default{path}");
+        let url = format!("{}{endpoint}", self.base_url);
         let resp = self.http.post(&url).json(body).send().await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, &endpoint).await
     }
 
     // Paginate through all results from Integration API
@@ -467,10 +499,8 @@ impl UnifiClient {
         qualities: &[String],
     ) -> Result<RtspsStreams, ApiError> {
         validate_qualities(qualities)?;
-        let url = format!(
-            "{}/proxy/protect/integration/v1/cameras/{camera_id}/rtsps-stream",
-            self.base_url
-        );
+        let endpoint = format!("/proxy/protect/integration/v1/cameras/{camera_id}/rtsps-stream");
+        let url = format!("{}{endpoint}", self.base_url);
         let body = serde_json::json!({ "qualities": qualities });
         let resp = self.http.post(&url).json(&body).send().await?;
         let status = resp.status().as_u16();
@@ -478,7 +508,7 @@ impl UnifiClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, &endpoint).await
     }
 
     /// Delete RTSPS streams for a camera at the specified quality levels.
@@ -547,7 +577,7 @@ impl UnifiClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        Ok(resp.json().await?)
+        json_or_unsupported(resp, "/api/system").await
     }
 }
 
@@ -637,7 +667,8 @@ impl ProtectSession {
 
     /// GET from the direct Protect API (cookie-authenticated).
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
-        let url = format!("{}/proxy/protect/api{path}", self.base_url);
+        let endpoint = format!("/proxy/protect/api{path}");
+        let url = format!("{}{endpoint}", self.base_url);
         let mut req = self
             .http
             .get(&url)
@@ -651,9 +682,7 @@ impl ProtectSession {
             let body = resp.text().await.unwrap_or_default();
             return Err(error_for_status(status, body));
         }
-        let bytes = resp.bytes().await.map_err(ApiError::Http)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| ApiError::Other(format!("JSON parse error: {e}")))
+        json_or_unsupported(resp, &endpoint).await
     }
 
     /// List all cameras from the direct Protect API (full objects).

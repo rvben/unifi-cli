@@ -3322,3 +3322,169 @@ mod client_construction {
         assert!(client.is_err());
     }
 }
+
+// --- An application the controller does not have ---
+//
+// UniFi OS does not 404 a request for an application that is not installed:
+// it proxies the request to its own web UI, which answers 200 with an HTML
+// page. Parsing that as JSON yields "error decoding response body", which
+// names neither the endpoint nor the reason, so an agent cannot tell a
+// missing application from a transport fault it should retry. These drive
+// the real binary so the published envelope and exit code are observed.
+
+mod unsupported_application {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const UNIFI_OS_SHELL: &str =
+        "<!DOCTYPE html><html><head><title>UniFi OS</title></head><body></body></html>";
+
+    fn envelope(stderr: &str) -> serde_json::Value {
+        let last_line = stderr.trim_end().lines().last().unwrap_or("");
+        serde_json::from_str(last_line)
+            .unwrap_or_else(|e| panic!("last stderr line must be valid JSON ({e}): {last_line:?}"))
+    }
+
+    #[tokio::test]
+    async fn protect_cameras_list_reports_unsupported_when_the_controller_serves_html() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/protect/integration/v1/cameras"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(UNIFI_OS_SHELL, "text/html; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "protect",
+                "cameras",
+                "list",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "an absent application must exit 4, got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope = envelope(&stderr);
+        assert_eq!(
+            envelope["error"]["kind"], "unsupported",
+            "an absent application is not a transport fault: {stderr}"
+        );
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error envelope must carry a message");
+        assert!(
+            message.contains("/proxy/protect/integration/v1/cameras"),
+            "the message must name the endpoint that answered: {message}"
+        );
+        assert!(
+            message.contains("text/html"),
+            "the message must name what it answered with: {message}"
+        );
+        assert!(
+            message.contains("Protect"),
+            "a Protect endpoint must say which application is missing: {message}"
+        );
+    }
+
+    // The same proxy behaviour on a Network endpoint. Nothing about the check
+    // is Protect-specific, but only the Protect message carries the hint, so
+    // this pins that a Network endpoint reports the kind without inventing an
+    // application that is in fact installed.
+    #[tokio::test]
+    async fn a_legacy_endpoint_answering_html_reports_unsupported_without_a_protect_hint() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(UNIFI_OS_SHELL, "text/html; charset=utf-8"),
+            )
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "list",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope = envelope(&stderr);
+        assert_eq!(envelope["error"]["kind"], "unsupported");
+        let message = envelope["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("/proxy/network/api/s/default/stat/device"),
+            "the message must name the endpoint that answered: {message}"
+        );
+        assert!(
+            !message.contains("Protect"),
+            "a Network endpoint must not be blamed on Protect: {message}"
+        );
+    }
+
+    // The content-type check must not swallow a real JSON answer, including
+    // one whose type carries a suffix or a charset.
+    #[tokio::test]
+    async fn a_json_content_type_still_decodes() {
+        for content_type in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "application/vnd.api+json",
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/proxy/network/api/s/default/stat/device"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(
+                    r#"{"meta":{"rc":"ok"},"data":[{"mac":"aa:bb:cc:dd:ee:01","name":"SwitchA","port_table":[{"port_idx":1}]}]}"#,
+                    content_type,
+                ))
+                .mount(&server)
+                .await;
+
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args([
+                    "--host",
+                    &server.uri(),
+                    "--api-key",
+                    "test-key",
+                    "ports",
+                    "list",
+                ])
+                .output()
+                .expect("failed to run the unifi binary");
+
+            assert!(
+                output.status.success(),
+                "{content_type} must decode as JSON: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let body: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|e| panic!("stdout was not JSON ({e}) for {content_type}"));
+            assert_eq!(body["items"][0]["device_name"], "SwitchA", "{content_type}");
+        }
+    }
+}

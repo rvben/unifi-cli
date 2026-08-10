@@ -578,6 +578,12 @@ pub fn print_schema(cmd: clap::Command) {
                 "description": "Requested resource not found (404)",
             },
             {
+                "kind": "unsupported",
+                "exit_code": 4,
+                "retryable": false,
+                "description": "The controller does not serve this API at all: it answered a JSON endpoint with something else, which is how UniFi OS reports an application it does not have. Unlike not_found there is no other identifier worth trying",
+            },
+            {
                 "kind": "client_error",
                 "exit_code": 5,
                 "retryable": false,
