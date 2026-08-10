@@ -852,35 +852,71 @@ fn enable_accept_invalid_certs_in_config(
 
 /// Write the config file so that only its owner can read it.
 ///
-/// The file holds an API key and optionally a password. It is created with
-/// mode 0600 rather than chmodded afterwards, so the secrets are never
-/// momentarily world-readable, and the mode is then applied to the open handle
-/// as well to cover the case where the file already existed with looser
-/// permissions. A failing chmod is reported instead of ignored: the silent
-/// alternative leaves a credentials file readable by every account on the
-/// machine while `init` prints success.
+/// The file holds an API key and optionally a password, so it is never written
+/// in place. `OpenOptions::mode` applies only to a file the call creates, so
+/// opening an existing config would fill a possibly world-readable file with
+/// fresh credentials and only tighten it afterwards, leaving a window in which
+/// any local account can read the key (and leaving it readable for good if the
+/// chmod fails). Instead the content goes into a new 0600 file beside the
+/// destination and is renamed over it. The rename is atomic: the credentials
+/// exist only inside a 0600 file, and a concurrent reader sees either the old
+/// config or the new one, never a half-written one.
 #[cfg(unix)]
 fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<(), InitError> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(config_path)
-        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
-    file.write_all(toml_str.as_bytes())
-        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| {
-            InitError(format!(
-                "Config written to {} but its permissions could not be restricted to 0600: {e}. \
-                 The file contains credentials, so fix its permissions before using it.",
-                config_path.display()
-            ))
-        })
+    // The temp file must share a directory with the destination, since rename
+    // does not cross filesystems.
+    let dir = match config_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    let name = config_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config.toml".to_string());
+    // Unique per process and per call, so two writers never pick the same name.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp_path = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+
+    let open_tmp = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)
+    };
+    let opened = match open_tmp() {
+        // A temp file left behind by a killed run. Reclaim the name;
+        // `create_new` still guarantees we write a file we created ourselves.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(&tmp_path)
+                .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+            open_tmp()
+        }
+        other => other,
+    };
+
+    let write_tmp = |mut file: std::fs::File| -> std::io::Result<()> {
+        // The umask can clear bits from the requested mode, so pin it here.
+        // The file is still empty, so no secret has reached the disk yet.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(toml_str.as_bytes())?;
+        file.sync_all()
+    };
+
+    match opened.and_then(write_tmp) {
+        Ok(()) => std::fs::rename(&tmp_path, config_path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            InitError(format!("Failed to write config: {e}"))
+        }),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(InitError(format!("Failed to write config: {e}")))
+        }
+    }
 }
 
 #[cfg(not(unix))]
@@ -1908,6 +1944,38 @@ api_key = "work_key"
         let mut output = Vec::new();
         run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
 
+        assert_eq!(mode_of(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_keeps_credentials_out_of_a_preexisting_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "host = \"https://unifi.local\"\napi_key = \"old\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // A second name for the same inode. Writing the new key into the file
+        // that already exists, even for the instant before a chmod, shows up
+        // here; replacing that file by rename cannot.
+        let witness = dir.path().join("witness.toml");
+        std::fs::hard_link(&path, &witness).unwrap();
+
+        let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nnew-key\n\ny\n".to_vec());
+        let mut output = Vec::new();
+        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+
+        let exposed = std::fs::read_to_string(&witness).unwrap();
+        assert!(
+            !exposed.contains("new-key"),
+            "the API key was written into a world-readable file: {exposed}"
+        );
+        assert_eq!(
+            mode_of(&witness),
+            0o644,
+            "the world-readable file was the one that got written"
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("new-key"));
         assert_eq!(mode_of(&path), 0o600);
     }
 

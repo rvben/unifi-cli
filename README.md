@@ -62,9 +62,11 @@ Linux: `~/.config/unifi/config.toml`.
 macOS: `~/Library/Application Support/unifi/config.toml`.
 Windows: `%APPDATA%\unifi\config.toml`.
 
-`unifi config init` writes to that path and creates the file with mode 0600,
-since it holds an API key and optionally a Protect password. If it cannot
-restrict the permissions it says so rather than leaving the key readable.
+`unifi config init` writes to that path with mode 0600, since it holds an API
+key and optionally a Protect password. It writes a new 0600 file and renames it
+over any existing config instead of writing in place, so the credentials are
+never readable by another local account, not even for the moment between the
+write and a chmod, and a failed write leaves the previous config intact.
 
 ```toml
 host = "https://unifi.example.com"
