@@ -2044,6 +2044,20 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
 
 use crate::api::{DeviceWithPorts, PortEntry};
 
+/// How long a throughput measurement is allowed to stand while the reported
+/// counters sit still.
+///
+/// Unchanged counters have two causes that look identical from here: the
+/// controller has not published a new sample yet, or the port has gone quiet.
+/// Holding the last measurement covers the first, which is the common one,
+/// since the controller resamples device statistics only about once a minute.
+/// It cannot cover the second indefinitely, or a port that stopped carrying
+/// traffic would keep advertising the rate it had when it stopped. Past this
+/// bound the measurement no longer describes the present under either reading,
+/// so the rate becomes unknown rather than stale: still being quietly wrong
+/// about which of the two happened is not worth a confident number.
+const RATE_MAX_AGE: Duration = Duration::from_secs(180);
+
 struct PortsState {
     device: Option<DeviceWithPorts>,
     prev_bytes: HashMap<u32, (u64, u64, Instant)>,
@@ -2114,8 +2128,12 @@ impl PortsState {
             // port, it is the absence of a new measurement: dividing it by the
             // poll interval would show 0 B/s on a port moving hundreds of
             // kilobytes a second. The window stays open until the counters
-            // move, and the last real measurement stands in the meantime.
+            // move, and the last real measurement stands in the meantime, but
+            // only for as long as it can still be said to describe the present.
             if tx == prev_tx && rx == prev_rx {
+                if now.duration_since(prev_time) > RATE_MAX_AGE {
+                    self.port_rates.remove(&idx);
+                }
                 continue;
             }
 
@@ -3609,6 +3627,70 @@ mod tests {
             state.port_rates.get(&1),
             None,
             "no rate spans a counter reset, and the stale one must not stand"
+        );
+    }
+
+    /// Drive a port up to a measured rate, then hold its counters still for
+    /// `frozen_for`, in polls the controller would plausibly have made.
+    fn measured_then_frozen(frozen_for: Duration) -> PortsState {
+        let mut state = PortsState::new(2);
+        let idle = format!(
+            r#"{{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":{},"rx_bytes":2000}}"#,
+            1000 + WINDOW_DELTA
+        );
+
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#,
+        ));
+        state.update_port_rates();
+        age_baselines(&mut state, WINDOW);
+        state.device = Some(ports_device(&idle));
+        state.update_port_rates();
+        assert!(state.port_rates.contains_key(&1), "a rate was measured");
+
+        for _ in 0..10 {
+            age_baselines(&mut state, frozen_for / 10);
+            state.device = Some(ports_device(&idle));
+            state.update_port_rates();
+        }
+        state
+    }
+
+    #[test]
+    fn a_rate_survives_the_gap_between_two_controller_samples() {
+        // The controller resamples about once a minute, so a rate has to
+        // outlive a gap of that order or the view would spend most of its time
+        // showing nothing on a busy port.
+        let state = measured_then_frozen(RATE_MAX_AGE / 2);
+        let text = render_ports(&state, 120, 20);
+        assert!(
+            text.contains("1000 B/s"),
+            "the last real measurement still stands:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_rate_no_new_sample_has_confirmed_in_minutes_becomes_unknown() {
+        let state = measured_then_frozen(RATE_MAX_AGE * 2);
+
+        assert_eq!(
+            state.port_rates.get(&1),
+            None,
+            "nothing has confirmed this rate in minutes, so it is no longer a \
+             statement about what the port is doing"
+        );
+
+        let text = render_ports(&state, 120, 20);
+        assert!(text.contains("Port 1"), "{text}");
+        assert!(
+            !text.contains("1000 B/s"),
+            "a port that stopped carrying traffic must not keep advertising \
+             the rate it had when it stopped:\n{text}"
+        );
+        assert!(
+            !text.contains("0 B/s"),
+            "an idle port and a controller that went quiet are not \
+             distinguishable from here, so neither earns a number:\n{text}"
         );
     }
 
