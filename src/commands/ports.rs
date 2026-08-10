@@ -124,6 +124,26 @@ fn speed_cell(p: &PortEntry) -> String {
     }
 }
 
+/// Split a port's `last_connection` into what is attached *now* and what the
+/// record names regardless of state, as `(attached_mac, last_seen_mac)`.
+///
+/// The controller keeps a port's `last_connection` after the device is
+/// unplugged, marking it `connected: false`. A stale record therefore names a
+/// device that may have been gone for months, and reporting it as the
+/// attachment would tell an operator a port is in use moments before they cut
+/// its power. `attached_mac` is `None` unless the record is live; the MAC
+/// itself stays available as `last_seen_mac` so the history is not thrown
+/// away. `cycle_summary` applies the same rule to the confirmation prompt.
+fn attachment(p: &PortEntry) -> (Option<String>, Option<String>) {
+    let lc = match p.last_connection.as_ref() {
+        Some(lc) => lc,
+        None => return (None, None),
+    };
+    let mac = lc.mac.as_deref().map(format_mac);
+    let connected = lc.connected.unwrap_or(false);
+    (connected.then(|| mac.clone()).flatten(), mac)
+}
+
 /// Right-pad a table cell to `width` visible columns, deriving the padding
 /// from `plain`'s length rather than `rendered`'s.
 ///
@@ -134,23 +154,23 @@ fn speed_cell(p: &PortEntry) -> String {
 /// go through this instead of a `{:<N}` specifier.
 ///
 /// `rendered` is `plain` itself on the uncoloured path (see call sites), so
-/// that path pads identically to the `{:<width$}` it replaces — this must
+/// that path pads identically to the `{:<width$}` it replaces, and this must
 /// stay true, since existing tests assert on uncoloured output byte-for-byte.
 fn pad_visible(rendered: &str, plain: &str, width: usize) -> String {
     let pad = width.saturating_sub(plain.len());
     format!("{rendered}{}", " ".repeat(pad))
 }
 
-/// "port" for exactly one row, "ports" otherwise — the row-count trailer's
+/// "port" for exactly one row, "ports" otherwise: the row-count trailer's
 /// singular/plural noun.
 fn port_noun(count: usize) -> &'static str {
     if count == 1 { "port" } else { "ports" }
 }
 
 /// Device column width, in characters. Callers that paginate must compute
-/// this from the full result set, not just the page handed to `render_text`
-/// — otherwise two `--offset` pages of the same query can render the column
-/// at different widths.
+/// this from the full result set, not just the page handed to `render_text`.
+/// Otherwise two `--offset` pages of the same query can render the column at
+/// different widths.
 pub fn device_col_width(rows: &[&PortRow]) -> usize {
     rows.iter()
         .map(|r| r.device_name.len())
@@ -537,11 +557,7 @@ pub async fn show(
     let device = client.get_device_ports(mac).await?;
     let p = find_port(&device, port_idx)?;
     let (device_mac, device_name) = device_identity(&device, "-");
-    let attached_mac = p
-        .last_connection
-        .as_ref()
-        .and_then(|lc| lc.mac.as_deref())
-        .map(format_mac);
+    let (attached_mac, last_seen_mac) = attachment(p);
 
     if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
@@ -566,6 +582,7 @@ pub async fn show(
             "poe_current": p.poe_current,
             "poe_good": p.poe_good,
             "attached_mac": attached_mac,
+            "attached_last_seen_mac": last_seen_mac,
             "tx_bytes": p.tx_bytes,
             "rx_bytes": p.rx_bytes,
             "tx_errors": p.tx_errors,
@@ -631,11 +648,14 @@ pub async fn show(
             println!("  {}  {c:.2} mA", label("Current:  "));
         }
     }
-    println!(
-        "  {}  {}",
-        label("Attached: "),
-        attached_mac.as_deref().unwrap_or("-")
-    );
+    // A stale record prints as unattached with its MAC qualified, so the line
+    // can never be read as "this device is plugged in right now".
+    let attached_cell = match (&attached_mac, &last_seen_mac) {
+        (Some(mac), _) => mac.clone(),
+        (None, Some(stale)) => format!("- (last seen {stale})"),
+        (None, None) => "-".to_string(),
+    };
+    println!("  {}  {}", label("Attached: "), attached_cell);
     Ok(())
 }
 
@@ -666,16 +686,13 @@ pub fn check_cyclable(port: &PortEntry, device_mac: &str) -> Result<(), ApiError
             "PoE is administratively disabled on port {idx} of {mac} (poe_mode=off)"
         )));
     }
-    // Observed against a live UCG-Max controller: a port with port_poe: true,
-    // poe_mode: "auto", and poe_enable: false rejected `power-cycle` with
-    // HTTP 400 api.err.InvalidTargetPort. poe_enable was the only attribute
-    // that differed from ports that do have power to cycle, so it is used
-    // here as the guard — that inference has not been confirmed by a
-    // successful cycle against a poe_enable: true port, since doing so would
-    // require firing at a port with a live device attached. Surfacing this
-    // locally as `conflict` avoids the alternative: the controller's 400
-    // otherwise falls through to `api_error` (see error_for_status), which
-    // src/schema.rs advertises as retryable even though retrying cannot help.
+    // `poe_enable` is the controller's own precondition, confirmed in both
+    // directions against a live UCG-Max: a port with port_poe: true,
+    // poe_mode: "auto" and poe_enable: false rejects `power-cycle` with HTTP
+    // 400 api.err.InvalidTargetPort, while the same command against a port
+    // with poe_enable: true succeeds and reboots the attached device.
+    // Checking it here turns that 400 into a local `conflict` naming the
+    // reason, instead of an opaque status from the controller.
     if !port.poe_enable {
         return Err(ApiError::Conflict(format!(
             "Port {idx} on {mac} is not currently delivering PoE (poe_enable=false), \
@@ -686,7 +703,7 @@ pub fn check_cyclable(port: &PortEntry, device_mac: &str) -> Result<(), ApiError
 }
 
 /// Whether the cycle actually happened. `Declined` is not an error at this
-/// layer — the caller decides how to report a refused confirmation.
+/// layer; the caller decides how to report a refused confirmation.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CycleOutcome {
     Cycled,
@@ -925,12 +942,10 @@ mod tests {
     // `pad_visible` is what makes coloured Link/Connected cells line up with
     // the header at a TTY. `use_color()` reads `stdout().is_terminal()`
     // directly with no override, so a unit test cannot force colour on for
-    // `render_rows` itself without adding a flag/env override the task this
-    // was written for explicitly ruled out ("no new flags"). Testing the
-    // padding helper directly, with a hand-built ANSI-escaped string standing
-    // in for what `owo_colors` would emit, exercises the actual defect
-    // (padding computed from byte length instead of visible width) without
-    // needing a real TTY.
+    // `render_rows` itself. Testing the padding helper directly, with a
+    // hand-built ANSI-escaped string standing in for what `owo_colors` would
+    // emit, exercises the defect it guards against (padding computed from
+    // byte length instead of visible width) without needing a real TTY.
     #[test]
     fn pad_visible_pads_by_plain_width_not_escaped_byte_length() {
         // The real thing `render_rows` hands `pad_visible` on the coloured
@@ -962,7 +977,7 @@ mod tests {
     fn pad_visible_matches_the_uncoloured_output_it_replaces() {
         // On the uncoloured path every call site passes `rendered == plain`,
         // so this must reproduce exactly what the old `{:<width$}` specifier
-        // produced — the uncoloured path must not change at all.
+        // produced: the uncoloured path must not change at all.
         assert_eq!(pad_visible("up", "up", 6), format!("{:<6}", "up"));
         assert_eq!(pad_visible("down", "down", 6), format!("{:<6}", "down"));
         assert_eq!(pad_visible("yes", "yes", 9), format!("{:<9}", "yes"));
@@ -1176,9 +1191,8 @@ mod tests {
         );
     }
 
-    // `_id` is required by `LegacyClient` (every other fixture in this codebase
-    // supplies it); the plan's literal fixture omitted it, so it is added here
-    // to make the fixture actually deserialize.
+    // `_id` is required by `LegacyClient`, so every record here supplies one
+    // or the fixture will not deserialize.
     fn clients_fixture() -> Vec<crate::api::LegacyClient> {
         serde_json::from_value(serde_json::json!([
             {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi",   "ip": "10.0.0.5"},
@@ -1211,12 +1225,9 @@ mod tests {
         );
     }
 
-    // `resolve_candidates` no longer decides ambiguity by itself — a name
-    // matching multiple client records is not an error here, since `find`
-    // only calls it a conflict once it also knows more than one candidate
-    // sits on a switch port. This replaces the old
-    // `resolve_identifier_ambiguous_name_is_conflict`, which asserted the
-    // opposite (that a name-match count alone was a `Conflict`).
+    // A name matching multiple client records is not an error here.
+    // `resolve_candidates` returns every candidate; `find` calls it a conflict
+    // only once it also knows more than one of them sits on a switch port.
     #[test]
     fn resolve_candidates_returns_every_name_match_without_erroring() {
         let c = clients_fixture();

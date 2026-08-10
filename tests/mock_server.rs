@@ -1879,14 +1879,10 @@ mod command_output {
             .unwrap();
     }
 
-    // `ports_show_table` above only smoke-tests that the text branch doesn't
-    // panic (matching the pre-existing convention for other `show`-style
-    // commands in this file). But `ports show`'s text branch is new code with
-    // real formatting logic (speed_cell, poe_cell, voltage/current, the
-    // attached MAC), so it gets its own test that spawns the real binary
-    // (same pattern as `ports_list_pagination_reports_full_total_and_truncated_items`
-    // and `devices_ports_bare_array_vs_ports_list_envelope`) and asserts on
-    // the actual rendered text.
+    // `ports_show_table` above only smoke-tests that the text branch does not
+    // panic. The text branch carries real formatting logic (speed_cell,
+    // poe_cell, voltage/current, the attached MAC), so it also gets a test that
+    // spawns the real binary and asserts on the rendered text.
     #[tokio::test]
     async fn ports_show_text_output_renders_expected_fields() {
         let server = MockServer::start().await;
@@ -1947,7 +1943,7 @@ mod command_output {
 
     // Drives the real `unifi` binary so the JSON this command actually prints
     // can be inspected, and cross-checks it against what `unifi schema`
-    // publishes for "ports show" — the two are supposed to be the same
+    // publishes for "ports show": the two are supposed to be the same
     // contract, and nothing else in this suite would catch them drifting
     // apart.
     #[tokio::test]
@@ -2097,6 +2093,73 @@ mod command_output {
         }
     }
 
+    // A `last_connection` the controller has marked `connected: false` is
+    // history, not an attachment: the device may have been unplugged months
+    // ago. Reporting it as attached would tell an operator a port is in use
+    // moments before they cut its power, so `attached_mac` must be null and the
+    // MAC must survive only as `attached_last_seen_mac`.
+    #[tokio::test]
+    async fn ports_show_reports_a_stale_last_connection_as_unattached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{
+                        "port_idx": 5, "name": "Port 5", "media": "GE", "up": false,
+                        "port_poe": true, "poe_enable": true, "poe_mode": "auto",
+                        "last_connection": {"mac": "aabbccddeeff", "connected": false}
+                    }]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let run = |format: &str| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args([
+                    "--host",
+                    &server.uri(),
+                    "--api-key",
+                    "test-key",
+                    "ports",
+                    "show",
+                    "9c:05:d6:bc:06:43",
+                    "5",
+                    "--output",
+                    format,
+                ])
+                .output()
+                .expect("failed to run the unifi binary")
+        };
+
+        let json_out = run("json");
+        assert!(
+            json_out.status.success(),
+            "ports show failed: {}",
+            String::from_utf8_lossy(&json_out.stderr)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+        assert!(
+            body["attached_mac"].is_null(),
+            "a stale last_connection must not be published as attached: {body}"
+        );
+        assert_eq!(
+            body["attached_last_seen_mac"], "aa:bb:cc:dd:ee:ff",
+            "the stale MAC must stay available as history: {body}"
+        );
+
+        let text_out = run("text");
+        assert!(text_out.status.success());
+        let text = String::from_utf8_lossy(&text_out.stdout);
+        assert!(
+            text.contains("- (last seen aa:bb:cc:dd:ee:ff)"),
+            "the text branch must qualify a stale MAC rather than print it bare: {text}"
+        );
+    }
+
     // Locates `unifi ports cycle <MAC> 99` uses the same `find_port` lookup;
     // a bogus port index must be reported as not-found (exit 4) rather than
     // firing a command at the controller for a port that does not exist.
@@ -2144,9 +2207,9 @@ mod command_output {
     }
 
     // The row-count trailer must read "1 port" for a single row and "N ports"
-    // otherwise — it used to say "1 ports" unconditionally. Spawns the real
-    // binary (rather than calling `render_text` in-process) so this observes
-    // literal stderr text, the same surface an operator actually reads.
+    // otherwise. Spawns the real binary (rather than calling `render_text`
+    // in-process) so this observes literal stderr text, the same surface an
+    // operator actually reads.
     #[tokio::test]
     async fn ports_list_trailer_is_singular_for_exactly_one_row() {
         let server = MockServer::start().await;
@@ -2574,9 +2637,8 @@ mod command_output {
     // name matches: `office` genuinely matches two devices here, and both
     // are actually attached to a switch port (unlike the "one interface
     // never shows up" fixtures below), so this must still exit 6 (conflict)
-    // and name both candidates. Modeled on a live-controller case — two
-    // physically distinct office devices on the same switch — reported
-    // against the pre-fix behavior in the original bug report.
+    // and name both candidates. Modeled on a live-controller case: two
+    // physically distinct office devices sharing a name on the same switch.
     #[tokio::test]
     async fn ports_find_ambiguous_name_exits_with_conflict() {
         let server = MockServer::start().await;
@@ -2706,8 +2768,8 @@ mod command_output {
     }
 
     // The other client record sharing the name never appears in any port
-    // table at all — not "only the wireless interface", but no candidate on
-    // a port whatsoever — so this must be not_found, not a conflict.
+    // table at all: not "only the wireless interface", but no candidate on a
+    // port whatsoever, so this must be not_found, not a conflict.
     #[tokio::test]
     async fn ports_find_name_matches_clients_none_on_a_port_is_not_found() {
         let server = MockServer::start().await;
@@ -2769,7 +2831,7 @@ mod command_output {
 
     // `find`'s JSON output has always carried `connected`; only the text
     // table lacked it, leaving the connected-first sort order as the sole
-    // (easy-to-miss) signal for which row is the device's *current* port —
+    // (easy-to-miss) signal for which row is the device's *current* port,
     // a distinction that matters because this lookup feeds the destructive
     // `ports cycle`. Two distinctly-named single-port devices (rather than
     // one device with two ports) so each rendered row can be identified by
@@ -2851,7 +2913,7 @@ mod command_output {
     // `power_cycle_port_sends_correct_command` (in `client_api` above) only
     // covers the client method's endpoint and body. Nothing exercised the
     // orchestration in `commands::ports::cycle` that decides *whether* to call
-    // it at all — and that orchestration is the only place in this CLI that
+    // it at all, and that orchestration is the only place in this CLI that
     // cuts power to physical hardware. These four cases pin down the guard-rail
     // ordering (find_port -> check_cyclable -> confirm -> POST) as a tested
     // property rather than a code-reading exercise: the `.expect(0)` mounts on
@@ -2991,7 +3053,7 @@ mod command_output {
     // third guard rail: a port that is PoE-capable and not administratively
     // off, but that the controller reports as not currently delivering power
     // (poe_enable: false). This is the fixture from the live UCG-Max finding
-    // that motivated the guard — see `check_cyclable` in
+    // that motivated the guard; see `check_cyclable` in
     // `src/commands/ports.rs` for what was actually observed.
     #[tokio::test]
     async fn ports_cycle_poe_enable_false_is_conflict_and_never_posts() {
