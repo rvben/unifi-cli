@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1](https://github.com/rvben/unifi-cli/compare/v0.3.0...v0.3.1) - 2026-08-10
 
+### Added
+
+- **ports**: add ports command tree with single-port PoE power-cycling ([b14794e](https://github.com/rvben/unifi-cli/commit/b14794e976638f7c4a5a21639ebe8a8b011ab25c))
+
+### Fixed
+
+- **cli**: prompt before every destructive command, not just ports cycle ([ae49798](https://github.com/rvben/unifi-cli/commit/ae4979886d63b4dd982a3a38de34a0ff343d5f18))
+- **schema**: publish flags as boolean and port/watch as integer ([7c21144](https://github.com/rvben/unifi-cli/commit/7c21144d93afa68cb021a9191c769dea4af496ba))
+- **ports**: give the PoE class label its colon and align the detail column ([1cd56d0](https://github.com/rvben/unifi-cli/commit/1cd56d03c3e0ec12a025030a051c135a1fa0865c))
 
 ## [0.3.0](https://github.com/rvben/unifi-cli/compare/v0.2.3...v0.3.0) - 2026-07-09
 
