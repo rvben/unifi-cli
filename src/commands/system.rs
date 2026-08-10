@@ -97,7 +97,11 @@ pub async fn info(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sys = client.get_sysinfo().await?;
     let host = client.get_host_system().await.ok();
-    let update_available = host.as_ref().is_some_and(|h| h.update_available());
+    // Unknown when the host system request failed as well as when it answered
+    // without a device state: a check that could not be made is not a check that
+    // came back clean, and reporting one as the other tells a caller its firmware
+    // is current when nothing established that.
+    let update_available = host.as_ref().and_then(|h| h.update_available());
 
     if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
@@ -136,12 +140,22 @@ pub async fn info(
     if let Some(uptime) = sys.uptime {
         println!("  {}  {}", label("Uptime:  "), format_uptime(uptime));
     }
-    if update_available {
-        if color {
-            println!("  {}  {}", label("Update:  "), "Available".yellow());
-        } else {
-            println!("  {}  Available", label("Update:  "));
+    // Nothing is printed for a host that reported being up to date, since the
+    // absence of the line has always meant that. An unknown state gets a line of
+    // its own so it cannot be read the same way.
+    match update_available {
+        Some(true) => {
+            if color {
+                println!("  {}  {}", label("Update:  "), "Available".yellow());
+            } else {
+                println!("  {}  Available", label("Update:  "));
+            }
         }
+        None => println!(
+            "  {}  Unknown (host system did not report)",
+            label("Update:  ")
+        ),
+        Some(false) => {}
     }
 
     Ok(())

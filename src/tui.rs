@@ -980,10 +980,14 @@ fn draw_header(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         health_spans.push(Span::raw("  "));
     }
 
+    // Only a reported update raises the banner. An unknown state stays silent
+    // here rather than claiming either answer: the status bar has room for a
+    // warning, not for the explanation an unknown one would need.
     if state
         .host_system
         .as_ref()
-        .is_some_and(|h| h.update_available())
+        .and_then(|h| h.update_available())
+        .unwrap_or(false)
     {
         health_spans.push(Span::styled(
             "⬆ Update available",

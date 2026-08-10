@@ -650,7 +650,7 @@ fn legacy_device_upgradable_false_explicit() {
 fn host_system_update_available() {
     let json = r#"{"deviceState": "updateAvailable", "name": "UCG Ultra"}"#;
     let host: HostSystem = serde_json::from_str(json).unwrap();
-    assert!(host.update_available());
+    assert_eq!(host.update_available(), Some(true));
     assert_eq!(host.name.as_deref(), Some("UCG Ultra"));
 }
 
@@ -658,14 +658,18 @@ fn host_system_update_available() {
 fn host_system_no_update() {
     let json = r#"{"deviceState": "online"}"#;
     let host: HostSystem = serde_json::from_str(json).unwrap();
-    assert!(!host.update_available());
+    assert_eq!(host.update_available(), Some(false));
 }
 
 #[test]
-fn host_system_missing_state() {
+fn host_system_missing_state_is_unknown_not_up_to_date() {
     let json = r#"{}"#;
     let host: HostSystem = serde_json::from_str(json).unwrap();
-    assert!(!host.update_available());
+    assert_eq!(
+        host.update_available(),
+        None,
+        "a host that reported no device state has not reported an up-to-date one"
+    );
 }
 
 // --- strip_mac_suffix ---

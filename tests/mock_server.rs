@@ -22,6 +22,74 @@ async fn mount_site_discovery(server: &MockServer) {
         .await;
 }
 
+/// Run the real `unifi` binary against `server` and return the JSON it printed.
+///
+/// Driving the binary rather than calling the command function is what makes a
+/// schema check meaningful: it inspects the bytes a caller actually receives.
+async fn run_json(server: &MockServer, args: &[&str]) -> serde_json::Value {
+    let uri = server.uri();
+    let mut argv = vec!["--host", uri.as_str(), "--api-key", "test-key"];
+    argv.extend_from_slice(args);
+    argv.extend_from_slice(&["--output", "json"]);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+        .args(&argv)
+        .output()
+        .expect("failed to run the unifi binary");
+    assert!(
+        output.status.success(),
+        "{} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout of `{}` was not valid JSON ({e}): {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
+/// Assert `unifi schema` declares for `command` exactly the keys the command
+/// emits: no undiscoverable field, and no documented field that never appears.
+///
+/// For an agent-facing CLI the schema is the contract, and nothing else in this
+/// suite would catch the two halves drifting apart. Each command that publishes
+/// `output_fields` gets one of these; the check lives here once so adding it to
+/// a command costs a single call.
+fn assert_schema_matches(command: &str, emitted: &serde_json::Value) {
+    let emitted = emitted
+        .as_object()
+        .unwrap_or_else(|| panic!("`{command}` must emit a JSON object"));
+
+    let schema_output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+        .arg("schema")
+        .output()
+        .expect("failed to run unifi schema");
+    let schema: serde_json::Value =
+        serde_json::from_slice(&schema_output.stdout).expect("unifi schema must print valid JSON");
+    let entry = schema["commands"]
+        .as_array()
+        .expect("schema must have a commands array")
+        .iter()
+        .find(|c| c["name"] == command)
+        .unwrap_or_else(|| panic!("schema must publish a \"{command}\" command"));
+
+    let mut declared: Vec<&str> = entry["output_fields"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`{command}` must declare output_fields"))
+        .iter()
+        .map(|f| f["name"].as_str().expect("output field must have a name"))
+        .collect();
+    declared.sort_unstable();
+    let mut actual: Vec<&str> = emitted.keys().map(String::as_str).collect();
+    actual.sort_unstable();
+    assert_eq!(
+        actual, declared,
+        "`{command}` output_fields in the schema must exactly match the keys it emits"
+    );
+}
+
 // --- UnifiClient API tests ---
 
 mod client_api {
@@ -2016,34 +2084,7 @@ mod command_output {
         assert_eq!(obj["tx_errors"], 0);
         assert_eq!(obj["rx_errors"], 2);
 
-        // The schema's published output_fields must exactly match the keys
-        // this JSON branch actually emits: no undiscoverable field, and no
-        // documented field that never appears.
-        let schema_output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
-            .arg("schema")
-            .output()
-            .expect("failed to run unifi schema");
-        let schema: serde_json::Value = serde_json::from_slice(&schema_output.stdout)
-            .expect("unifi schema must print valid JSON");
-        let ports_show = schema["commands"]
-            .as_array()
-            .expect("schema must have a commands array")
-            .iter()
-            .find(|c| c["name"] == "ports show")
-            .expect("schema must publish a \"ports show\" command");
-        let mut declared: Vec<&str> = ports_show["output_fields"]
-            .as_array()
-            .expect("ports show must declare output_fields")
-            .iter()
-            .map(|f| f["name"].as_str().expect("output field must have a name"))
-            .collect();
-        declared.sort_unstable();
-        let mut emitted: Vec<&str> = obj.keys().map(String::as_str).collect();
-        emitted.sort_unstable();
-        assert_eq!(
-            emitted, declared,
-            "ports show output_fields in the schema must exactly match the JSON branch's keys"
-        );
+        crate::assert_schema_matches("ports show", &body);
     }
 
     // `autoneg`/`enable`/`is_uplink`/`poe_good` are tri-state: a firmware that
@@ -4377,5 +4418,126 @@ mod protect_cameras {
             "an ID must resolve without a listing: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+// A schema that does not describe the output is worse than no schema: it sends
+// an agent looking for a key that never arrives, or hides one that does. Both
+// halves were live defects, found by comparing declared fields against a real
+// controller's output by hand. These guards do that comparison in CI instead.
+mod schema_contract {
+    use super::*;
+
+    const SYSINFO: &str = "/proxy/network/api/s/default/stat/sysinfo";
+
+    async fn mount_sysinfo(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path(SYSINFO))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "hostname": "UCG-Ultra", "version": "10.1.85",
+                    "timezone": "Europe/Amsterdam", "uptime": 1737960
+                }]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// Serve `stat/sysinfo`, and answer `/api/system` with `host_system` when
+    /// given. Leaving it out models a host system that could not be reached,
+    /// which wiremock answers with a 404.
+    async fn serving_system(host_system: Option<serde_json::Value>) -> MockServer {
+        let server = MockServer::start().await;
+        mount_sysinfo(&server).await;
+        if let Some(body) = host_system {
+            Mock::given(method("GET"))
+                .and(path("/api/system"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    #[tokio::test]
+    async fn system_info_json_matches_schema_output_fields() {
+        let server = serving_system(Some(serde_json::json!({"deviceState": "online"}))).await;
+        let body = run_json(&server, &["system", "info"]).await;
+        assert_schema_matches("system info", &body);
+    }
+
+    #[tokio::test]
+    async fn a_state_the_host_did_not_report_is_unknown_not_up_to_date() {
+        let server = serving_system(Some(serde_json::json!({"name": "UCG Ultra"}))).await;
+        let body = run_json(&server, &["system", "info"]).await;
+        assert_eq!(
+            body["update_available"],
+            serde_json::Value::Null,
+            "a host that reported no device state has not reported an up-to-date one: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_system_that_could_not_be_reached_leaves_the_update_state_unknown() {
+        let server = serving_system(None).await;
+        let body = run_json(&server, &["system", "info"]).await;
+        assert_eq!(
+            body["update_available"],
+            serde_json::Value::Null,
+            "a check that could not be made is not a check that came back clean: {body}"
+        );
+    }
+
+    // Positive control for the two above: a state the host did report must
+    // still settle the question, in both directions. A fix that hid unknowns
+    // by never answering would pass those tests and fail these.
+    #[tokio::test]
+    async fn a_reported_state_still_settles_the_question() {
+        let up_to_date = serving_system(Some(serde_json::json!({"deviceState": "online"}))).await;
+        let body = run_json(&up_to_date, &["system", "info"]).await;
+        assert_eq!(body["update_available"], serde_json::json!(false));
+
+        let waiting =
+            serving_system(Some(serde_json::json!({"deviceState": "updateAvailable"}))).await;
+        let body = run_json(&waiting, &["system", "info"]).await;
+        assert_eq!(body["update_available"], serde_json::json!(true));
+    }
+
+    // The human surface has the same requirement: silence has always meant "up
+    // to date", so an unknown state cannot also be silent.
+    #[tokio::test]
+    async fn text_output_says_unknown_rather_than_staying_silent() {
+        let unknown = serving_system(Some(serde_json::json!({"name": "UCG Ultra"}))).await;
+        let text = run_text(&unknown, &["system", "info"]);
+        assert!(
+            text.contains("Unknown"),
+            "an unreported update state must be shown, not omitted: {text}"
+        );
+
+        let up_to_date = serving_system(Some(serde_json::json!({"deviceState": "online"}))).await;
+        let text = run_text(&up_to_date, &["system", "info"]);
+        assert!(
+            !text.contains("Update:"),
+            "a host that reported being up to date still needs no line: {text}"
+        );
+    }
+
+    fn run_text(server: &MockServer, args: &[&str]) -> String {
+        let uri = server.uri();
+        let mut argv = vec!["--host", uri.as_str(), "--api-key", "test-key"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&["--output", "text"]);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args(&argv)
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "{} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 }

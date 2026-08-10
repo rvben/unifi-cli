@@ -255,9 +255,13 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("version", "string"),
                 ("timezone", "string"),
                 ("uptime", "integer"),
+                ("update_available", "boolean"),
             ],
             false,
-            None,
+            Some(
+                "update_available is null when the host system did not report a \
+                 device state, which is not the same as being up to date",
+            ),
         ),
     );
 

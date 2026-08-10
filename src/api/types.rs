@@ -196,8 +196,15 @@ pub struct HostSystem {
 }
 
 impl HostSystem {
-    pub fn update_available(&self) -> bool {
-        self.device_state.as_deref() == Some("updateAvailable")
+    /// Whether a firmware update is waiting, or `None` when the host did not say.
+    ///
+    /// A host that reported no device state has not reported an up-to-date one,
+    /// so the answer is unknown rather than negative. Only a state the host did
+    /// report settles the question, either way.
+    pub fn update_available(&self) -> Option<bool> {
+        self.device_state
+            .as_deref()
+            .map(|state| state == "updateAvailable")
     }
 }
 
