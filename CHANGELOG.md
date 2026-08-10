@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2](https://github.com/rvben/unifi-cli/compare/v0.3.1...v0.3.2) - 2026-08-10
+
+### Fixed
+
+- **config**: write the config atomically on Windows too ([0c2977e](https://github.com/rvben/unifi-cli/commit/0c2977e238ccb09ca2949560568c4f8b8fd528db))
+- **config**: replace the config file atomically instead of writing in place ([9ba19fb](https://github.com/rvben/unifi-cli/commit/9ba19fbde8b498488f43b1af1ab1d2771189d672))
+- **output**: keep 408 and 429 retryable instead of permanent client errors ([1068bae](https://github.com/rvben/unifi-cli/commit/1068baed75ce232028fec0277c1ca38324723a35))
+- **ports**: keep the attachment flag tri-state instead of reading absence as gone ([de2e770](https://github.com/rvben/unifi-cli/commit/de2e770d30cbc3cba64cf5b06640549a9655c776))
+- **config**: create the credentials file with owner-only permissions ([8b7789d](https://github.com/rvben/unifi-cli/commit/8b7789d2d87edc5819e950573130000370c6939f))
+- **schema**: publish an error and confirmation contract that matches runtime ([5176ccf](https://github.com/rvben/unifi-cli/commit/5176ccfefeb08df4fecd0d7a6d83882f5e06c57f))
+- **ports**: report a stale last connection as unattached ([e80cda5](https://github.com/rvben/unifi-cli/commit/e80cda542fce27db385fc43bd69093c265ead464))
+
 ## [0.3.1](https://github.com/rvben/unifi-cli/compare/v0.3.0...v0.3.1) - 2026-08-10
 
 ### Added
