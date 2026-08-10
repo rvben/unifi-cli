@@ -1066,11 +1066,7 @@ fn draw_clients(f: &mut ratatui::Frame, area: Rect, state: &AppState) {
         .skip(state.client_offset)
         .take(inner_height)
         .map(|(i, c)| {
-            // A counter the controller did not report is not a counter of zero:
-            // a client whose traffic is unknown is not an idle client. Both
-            // halves are needed for a total, since one alone is only part of
-            // the number this column claims to show.
-            let total_bytes = c.tx_bytes.zip(c.rx_bytes).map(|(tx, rx)| tx + rx);
+            let total_bytes = crate::commands::clients::total_bytes(c);
             let is_idle = total_bytes == Some(0);
 
             let type_icon = if c.is_wired { "⌐ " } else { "◦ " };

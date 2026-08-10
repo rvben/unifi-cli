@@ -3758,6 +3758,138 @@ mod events_surface_removed {
     }
 }
 
+// --- Ranking clients the controller published no counters for ---
+//
+// The live controller omits tx_bytes/rx_bytes for a substantial share of the
+// clients it lists, so this is the common case rather than a corner of it.
+
+mod clients_top_unknown_counters {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// One client that transferred a lot, one that reported a real zero, and one
+    /// the controller published no counters for at all.
+    async fn serving_a_mixed_population() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/sta"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "192.0.2.1",
+                     "name": "Talker", "is_wired": true,
+                     "tx_bytes": 500000, "rx_bytes": 600000},
+                    {"_id": "c2", "mac": "aa:bb:cc:dd:ee:02", "ip": "192.0.2.2",
+                     "name": "Silent", "is_wired": true},
+                    {"_id": "c3", "mac": "aa:bb:cc:dd:ee:03", "ip": "192.0.2.3",
+                     "name": "Measured Idle", "is_wired": true,
+                     "tx_bytes": 0, "rx_bytes": 0}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn run(server_uri: &str, args: &[&str]) -> std::process::Output {
+        let mut argv = vec!["--host", server_uri, "--api-key", "test-key"];
+        argv.extend_from_slice(args);
+        std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args(argv)
+            .output()
+            .expect("failed to run the unifi binary")
+    }
+
+    #[tokio::test]
+    async fn a_client_with_no_reported_counters_is_not_drawn_as_having_moved_nothing() {
+        let server = serving_a_mixed_population().await;
+        let stdout = String::from_utf8_lossy(
+            &run(
+                &server.uri(),
+                &["clients", "top", "--limit", "10", "-o", "text"],
+            )
+            .stdout,
+        )
+        .into_owned();
+
+        let silent = stdout
+            .lines()
+            .find(|l| l.contains("Silent"))
+            .unwrap_or_else(|| panic!("no row for the client without counters:\n{stdout}"));
+        assert!(
+            !silent.contains("0 B"),
+            "counters the controller never sent are unknown, and `0 B` claims a \
+             measurement nobody made: {silent}"
+        );
+
+        // The negative control: a client that really did report zero must keep
+        // saying so, or the fix has simply hidden every zero.
+        let idle = stdout
+            .lines()
+            .find(|l| l.contains("Measured Idle"))
+            .unwrap_or_else(|| panic!("no row for the idle client:\n{stdout}"));
+        assert!(
+            idle.contains("0 B"),
+            "a client that did report zero has been measured: {idle}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unrankable_client_does_not_displace_one_that_can_be_ranked() {
+        let server = serving_a_mixed_population().await;
+        let stdout = String::from_utf8_lossy(
+            &run(
+                &server.uri(),
+                &["clients", "top", "--limit", "10", "-o", "text"],
+            )
+            .stdout,
+        )
+        .into_owned();
+
+        let row_of = |name: &str| {
+            stdout
+                .lines()
+                .position(|l| l.contains(name))
+                .unwrap_or_else(|| panic!("no row for {name}:\n{stdout}"))
+        };
+        assert!(
+            row_of("Talker") < row_of("Measured Idle"),
+            "a ranking by traffic still ranks what it can:\n{stdout}"
+        );
+        assert!(
+            row_of("Measured Idle") < row_of("Silent"),
+            "a client that cannot be ranked belongs after every client that \
+             can, not interleaved with them:\n{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_total_is_not_a_number_when_neither_half_is() {
+        let server = serving_a_mixed_population().await;
+        let output = run(
+            &server.uri(),
+            &["clients", "top", "--limit", "10", "-o", "json"],
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        let items = body.as_array().expect("clients top emits an array");
+        let silent = items
+            .iter()
+            .find(|c| c["name"] == "Silent")
+            .expect("the client without counters must still be listed");
+
+        assert!(
+            silent["tx_bytes"].is_null() && silent["rx_bytes"].is_null(),
+            "{silent}"
+        );
+        assert!(
+            silent["total_bytes"].is_null(),
+            "a total of two unknowns is unknown, and `0` next to two nulls is a \
+             contradiction in one object: {silent}"
+        );
+    }
+}
+
 // --- The Protect camera surface ---
 //
 // There is no Protect application to test against, so these drive the real

@@ -387,8 +387,13 @@ pub async fn kick(
     Ok(())
 }
 
-pub(crate) fn total_bytes(c: &LegacyClient) -> u64 {
-    c.tx_bytes.unwrap_or(0) + c.rx_bytes.unwrap_or(0)
+/// Total traffic, or `None` when the controller did not report the counters.
+///
+/// A counter the controller did not report is not a counter of zero: a client
+/// whose traffic is unknown is not an idle client. Both halves are needed for a
+/// total, since one alone is only part of the number the column claims to show.
+pub(crate) fn total_bytes(c: &LegacyClient) -> Option<u64> {
+    c.tx_bytes.zip(c.rx_bytes).map(|(tx, rx)| tx + rx)
 }
 
 pub async fn top(
@@ -397,7 +402,13 @@ pub async fn top(
     limit: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut clients = client.list_clients_legacy().await?;
-    clients.sort_by_key(|c| std::cmp::Reverse(total_bytes(c)));
+    // A client the controller published no counters for cannot be placed in a
+    // ranking by traffic, so it sits after everything that can, rather than
+    // being ranked as though it had transferred nothing.
+    clients.sort_by_key(|c| {
+        let total = total_bytes(c);
+        (total.is_none(), std::cmp::Reverse(total.unwrap_or(0)))
+    });
     let top_clients: Vec<&LegacyClient> = clients.iter().take(limit).collect();
 
     if out.is_json() {
@@ -443,9 +454,10 @@ pub async fn top(
                 .map(|m| format_mac(&normalize_mac(m)))
                 .unwrap_or_else(|| "-".into());
             let ip = c.ip.as_deref().unwrap_or("-");
-            let tx = format_bytes(c.tx_bytes.unwrap_or(0));
-            let rx = format_bytes(c.rx_bytes.unwrap_or(0));
-            let total = format_bytes(total_bytes(c));
+            let bytes = |v: Option<u64>| v.map(format_bytes).unwrap_or_else(|| "-".into());
+            let tx = bytes(c.tx_bytes);
+            let rx = bytes(c.rx_bytes);
+            let total = bytes(total_bytes(c));
             let pad = name_w - 1;
 
             if color {
@@ -627,19 +639,36 @@ mod tests {
     fn total_bytes_both_present() {
         let c: LegacyClient =
             serde_json::from_str(r#"{"_id": "x", "tx_bytes": 100, "rx_bytes": 200}"#).unwrap();
-        assert_eq!(total_bytes(&c), 300);
+        assert_eq!(total_bytes(&c), Some(300));
+    }
+
+    /// A client that really did transfer nothing is a measurement, and stays
+    /// distinguishable from one the controller said nothing about.
+    #[test]
+    fn total_bytes_measured_zero() {
+        let c: LegacyClient =
+            serde_json::from_str(r#"{"_id": "x", "tx_bytes": 0, "rx_bytes": 0}"#).unwrap();
+        assert_eq!(total_bytes(&c), Some(0));
     }
 
     #[test]
     fn total_bytes_none_values() {
         let c: LegacyClient = serde_json::from_str(r#"{"_id": "x"}"#).unwrap();
-        assert_eq!(total_bytes(&c), 0);
+        assert_eq!(
+            total_bytes(&c),
+            None,
+            "counters the controller never sent are unknown, not zero"
+        );
     }
 
     #[test]
     fn total_bytes_partial() {
         let c: LegacyClient = serde_json::from_str(r#"{"_id": "x", "tx_bytes": 500}"#).unwrap();
-        assert_eq!(total_bytes(&c), 500);
+        assert_eq!(
+            total_bytes(&c),
+            None,
+            "half a total is not a total: 500 would claim rx was measured at zero"
+        );
     }
 
     // --- apply_filter ---
