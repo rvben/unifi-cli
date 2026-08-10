@@ -163,17 +163,17 @@ port instead of rebooting the whole switch:
 unifi ports find garage-pi
 unifi ports find aa:bb:cc:dd:ee:10
 
-# Inspect it — PoE mode, class, voltage, current, and what's attached
+# Inspect it: PoE mode, class, voltage, current, and what's attached
 unifi ports show aa:bb:cc:dd:ee:ff 5
 
-# Bounce PoE on that port only — the rest of the switch is untouched
+# Bounce PoE on that port only, leaving the rest of the switch untouched
 unifi ports cycle aa:bb:cc:dd:ee:ff 5
 ```
 
 `ports find`'s output feeds directly into `show` and `cycle`: `device_mac`
 and `port_idx` are the *switch's* MAC and port index, not the attached
 device's. A name is ambiguous only when it matches more than one device
-that's actually on a switch port — that returns `kind: conflict` (exit 6)
+that's actually on a switch port; that returns `kind: conflict` (exit 6)
 listing the candidates rather than guessing. Other client records sharing
 the name (a device's WiFi interface reporting under the same name as its
 wired one, say) don't cause a conflict if they're not themselves on a port.
@@ -196,7 +196,7 @@ when:
 - the port isn't currently delivering PoE (`poe_enable: false`) → `kind: conflict`, exit 6
 - the device has no such port index → `kind: not_found`, exit 4
 
-The off interval — how long the port stays unpowered — is chosen by the
+The off interval (how long the port stays unpowered) is chosen by the
 switch firmware, not by this CLI. The power-cycle command takes only the
 target port, with no duration parameter, on either the legacy endpoint or
 the Integration API, so the interval isn't configurable and varies by

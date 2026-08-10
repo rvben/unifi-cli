@@ -4,21 +4,6 @@ All notable changes to this project will be documented in this file.
 
 
 
-## [Unreleased]
-
-### Added
-
-- **ports**: new `unifi ports` command tree — `list`, `show`, `find`, and `cycle` — for working with individual switch ports instead of whole devices.
-- **ports cycle**: power-cycles a single PoE port via the `devmgr` `power-cycle` command, with pre-flight checks that reject non-PoE ports, administratively-disabled PoE, and a port not currently delivering PoE (`poe_enable: false`, observed live to make the controller reject the command) without ever sending the power-cycle command (the port table is read first). Prompts for confirmation on a TTY; requires `--yes` when piped, otherwise exits 2 with `kind: confirmation_required`.
-- **ports find**: resolves a MAC, an IP, or a client name (case-insensitive substring match) to the switch port(s) a device is attached to, via `port_table.last_connection`. A device that has moved between ports appears once per port, with `connected` marking its current one. A name is ambiguous only when it matches more than one device that is actually on a switch port; that returns `kind: conflict` (exit 6) listing the candidates rather than guessing. Other client records sharing the name that aren't themselves on a port (a device's WiFi interface reporting under the same name as its wired one, say) don't count toward ambiguity.
-- **ports show**: exposes PoE telemetry the CLI previously discarded — `poe_mode`, `poe_class`, `poe_voltage`, `poe_current`, `poe_good` — plus `attached_mac`.
-- The `conflict` error kind (exit code 6), already advertised in `unifi schema`'s error table since 0.2.2 but never emitted by any code path until now.
-
-### Changed
-
-- **devices ports**: `unifi devices ports <MAC>` is now an alias for `unifi ports list <MAC>`. Its JSON output gains `device_mac` and `device_name`; every previously emitted key is unchanged, and it keeps its historical bare-JSON-array shape for backward compatibility.
-
-
 ## [0.3.0](https://github.com/rvben/unifi-cli/compare/v0.2.3...v0.3.0) - 2026-07-09
 
 ### Added
