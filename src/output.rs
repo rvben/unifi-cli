@@ -161,7 +161,7 @@ pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::ApiError;
+    use crate::api::{ApiError, UnsupportedReason};
 
     #[test]
     fn exit_code_for_auth_error() {
@@ -273,7 +273,24 @@ mod tests {
     fn error_kind_and_code_unsupported_is_distinct_from_not_found() {
         let err = ApiError::Unsupported {
             endpoint: "/proxy/protect/integration/v1/cameras".into(),
-            content_type: "text/html".into(),
+            reason: UnsupportedReason::NotJson {
+                content_type: "text/html".into(),
+            },
+        };
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "unsupported");
+        assert_eq!(code, exit_codes::NOT_FOUND);
+        assert_eq!(exit_code_for_error(&err), exit_codes::NOT_FOUND);
+    }
+
+    // Both reasons mean "the endpoint is not there", so they must publish the
+    // same kind and code. A caller that branches on the kind cannot be made to
+    // care which way the controller said it.
+    #[test]
+    fn error_kind_and_code_unsupported_is_the_same_for_a_removed_endpoint() {
+        let err = ApiError::Unsupported {
+            endpoint: "/proxy/network/api/s/default/stat/event?_limit=20".into(),
+            reason: UnsupportedReason::Removed,
         };
         let (kind, code) = error_kind_and_code(&err);
         assert_eq!(kind, "unsupported");
@@ -285,7 +302,9 @@ mod tests {
     fn unsupported_message_names_the_endpoint_and_the_content_type() {
         let err = ApiError::Unsupported {
             endpoint: "/proxy/protect/integration/v1/cameras".into(),
-            content_type: "text/html".into(),
+            reason: UnsupportedReason::NotJson {
+                content_type: "text/html".into(),
+            },
         };
         let message = err.to_string();
         assert!(
@@ -303,12 +322,37 @@ mod tests {
     fn unsupported_message_for_a_network_endpoint_does_not_blame_protect() {
         let err = ApiError::Unsupported {
             endpoint: "/proxy/network/api/s/default/stat/device".into(),
-            content_type: "text/html".into(),
+            reason: UnsupportedReason::NotJson {
+                content_type: "text/html".into(),
+            },
         };
         let message = err.to_string();
         assert!(
             message.contains("/proxy/network/api/s/default/stat/device"),
             "got: {message}"
+        );
+        assert!(!message.contains("Protect"), "got: {message}");
+    }
+
+    // A removed endpoint must not be described as a content-type problem: the
+    // controller answered with perfectly good JSON, it just refused the
+    // endpoint. Saying otherwise sends the reader after a fault that is not
+    // there.
+    #[test]
+    fn unsupported_message_for_a_removed_endpoint_does_not_mention_json() {
+        let err = ApiError::Unsupported {
+            endpoint: "/proxy/network/api/s/default/stat/event?_limit=20".into(),
+            reason: UnsupportedReason::Removed,
+        };
+        let message = err.to_string();
+        assert!(message.contains("/stat/event"), "got: {message}");
+        assert!(
+            !message.contains("instead of JSON"),
+            "a removed endpoint is not a decoding problem: {message}"
+        );
+        assert!(
+            message.contains("WebSocket"),
+            "the events case names what is left instead: {message}"
         );
         assert!(!message.contains("Protect"), "got: {message}");
     }

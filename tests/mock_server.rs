@@ -3574,3 +3574,186 @@ mod unsupported_application {
         }
     }
 }
+
+// --- An event log the firmware no longer serves ---
+//
+// UniFi Network 9 answers stat/event with 404 api.err.NotFound, and some
+// builds do not serve the rest/alarm fallback either: they reject the
+// resource with 400 api.err.InvalidObject, the same answer a nonsense
+// resource name gets. Reporting that verbatim tells a caller its request was
+// malformed and invites it to retry with other parameters, when in truth no
+// request would work. These drive the real binary so the published envelope
+// and exit code are observed.
+
+mod events_surface_removed {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn envelope(stderr: &str) -> serde_json::Value {
+        let last_line = stderr.trim_end().lines().last().unwrap_or("");
+        serde_json::from_str(last_line)
+            .unwrap_or_else(|e| panic!("last stderr line must be valid JSON ({e}): {last_line:?}"))
+    }
+
+    fn run_events_list(server: &MockServer) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "events",
+                "list",
+            ])
+            .output()
+            .expect("failed to run the unifi binary")
+    }
+
+    async fn mount_stat_event_404(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/event"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.NotFound"},
+                "data": []
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_alarm(server: &MockServer, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/alarm"))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn both_endpoints_gone_reports_unsupported_not_a_rejected_request() {
+        let server = MockServer::start().await;
+        mount_stat_event_404(&server).await;
+        mount_alarm(
+            &server,
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.InvalidObject"},
+                "data": []
+            })),
+        )
+        .await;
+
+        let output = run_events_list(&server);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "an absent event surface must exit 4, not 5: {stderr}"
+        );
+        let envelope = envelope(&stderr);
+        assert_eq!(
+            envelope["error"]["kind"], "unsupported",
+            "the request was fine, the endpoint is gone: {stderr}"
+        );
+        let message = envelope["error"]["message"]
+            .as_str()
+            .expect("error envelope must carry a message");
+        assert!(
+            message.contains("/proxy/network/api/s/default/stat/event"),
+            "the message must name the endpoint the caller asked for: {message}"
+        );
+        assert!(
+            message.contains("WebSocket"),
+            "the message must say what event stream remains: {message}"
+        );
+        assert!(
+            !message.contains("instead of JSON"),
+            "this controller answered JSON, it just refused the resource: {message}"
+        );
+        assert!(
+            !message.contains("Protect"),
+            "a Network endpoint must not be blamed on Protect: {message}"
+        );
+    }
+
+    // The fallback answering 404 means the same thing as its 400: the resource
+    // is not there. Both arms must reach the same kind.
+    #[tokio::test]
+    async fn a_fallback_that_404s_reports_unsupported_too() {
+        let server = MockServer::start().await;
+        mount_stat_event_404(&server).await;
+        mount_alarm(
+            &server,
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.NotFound"},
+                "data": []
+            })),
+        )
+        .await;
+
+        let output = run_events_list(&server);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(4), "stderr: {stderr}");
+        assert_eq!(envelope(&stderr)["error"]["kind"], "unsupported");
+    }
+
+    // The negative control for the 400 arm. A 400 that is not the controller
+    // disowning the resource is a genuinely rejected request, and must keep
+    // saying so: turning every 400 into `unsupported` would hide real faults
+    // behind "this controller cannot do that".
+    #[tokio::test]
+    async fn a_fallback_rejecting_the_request_stays_a_client_error() {
+        let server = MockServer::start().await;
+        mount_stat_event_404(&server).await;
+        mount_alarm(
+            &server,
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "meta": {"rc": "error", "msg": "api.err.InvalidPayload"},
+                "data": []
+            })),
+        )
+        .await;
+
+        let output = run_events_list(&server);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(5),
+            "a rejected request is not an absent endpoint: {stderr}"
+        );
+        let envelope = envelope(&stderr);
+        assert_eq!(envelope["error"]["kind"], "client_error", "{stderr}");
+        let message = envelope["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("api.err.InvalidPayload"),
+            "the controller's own reason must survive: {message}"
+        );
+    }
+
+    // The positive control. A controller that does serve the fallback must
+    // still get its events, so the check above cannot be passing by refusing
+    // everything.
+    #[tokio::test]
+    async fn a_working_fallback_still_returns_events() {
+        let server = MockServer::start().await;
+        mount_stat_event_404(&server).await;
+        mount_alarm(
+            &server,
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"key": "EVT_GW_Restarted", "msg": "Gateway restarted", "subsystem": "wan", "time": 300, "datetime": "2026-07-07T17:00:00Z"}
+                ]
+            })),
+        )
+        .await;
+
+        let output = run_events_list(&server);
+        assert!(
+            output.status.success(),
+            "a served fallback must succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        assert_eq!(body["items"][0]["key"], "EVT_GW_Restarted");
+    }
+}

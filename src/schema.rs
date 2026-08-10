@@ -581,7 +581,7 @@ pub fn print_schema(cmd: clap::Command) {
                 "kind": "unsupported",
                 "exit_code": 4,
                 "retryable": false,
-                "description": "The controller does not serve this API at all: it answered a JSON endpoint with something else, which is how UniFi OS reports an application it does not have. Unlike not_found there is no other identifier worth trying",
+                "description": "The controller does not serve this endpoint at all. It either answered a JSON endpoint with something else, which is how UniFi OS reports an application it does not have, or rejected the endpoint itself, which is how UniFi Network reports one the firmware has dropped. Unlike not_found there is no other identifier or parameter worth trying",
             },
             {
                 "kind": "client_error",

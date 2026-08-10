@@ -11,6 +11,29 @@ pub fn error_for_status(status: u16, message: String) -> ApiError {
     }
 }
 
+/// True when a legacy API error means the endpoint itself is not there.
+///
+/// UniFi Network answers an unknown `stat/` path with 404 `api.err.NotFound`
+/// and an unknown `rest/` resource with 400 `api.err.InvalidObject`, verified
+/// against a UniFi OS 9 controller by control: a nonsense resource and
+/// `rest/alarm` produce byte-identical 400s while `rest/networkconf` returns
+/// records.
+///
+/// A 400 alone does not carry that meaning, since the same status reports a
+/// genuinely malformed request, so the marker string is required too and this
+/// is only consulted for a request that carries no caller-supplied body or
+/// parameters that could be the invalid object.
+fn is_absent_legacy_endpoint(err: &ApiError) -> bool {
+    match err {
+        ApiError::NotFound(_) => true,
+        ApiError::Api {
+            status: 400,
+            message,
+        } => message.contains("api.err.InvalidObject"),
+        _ => false,
+    }
+}
+
 /// Decode a successful response as JSON, naming what answered when it is not.
 ///
 /// UniFi OS answers a request for an application the controller does not have
@@ -48,7 +71,7 @@ async fn json_or_unsupported<T: DeserializeOwned>(
             };
             Err(ApiError::Unsupported {
                 endpoint: endpoint.to_string(),
-                content_type,
+                reason: UnsupportedReason::NotJson { content_type },
             })
         }
     }
@@ -430,21 +453,30 @@ impl UnifiClient {
     // `Event` shape, so fall back to it. (The full live event stream on newer
     // controllers is only exposed over the events WebSocket, which this REST
     // client does not consume.)
+    //
+    // Some UniFi Network 9 builds serve neither. Reporting the fallback's own
+    // rejection verbatim would tell a caller that its request was malformed and
+    // invite it to retry with different parameters, when in truth the whole
+    // event surface is gone and nothing it can send would work.
     pub async fn list_events(&self, limit: usize) -> Result<Vec<Event>, ApiError> {
-        match self
-            .get_legacy::<Event>(&format!("/stat/event?_limit={limit}"))
-            .await
-        {
+        let events_path = format!("/stat/event?_limit={limit}");
+        match self.get_legacy::<Event>(&events_path).await {
             Ok(events) => Ok(events),
-            Err(ApiError::NotFound(_)) => {
-                let mut alarms: Vec<Event> = self.get_legacy("/rest/alarm").await?;
+            Err(ApiError::NotFound(_)) => match self.get_legacy::<Event>("/rest/alarm").await {
                 // `rest/alarm` is neither time-ordered nor limited server-side;
                 // present the most recent `limit` records to match the
                 // semantics `stat/event?_limit=` provided on older controllers.
-                alarms.sort_by_key(|e| std::cmp::Reverse(e.time));
-                alarms.truncate(limit);
-                Ok(alarms)
-            }
+                Ok(mut alarms) => {
+                    alarms.sort_by_key(|e| std::cmp::Reverse(e.time));
+                    alarms.truncate(limit);
+                    Ok(alarms)
+                }
+                Err(e) if is_absent_legacy_endpoint(&e) => Err(ApiError::Unsupported {
+                    endpoint: format!("/proxy/network/api/s/default{events_path}"),
+                    reason: UnsupportedReason::Removed,
+                }),
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         }
     }

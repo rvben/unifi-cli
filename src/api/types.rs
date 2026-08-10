@@ -528,16 +528,33 @@ pub enum ApiError {
     /// rejected locally before any HTTP call. Published by `unifi schema`
     /// as kind `conflict`, exit code 6.
     Conflict(String),
-    /// The controller answered a JSON endpoint with something else, which is
-    /// how UniFi OS reports an application it does not have: the request is
-    /// proxied to the web UI and returns 200 with an HTML page. Distinct from
+    /// The controller does not serve this endpoint at all. Distinct from
     /// `NotFound` because the whole API is absent, not one record, so there is
     /// no other identifier worth trying. Published as kind `unsupported`.
     Unsupported {
         endpoint: String,
-        content_type: String,
+        reason: UnsupportedReason,
     },
     Other(String),
+}
+
+/// How the controller revealed that an endpoint is absent.
+///
+/// Both forms mean the same thing to a caller, so they share one error kind.
+/// They are kept apart because the message has to say what actually happened:
+/// guessing at the wrong one sends the reader looking for a fault that is not
+/// there.
+#[derive(Debug)]
+pub enum UnsupportedReason {
+    /// The endpoint answered with something other than JSON. UniFi OS proxies
+    /// a request for an application it does not have to its own web UI, so the
+    /// call returns 200 with an HTML page.
+    NotJson { content_type: String },
+    /// The controller rejected the endpoint itself rather than the request.
+    /// UniFi Network answers an unknown legacy resource this way, so a
+    /// firmware that has dropped an endpoint is indistinguishable from one
+    /// that never had it, and neither is worth retrying.
+    Removed,
 }
 
 /// Scan a single error string for TLS certificate failure markers. rustls
@@ -620,20 +637,31 @@ impl fmt::Display for ApiError {
                 )
             }
             ApiError::Conflict(msg) => write!(f, "{msg}"),
-            ApiError::Unsupported {
-                endpoint,
-                content_type,
-            } => {
-                write!(
-                    f,
-                    "This controller does not serve {endpoint}: it answered with {content_type} \
-                     instead of JSON"
-                )?;
+            ApiError::Unsupported { endpoint, reason } => {
+                match reason {
+                    UnsupportedReason::NotJson { content_type } => write!(
+                        f,
+                        "This controller does not serve {endpoint}: it answered with \
+                         {content_type} instead of JSON"
+                    )?,
+                    UnsupportedReason::Removed => write!(
+                        f,
+                        "This controller does not serve {endpoint}: it rejected the endpoint \
+                         itself, so no parameter or identifier would change the result"
+                    )?,
+                }
                 if endpoint.contains("/protect/") {
                     write!(
                         f,
                         "\n  Hint: UniFi OS proxies the request to its web UI when the Protect \
                          application is not installed on the controller"
+                    )?;
+                } else if endpoint.contains("/stat/event") {
+                    write!(
+                        f,
+                        "\n  Hint: UniFi Network 9 removed the REST event log, and this \
+                         controller does not serve /rest/alarm either. The remaining event \
+                         stream is the events WebSocket, which this CLI does not consume"
                     )?;
                 }
                 Ok(())
