@@ -22,23 +22,27 @@ pub async fn cameras_list(
     let cameras = client.list_protect_cameras().await?;
 
     if out.is_json() {
+        // The same envelope every other list command uses, so a consumer that
+        // reads `items` does not have to special-case this one.
+        let items: Vec<serde_json::Value> = cameras
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "mac": c.mac,
+                    "state": c.state,
+                    "model_key": c.model_key,
+                    "mic_enabled": c.is_mic_enabled,
+                    "video_mode": c.video_mode,
+                })
+            })
+            .collect();
         out.print_data(
-            &serde_json::to_string_pretty(
-                &cameras
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "id": c.id,
-                            "name": c.name,
-                            "mac": c.mac,
-                            "state": c.state,
-                            "model_key": c.model_key,
-                            "mic_enabled": c.is_mic_enabled,
-                            "video_mode": c.video_mode,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "items": items,
+                "total": cameras.len(),
+            }))
             .expect("failed to serialize JSON"),
         );
     } else {
@@ -341,34 +345,36 @@ pub async fn cameras_list_full(
     let cameras = session.list_cameras_full().await?;
 
     if out.is_json() {
+        let items: Vec<serde_json::Value> = cameras
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "mac": c.mac,
+                    "ip": c.host,
+                    "state": c.state,
+                    "type": c.camera_type,
+                    "firmware": c.firmware_version,
+                    "recording": c.is_recording,
+                    "resolution": c.current_resolution,
+                    "codec": c.video_codec,
+                    "uptime": c.uptime,
+                    "wifi": c.wifi_connection_state.as_ref().map(|w| serde_json::json!({
+                        "ssid": w.ssid,
+                        "ap_name": w.ap_name,
+                        "signal_quality": w.signal_quality,
+                        "signal_strength": w.signal_strength,
+                        "connectivity": w.connectivity,
+                    })),
+                })
+            })
+            .collect();
         out.print_data(
-            &serde_json::to_string_pretty(
-                &cameras
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "id": c.id,
-                            "name": c.name,
-                            "mac": c.mac,
-                            "ip": c.host,
-                            "state": c.state,
-                            "type": c.camera_type,
-                            "firmware": c.firmware_version,
-                            "recording": c.is_recording,
-                            "resolution": c.current_resolution,
-                            "codec": c.video_codec,
-                            "uptime": c.uptime,
-                            "wifi": c.wifi_connection_state.as_ref().map(|w| serde_json::json!({
-                                "ssid": w.ssid,
-                                "ap_name": w.ap_name,
-                                "signal_quality": w.signal_quality,
-                                "signal_strength": w.signal_strength,
-                                "connectivity": w.connectivity,
-                            })),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "items": items,
+                "total": cameras.len(),
+            }))
             .expect("failed to serialize JSON"),
         );
     } else {

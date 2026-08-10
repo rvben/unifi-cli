@@ -3792,6 +3792,25 @@ mod protect_cameras {
     }
 
     #[tokio::test]
+    async fn the_camera_list_uses_the_same_envelope_as_every_other_list() {
+        let server = serving(serde_json::json!([
+            {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door", "state": "CONNECTED"}
+        ]))
+        .await;
+
+        let output = run(&server.uri(), &["protect", "cameras", "list", "-o", "json"]);
+        assert!(output.status.success());
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+
+        assert_eq!(
+            body["items"][0]["name"], "Front Door",
+            "a consumer reading `items` must not have to special-case cameras: {body}"
+        );
+        assert_eq!(body["total"], 1, "{body}");
+    }
+
+    #[tokio::test]
     async fn a_camera_that_did_not_report_its_mic_is_not_reported_as_muted() {
         let server = serving(serde_json::json!([
             {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door", "state": "CONNECTED"}
@@ -3803,7 +3822,7 @@ mod protect_cameras {
             serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
 
         assert!(
-            body[0]["mic_enabled"].is_null(),
+            body["items"][0]["mic_enabled"].is_null(),
             "an unreported flag is unknown, and `false` cannot be told apart \
              from a camera that really has its mic off: {body}"
         );
@@ -3821,7 +3840,7 @@ mod protect_cameras {
             serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
 
         assert_eq!(
-            body[0]["mic_enabled"], false,
+            body["items"][0]["mic_enabled"], false,
             "a flag the camera did report must survive: {body}"
         );
     }
