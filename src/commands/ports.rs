@@ -590,23 +590,23 @@ pub async fn show(
     }
     println!(
         "  {}  {}",
-        label("Name:    "),
+        label("Name:     "),
         p.name.as_deref().unwrap_or("-")
     );
     println!(
         "  {}  {}",
-        label("Link:    "),
+        label("Link:     "),
         if p.up { "up" } else { "down" }
     );
-    println!("  {}  {}", label("Speed:   "), speed_cell(p));
+    println!("  {}  {}", label("Speed:    "), speed_cell(p));
     println!(
         "  {}  {}",
-        label("Media:   "),
+        label("Media:    "),
         p.media.as_deref().unwrap_or("-")
     );
     println!(
         "  {}  {}",
-        label("PoE:     "),
+        label("PoE:      "),
         if p.port_poe {
             poe_cell(p)
         } else {
@@ -616,24 +616,24 @@ pub async fn show(
     if p.port_poe {
         println!(
             "  {}  {}",
-            label("PoE mode:"),
+            label("PoE mode: "),
             p.poe_mode.as_deref().unwrap_or("-")
         );
         println!(
             "  {}  {}",
-            label("PoE class"),
+            label("PoE class:"),
             p.poe_class.as_deref().unwrap_or("-")
         );
         if let Some(v) = p.poe_voltage {
-            println!("  {}  {v:.2} V", label("Voltage: "));
+            println!("  {}  {v:.2} V", label("Voltage:  "));
         }
         if let Some(c) = p.poe_current {
-            println!("  {}  {c:.2} mA", label("Current: "));
+            println!("  {}  {c:.2} mA", label("Current:  "));
         }
     }
     println!(
         "  {}  {}",
-        label("Attached:"),
+        label("Attached: "),
         attached_mac.as_deref().unwrap_or("-")
     );
     Ok(())
