@@ -861,10 +861,12 @@ fn enable_accept_invalid_certs_in_config(
 /// destination and is renamed over it. The rename is atomic: the credentials
 /// exist only inside a 0600 file, and a concurrent reader sees either the old
 /// config or the new one, never a half-written one.
-#[cfg(unix)]
+///
+/// Off unix the write goes through the same temp file and rename, so the config
+/// is never left half-written, but the mode is not set: the file takes the
+/// inherited ACL of its directory.
 fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<(), InitError> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     // The temp file must share a directory with the destination, since rename
     // does not cross filesystems.
@@ -882,11 +884,14 @@ fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<()
     let tmp_path = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
 
     let open_tmp = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        opts.open(&tmp_path)
     };
     let opened = match open_tmp() {
         // A temp file left behind by a killed run. Reclaim the name;
@@ -900,9 +905,13 @@ fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<()
     };
 
     let write_tmp = |mut file: std::fs::File| -> std::io::Result<()> {
-        // The umask can clear bits from the requested mode, so pin it here.
-        // The file is still empty, so no secret has reached the disk yet.
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        #[cfg(unix)]
+        {
+            // The umask can clear bits from the requested mode, so pin it here.
+            // The file is still empty, so no secret has reached the disk yet.
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(toml_str.as_bytes())?;
         file.sync_all()
     };
@@ -917,12 +926,6 @@ fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<()
             Err(InitError(format!("Failed to write config: {e}")))
         }
     }
-}
-
-#[cfg(not(unix))]
-fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<(), InitError> {
-    std::fs::write(config_path, toml_str)
-        .map_err(|e| InitError(format!("Failed to write config: {e}")))
 }
 
 /// Prompt for a yes/no answer on stderr (where init status is shown) and read
