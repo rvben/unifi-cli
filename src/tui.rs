@@ -2091,23 +2091,41 @@ impl PortsState {
                 }
             };
 
-            if let Some((prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&idx) {
-                let elapsed = now.duration_since(*prev_time).as_secs_f64();
-                if elapsed > 0.1 {
-                    let tx_rate = if tx >= *prev_tx {
-                        (tx - prev_tx) as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-                    let rx_rate = if rx >= *prev_rx {
-                        (rx - prev_rx) as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-                    self.port_rates.insert(idx, (tx_rate, rx_rate));
-                }
+            let Some(&(prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&idx) else {
+                self.prev_bytes.insert(idx, (tx, rx, now));
+                continue;
+            };
+
+            // The controller refreshes device statistics far more slowly than
+            // this view refreshes, so most polls hand back the counters the
+            // previous poll already saw. That is not a measurement of an idle
+            // port, it is the absence of a new measurement: dividing it by the
+            // poll interval would show 0 B/s on a port moving hundreds of
+            // kilobytes a second. The window stays open until the counters
+            // move, and the last real measurement stands in the meantime.
+            if tx == prev_tx && rx == prev_rx {
+                continue;
             }
 
+            // Counters that went backwards mean the device restarted. No rate
+            // spans that boundary, and subtracting across it would wrap the
+            // unsigned delta into an enormous fabricated burst.
+            if tx < prev_tx || rx < prev_rx {
+                self.port_rates.remove(&idx);
+                self.prev_bytes.insert(idx, (tx, rx, now));
+                continue;
+            }
+
+            let elapsed = now.duration_since(prev_time).as_secs_f64();
+            if elapsed > 0.0 {
+                self.port_rates.insert(
+                    idx,
+                    (
+                        (tx - prev_tx) as f64 / elapsed,
+                        (rx - prev_rx) as f64 / elapsed,
+                    ),
+                );
+            }
             self.prev_bytes.insert(idx, (tx, rx, now));
         }
     }
@@ -3497,7 +3515,75 @@ mod tests {
             (tx_rate - 1000.0).abs() < 1.0,
             "2000 bytes over 2 seconds, got {tx_rate}"
         );
-        assert_eq!(rx_rate, 0.0, "an unchanged counter really is zero traffic");
+        assert_eq!(
+            rx_rate, 0.0,
+            "the controller published a new sample and rx did not move in it"
+        );
+    }
+
+    #[test]
+    fn repeated_identical_counters_are_not_a_measurement_of_an_idle_port() {
+        let mut state = PortsState::new(2);
+        let busy = r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#;
+
+        state.device = Some(ports_device(busy));
+        state.update_port_rates();
+        // The controller republishes the same counters for many polls: it
+        // updates device statistics on the order of a minute, while this view
+        // polls every couple of seconds.
+        for _ in 0..10 {
+            age_baselines(&mut state, Duration::from_secs(2));
+            state.device = Some(ports_device(busy));
+            state.update_port_rates();
+        }
+
+        assert_eq!(
+            state.port_rates.get(&1),
+            None,
+            "no new counter has arrived, so no rate has been measured"
+        );
+
+        // When the counters finally move, the rate spans the whole window they
+        // were unchanged over, not the last poll interval.
+        age_baselines(&mut state, Duration::from_secs(2));
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":23000,"rx_bytes":2000}"#,
+        ));
+        state.update_port_rates();
+
+        let (tx_rate, _) = state.port_rates.get(&1).copied().expect("a rate");
+        assert!(
+            (tx_rate - 1000.0).abs() < 1.0,
+            "22000 bytes over the 22 seconds since the last new counter, got {tx_rate}"
+        );
+    }
+
+    #[test]
+    fn a_device_that_restarts_does_not_report_a_negative_burst() {
+        let mut state = PortsState::new(2);
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":9000,"rx_bytes":9000}"#,
+        ));
+        state.update_port_rates();
+        age_baselines(&mut state, Duration::from_secs(2));
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":18000,"rx_bytes":18000}"#,
+        ));
+        state.update_port_rates();
+        assert!(state.port_rates.contains_key(&1), "a rate was measured");
+
+        // The switch reboots and its counters start over.
+        age_baselines(&mut state, Duration::from_secs(2));
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":40,"rx_bytes":30}"#,
+        ));
+        state.update_port_rates();
+
+        assert_eq!(
+            state.port_rates.get(&1),
+            None,
+            "no rate spans a counter reset, and the stale one must not stand"
+        );
     }
 
     fn render_ports(state: &PortsState, width: u16, height: u16) -> String {
@@ -3541,14 +3627,40 @@ mod tests {
         state.update_port_rates();
         age_baselines(&mut state, Duration::from_secs(2));
         state.device = Some(ports_device(
-            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#,
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":5000,"rx_bytes":2000}"#,
         ));
         state.update_port_rates();
 
         let text = render_ports(&state, 120, 20);
         assert!(
+            text.contains("2.0 KB/s"),
+            "4000 bytes over 2 seconds:\n{text}"
+        );
+        assert!(
             text.contains("0 B/s"),
-            "two identical readings really are zero traffic:\n{text}"
+            "rx did not move across a sample the controller did publish:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_busy_port_the_controller_has_not_resampled_is_not_drawn_as_idle() {
+        let mut state = PortsState::new(2);
+        let busy = r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#;
+        state.device = Some(ports_device(busy));
+        state.update_port_rates();
+
+        for _ in 0..5 {
+            age_baselines(&mut state, Duration::from_secs(2));
+            state.device = Some(ports_device(busy));
+            state.update_port_rates();
+        }
+
+        let text = render_ports(&state, 120, 20);
+        assert!(text.contains("Port 1"), "{text}");
+        assert!(
+            !text.contains("0 B/s"),
+            "the controller has published no new sample, which is not the same \
+             as a port carrying no traffic:\n{text}"
         );
     }
 
