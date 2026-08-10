@@ -1250,8 +1250,31 @@ async fn run_config_check(client: &api::UnifiClient) {
     eprintln!("\nConfiguration is valid.");
 }
 
+/// Restore the default disposition for SIGPIPE, which Rust ignores at startup.
+///
+/// While it is ignored, the first write after a reader closes the pipe fails
+/// with EPIPE and the standard library turns that into a panic. `unifi clients
+/// list | head -5`, or any consumer that exits early, would then print a stack
+/// trace and exit 101, which reads as this tool failing rather than as the
+/// ordinary end of a pipeline. With the default restored the process is simply
+/// terminated by the signal, which is what every other command-line tool does.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: called before the tokio runtime starts any thread, and setting a
+    // disposition to SIG_DFL touches nothing else in the process.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+fn main() {
+    #[cfg(unix)]
+    restore_default_sigpipe();
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         // Help and version are not errors; let clap handle them normally.
         if matches!(

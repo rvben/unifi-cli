@@ -383,3 +383,50 @@ fn ungated_mutating_commands_do_not_ask_for_confirmation() {
         );
     }
 }
+
+// --- A consumer that stops reading is not this tool's failure ---
+
+/// `unifi ... | head -5`, or any consumer that exits before the output ends,
+/// closes the pipe mid-write. Rust ignores SIGPIPE at startup, so the write
+/// used to fail with EPIPE, panic with "failed printing to stdout: Broken
+/// pipe", and exit 101, which reads as this tool crashing.
+///
+/// `completions bash` writes more than a pipe buffer holds and needs no
+/// controller, so the child is guaranteed to be mid-write when the read end
+/// closes.
+#[cfg(unix)]
+#[test]
+fn a_consumer_that_stops_reading_does_not_crash_the_tool() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unifi"))
+        .args(["completions", "bash"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn binary");
+
+    // Close the read end while the child still has output to write.
+    drop(child.stdout.take());
+
+    let out = child.wait_with_output().expect("failed to wait for binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !stderr.contains("panicked"),
+        "a closed pipe must not produce a panic: {stderr}"
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(101),
+        "a closed pipe must not exit as a panic: {stderr}"
+    );
+    assert_eq!(
+        out.status.signal(),
+        Some(13),
+        "the process should end on SIGPIPE, the way every other tool in a \
+         pipeline does: {:?} {stderr}",
+        out.status
+    );
+}

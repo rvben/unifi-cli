@@ -2793,6 +2793,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "jsonschema",
+ "libc",
  "owo-colors",
  "ratatui",
  "reqwest",
