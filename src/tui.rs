@@ -2091,6 +2091,18 @@ impl PortsState {
                 }
             };
 
+            // A severed link carries nothing, and its counters are frozen at
+            // the value they reached while it was up. Holding the rate that was
+            // measured then would leave a down port reporting throughput for as
+            // long as it stays down, so it is dropped and the baseline moves
+            // with each poll: the first measurement after the link returns then
+            // spans only the time it has been up.
+            if !port.up {
+                self.port_rates.remove(&idx);
+                self.prev_bytes.insert(idx, (tx, rx, now));
+                continue;
+            }
+
             let Some(&(prev_tx, prev_rx, prev_time)) = self.prev_bytes.get(&idx) else {
                 self.prev_bytes.insert(idx, (tx, rx, now));
                 continue;
@@ -3440,11 +3452,21 @@ mod tests {
 
     /// Backdate every recorded baseline so the next sample spans a real
     /// interval, without the test having to sleep through one.
+    ///
+    /// The window is long relative to any interval the tests care about,
+    /// because the clock keeps running between the two samples: a rate asserted
+    /// over a two-second window moves by a percent when the machine is loaded,
+    /// which is a statement about the test host rather than about the code.
     fn age_baselines(state: &mut PortsState, by: Duration) {
         for entry in state.prev_bytes.values_mut() {
             entry.2 -= by;
         }
     }
+
+    /// The interval every rate test measures over, and the byte delta that
+    /// makes 1000 B/s across it.
+    const WINDOW: Duration = Duration::from_secs(100);
+    const WINDOW_DELTA: u64 = 100_000;
 
     #[test]
     fn a_port_with_no_counters_gets_no_baseline() {
@@ -3503,17 +3525,19 @@ mod tests {
             r#"{"port_idx":1,"up":true,"tx_bytes":1000,"rx_bytes":2000}"#,
         ));
         state.update_port_rates();
-        age_baselines(&mut state, Duration::from_secs(2));
+        age_baselines(&mut state, WINDOW);
 
-        state.device = Some(ports_device(
-            r#"{"port_idx":1,"up":true,"tx_bytes":3000,"rx_bytes":2000}"#,
-        ));
+        state.device = Some(ports_device(&format!(
+            r#"{{"port_idx":1,"up":true,"tx_bytes":{},"rx_bytes":2000}}"#,
+            1000 + WINDOW_DELTA
+        )));
         state.update_port_rates();
 
         let (tx_rate, rx_rate) = state.port_rates.get(&1).copied().expect("a rate");
         assert!(
-            (tx_rate - 1000.0).abs() < 1.0,
-            "2000 bytes over 2 seconds, got {tx_rate}"
+            (tx_rate - 1000.0).abs() < 10.0,
+            "{WINDOW_DELTA} bytes over {} seconds, got {tx_rate}",
+            WINDOW.as_secs()
         );
         assert_eq!(
             rx_rate, 0.0,
@@ -3532,7 +3556,7 @@ mod tests {
         // updates device statistics on the order of a minute, while this view
         // polls every couple of seconds.
         for _ in 0..10 {
-            age_baselines(&mut state, Duration::from_secs(2));
+            age_baselines(&mut state, WINDOW / 10);
             state.device = Some(ports_device(busy));
             state.update_port_rates();
         }
@@ -3545,16 +3569,18 @@ mod tests {
 
         // When the counters finally move, the rate spans the whole window they
         // were unchanged over, not the last poll interval.
-        age_baselines(&mut state, Duration::from_secs(2));
-        state.device = Some(ports_device(
-            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":23000,"rx_bytes":2000}"#,
-        ));
+        state.device = Some(ports_device(&format!(
+            r#"{{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":{},"rx_bytes":2000}}"#,
+            1000 + WINDOW_DELTA
+        )));
         state.update_port_rates();
 
         let (tx_rate, _) = state.port_rates.get(&1).copied().expect("a rate");
         assert!(
-            (tx_rate - 1000.0).abs() < 1.0,
-            "22000 bytes over the 22 seconds since the last new counter, got {tx_rate}"
+            (tx_rate - 1000.0).abs() < 10.0,
+            "{WINDOW_DELTA} bytes over the {} seconds since the last new \
+             counter, not over one poll interval, got {tx_rate}",
+            WINDOW.as_secs()
         );
     }
 
@@ -3565,7 +3591,7 @@ mod tests {
             r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":9000,"rx_bytes":9000}"#,
         ));
         state.update_port_rates();
-        age_baselines(&mut state, Duration::from_secs(2));
+        age_baselines(&mut state, WINDOW);
         state.device = Some(ports_device(
             r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":18000,"rx_bytes":18000}"#,
         ));
@@ -3573,7 +3599,7 @@ mod tests {
         assert!(state.port_rates.contains_key(&1), "a rate was measured");
 
         // The switch reboots and its counters start over.
-        age_baselines(&mut state, Duration::from_secs(2));
+        age_baselines(&mut state, WINDOW);
         state.device = Some(ports_device(
             r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":40,"rx_bytes":30}"#,
         ));
@@ -3583,6 +3609,68 @@ mod tests {
             state.port_rates.get(&1),
             None,
             "no rate spans a counter reset, and the stale one must not stand"
+        );
+    }
+
+    #[test]
+    fn a_port_that_goes_down_stops_reporting_the_rate_it_had_while_up() {
+        let mut state = PortsState::new(2);
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#,
+        ));
+        state.update_port_rates();
+        age_baselines(&mut state, WINDOW);
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":500000,"rx_bytes":2000}"#,
+        ));
+        state.update_port_rates();
+        assert!(state.port_rates.contains_key(&1), "a rate was measured");
+
+        // The link drops. Its counters are frozen at their final value, so
+        // nothing moves them again and the last measured rate would otherwise
+        // stand on the row forever.
+        age_baselines(&mut state, WINDOW);
+        state.device = Some(ports_device(
+            r#"{"port_idx":1,"name":"Port 1","up":false,"tx_bytes":500000,"rx_bytes":2000}"#,
+        ));
+        state.update_port_rates();
+
+        let text = render_ports(&state, 120, 20);
+        assert!(text.contains("down"), "the port reports down:\n{text}");
+        assert!(
+            !text.contains("KB/s"),
+            "a severed link carries no traffic, so the throughput measured \
+             while it was up is not what it is doing now:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_port_that_comes_back_up_is_measured_from_when_it_returned() {
+        let mut state = PortsState::new(2);
+
+        // Down for a long time, with the counters frozen where the link left
+        // them.
+        for _ in 0..5 {
+            state.device = Some(ports_device(
+                r#"{"port_idx":1,"name":"Port 1","up":false,"tx_bytes":1000,"rx_bytes":2000}"#,
+            ));
+            state.update_port_rates();
+            age_baselines(&mut state, WINDOW);
+        }
+
+        // The link returns and carries traffic over the next poll.
+        state.device = Some(ports_device(&format!(
+            r#"{{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":{},"rx_bytes":2000}}"#,
+            1000 + WINDOW_DELTA
+        )));
+        state.update_port_rates();
+
+        let (tx_rate, _) = state.port_rates.get(&1).copied().expect("a rate");
+        assert!(
+            (tx_rate - 1000.0).abs() < 10.0,
+            "{WINDOW_DELTA} bytes over the {} seconds since the link returned, \
+             not spread across the whole outage, got {tx_rate}",
+            WINDOW.as_secs()
         );
     }
 
@@ -3625,16 +3713,18 @@ mod tests {
             r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":1000,"rx_bytes":2000}"#,
         ));
         state.update_port_rates();
-        age_baselines(&mut state, Duration::from_secs(2));
+        age_baselines(&mut state, WINDOW);
+        // Twice WINDOW_DELTA plus the rounding the display does: 2048 B/s is
+        // exactly 2.0 KB/s.
         state.device = Some(ports_device(
-            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":5000,"rx_bytes":2000}"#,
+            r#"{"port_idx":1,"name":"Port 1","up":true,"tx_bytes":205800,"rx_bytes":2000}"#,
         ));
         state.update_port_rates();
 
         let text = render_ports(&state, 120, 20);
         assert!(
             text.contains("2.0 KB/s"),
-            "4000 bytes over 2 seconds:\n{text}"
+            "204800 bytes over 100 seconds is 2048 B/s:\n{text}"
         );
         assert!(
             text.contains("0 B/s"),
