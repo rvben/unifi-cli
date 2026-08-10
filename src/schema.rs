@@ -581,7 +581,13 @@ pub fn print_schema(cmd: clap::Command) {
                 "kind": "client_error",
                 "exit_code": 5,
                 "retryable": false,
-                "description": "API rejected the request itself (4xx other than 401/403/404). The request will not succeed unchanged, so retrying cannot help; the HTTP status is in the error message",
+                "description": "API rejected the request itself (4xx other than 401/403/404/408/429). The request will not succeed unchanged, so retrying cannot help; the HTTP status is in the error message",
+            },
+            {
+                "kind": "retry_later",
+                "exit_code": 5,
+                "retryable": true,
+                "description": "API declined to serve the request now and invited a retry (429 rate limited, 408 request timeout). Back off and retry the same request",
             },
             {
                 "kind": "api_error",

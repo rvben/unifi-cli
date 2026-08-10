@@ -332,7 +332,8 @@ unifi schema    # Dumps all commands, arguments, output fields as JSON
 | 2 | `confirmation_required` | A destructive command ran without `--yes` and without a TTY |
 | 3 | `auth_error` | Authentication error (401/403) |
 | 4 | `not_found` | Not found (404) |
-| 5 | `client_error` | The controller rejected the request itself (4xx other than 401/403/404); retrying it unchanged cannot help |
+| 5 | `client_error` | The controller rejected the request itself (4xx other than 401/403/404/408/429); retrying it unchanged cannot help |
+| 5 | `retry_later` | The controller invited a retry (429 rate limited, 408 request timeout); back off and send the same request again |
 | 5 | `api_error` | The controller failed to serve the request (5xx); may be transient |
 | 6 | `conflict` | The request cannot succeed against the resource's current state, refused locally before any API call |
 

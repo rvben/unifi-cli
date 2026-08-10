@@ -130,11 +130,15 @@ pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static
         match api_err {
             crate::api::ApiError::Auth(_) => ("auth_error", exit_codes::AUTH_ERROR),
             crate::api::ApiError::NotFound(_) => ("not_found", exit_codes::NOT_FOUND),
-            // A 4xx the CLI does not map to a more specific kind means the
-            // request itself was rejected, so retrying it unchanged cannot
-            // help. It shares exit code 5 with api_error but reports a
-            // distinct kind, so an agent branching on `retryable` does not
-            // loop on a permanent failure.
+            // 408 and 429 are the two 4xx that invite the same request again,
+            // so they stay retryable even though they are client errors.
+            crate::api::ApiError::Api {
+                status: 408 | 429, ..
+            } => ("retry_later", exit_codes::API_ERROR),
+            // Any other 4xx means the request itself was rejected, so retrying
+            // it unchanged cannot help. It shares exit code 5 with api_error
+            // but reports a distinct kind, so an agent branching on
+            // `retryable` does not loop on a permanent failure.
             crate::api::ApiError::Api { status, .. } if (400..500).contains(status) => {
                 ("client_error", exit_codes::API_ERROR)
             }
@@ -227,6 +231,21 @@ mod tests {
         let (kind, code) = error_kind_and_code(&err);
         assert_eq!(kind, "client_error");
         assert_eq!(code, exit_codes::API_ERROR);
+    }
+
+    #[test]
+    fn error_kind_and_code_keeps_408_and_429_retryable() {
+        // Both statuses ask for the same request again, so they must not land
+        // in the permanent client_error bucket an agent gives up on.
+        for status in [408u16, 429] {
+            let err = ApiError::Api {
+                status,
+                message: "slow down".into(),
+            };
+            let (kind, code) = error_kind_and_code(&err);
+            assert_eq!(kind, "retry_later", "status {status}");
+            assert_eq!(code, exit_codes::API_ERROR, "status {status}");
+        }
     }
 
     #[test]
