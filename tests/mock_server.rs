@@ -50,6 +50,25 @@ async fn run_json(server: &MockServer, args: &[&str]) -> serde_json::Value {
     })
 }
 
+/// The one record whose keys `output_fields` describes.
+///
+/// A list command wraps its records in a pagination envelope, `devices ports`
+/// and `system health` emit a bare array, and a detail command emits the record
+/// on its own. The schema describes a record in every case.
+fn one_record(command: &str, body: &serde_json::Value) -> serde_json::Value {
+    let record = match body {
+        serde_json::Value::Array(items) => items.first(),
+        serde_json::Value::Object(fields) => match fields.get("items") {
+            Some(serde_json::Value::Array(items)) => items.first(),
+            _ => Some(body),
+        },
+        _ => None,
+    };
+    record
+        .unwrap_or_else(|| panic!("`{command}` emitted no record to check against: {body}"))
+        .clone()
+}
+
 /// Assert `unifi schema` declares for `command` exactly the keys the command
 /// emits: no undiscoverable field, and no documented field that never appears.
 ///
@@ -57,10 +76,11 @@ async fn run_json(server: &MockServer, args: &[&str]) -> serde_json::Value {
 /// suite would catch the two halves drifting apart. Each command that publishes
 /// `output_fields` gets one of these; the check lives here once so adding it to
 /// a command costs a single call.
-fn assert_schema_matches(command: &str, emitted: &serde_json::Value) {
-    let emitted = emitted
+fn assert_schema_matches(command: &str, body: &serde_json::Value) {
+    let record = one_record(command, body);
+    let emitted = record
         .as_object()
-        .unwrap_or_else(|| panic!("`{command}` must emit a JSON object"));
+        .unwrap_or_else(|| panic!("`{command}` must emit a JSON object: {body}"));
 
     let schema_output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
         .arg("schema")
@@ -3983,6 +4003,53 @@ mod protect_cameras {
         assert_eq!(body["total"], 1, "{body}");
     }
 
+    // Same contract check the rest of the read-only surface gets: what the
+    // schema publishes for these commands must be what they emit.
+    #[tokio::test]
+    async fn the_camera_list_matches_the_schema_it_publishes() {
+        let server = serving(serde_json::json!([{
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door",
+            "mac": "AABBCCDDEEFF", "state": "CONNECTED", "modelKey": "camera",
+            "isMicEnabled": true, "videoMode": "default"
+        }]))
+        .await;
+
+        let output = run(&server.uri(), &["protect", "cameras", "list", "-o", "json"]);
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        crate::assert_schema_matches("protect cameras list", &body);
+    }
+
+    #[tokio::test]
+    async fn the_camera_detail_matches_the_schema_it_publishes() {
+        let camera = serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door",
+            "mac": "AABBCCDDEEFF", "state": "CONNECTED", "modelKey": "camera",
+            "isMicEnabled": true, "videoMode": "default",
+            "featureFlags": {"hasHdr": true, "hasMic": true}
+        });
+        // The name is resolved against the listing, then the detail fetched by id.
+        let server = serving(serde_json::json!([camera])).await;
+        Mock::given(method("GET"))
+            .and(path(format!("{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(camera))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &["protect", "cameras", "show", "Front Door", "-o", "json"],
+        );
+        assert!(
+            output.status.success(),
+            "cameras show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        crate::assert_schema_matches("protect cameras show", &body);
+    }
+
     #[tokio::test]
     async fn a_camera_that_did_not_report_its_mic_is_not_reported_as_muted() {
         let server = serving(serde_json::json!([
@@ -4075,6 +4142,43 @@ mod protect_cameras {
                 && stderr.contains("bbbbbbbbbbbbbbbbbbbbbbbb"),
             "both candidates must be named so the caller can pick one: {stderr}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_rtsps_listing_matches_the_schema_it_publishes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa/rtsps-stream"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "high": "rtsps://192.0.2.10:7441/high",
+                "medium": "rtsps://192.0.2.10:7441/medium",
+                "low": "rtsps://192.0.2.10:7441/low",
+                "package": "rtsps://192.0.2.10:7441/package"
+            })))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &[
+                "protect",
+                "rtsps",
+                "list",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "-o",
+                "json",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "rtsps list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        crate::assert_schema_matches("protect rtsps list", &body);
     }
 
     #[tokio::test]
@@ -4577,5 +4681,176 @@ mod schema_contract {
             body["firmware"], body["version"],
             "firmware and version are the same value under two names: {body}"
         );
+    }
+
+    // --- The rest of the read-only surface ---
+    //
+    // Two drifts were found by comparing declared fields against a real
+    // controller by hand. Every remaining command that publishes output_fields
+    // gets the same comparison here, so the next one cannot reach a release.
+
+    async fn mount_legacy(server: &MockServer, endpoint: &str, data: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path(format!("/proxy/network/api/s/default/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": data
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn serving_legacy(endpoint: &str, data: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        mount_legacy(&server, endpoint, data).await;
+        server
+    }
+
+    async fn serving_integration(resource: &str, data: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(format!(
+                r"/proxy/network/integration/v1/sites/.*/{resource}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
+                "data": data
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn one_station() -> serde_json::Value {
+        serde_json::json!([{
+            "_id": "1", "mac": "aa:bb:cc:dd:ee:ff", "name": "Workstation", "ip": "192.0.2.20",
+            "is_wired": true, "uptime": 8000, "tx_bytes": 4096, "rx_bytes": 8192,
+            "signal": -55, "essid": "HomeWiFi", "ap_mac": "aa:bb:cc:dd:06:43",
+            "network": "LAN", "vlan": 10, "blocked": false
+        }])
+    }
+
+    fn one_switch_with_a_port() -> serde_json::Value {
+        serde_json::json!([{
+            "mac": "aa:bb:cc:dd:06:43", "name": "Switch Lite 8 PoE",
+            "port_table": [{
+                "port_idx": 1, "name": "office", "media": "GE", "up": true,
+                "speed": 1000, "full_duplex": true, "port_poe": true,
+                "poe_enable": true, "poe_power": 3.1,
+                "tx_bytes": 100, "rx_bytes": 200,
+                "last_connection": {"mac": "aabbccddeeff", "connected": true}
+            }]
+        }])
+    }
+
+    #[tokio::test]
+    async fn clients_list_json_matches_schema_output_fields() {
+        let server = serving_integration(
+            "clients",
+            serde_json::json!([{
+                "macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "192.0.2.20",
+                "name": "Workstation", "type": "WIRED"
+            }]),
+        )
+        .await;
+        // The listing draws on both APIs: the Integration one for the roster,
+        // the legacy one for the signal and traffic columns.
+        mount_legacy(&server, "stat/sta", one_station()).await;
+        let body = run_json(&server, &["clients", "list"]).await;
+        assert_schema_matches("clients list", &body);
+    }
+
+    #[tokio::test]
+    async fn clients_show_json_matches_schema_output_fields() {
+        let server = serving_legacy("stat/sta", one_station()).await;
+        let body = run_json(&server, &["clients", "show", "aa:bb:cc:dd:ee:ff"]).await;
+        assert_schema_matches("clients show", &body);
+    }
+
+    #[tokio::test]
+    async fn clients_top_json_matches_schema_output_fields() {
+        let server = serving_legacy("stat/sta", one_station()).await;
+        let body = run_json(&server, &["clients", "top"]).await;
+        assert_schema_matches("clients top", &body);
+    }
+
+    #[tokio::test]
+    async fn devices_list_json_matches_schema_output_fields() {
+        let server = serving_integration(
+            "devices",
+            serde_json::json!([{
+                "macAddress": "aa:bb:cc:dd:06:43", "ipAddress": "192.0.2.10",
+                "name": "Switch Lite 8 PoE", "model": "USL8LP",
+                "state": "ONLINE", "firmwareVersion": "7.1.20.16850"
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["devices", "list"]).await;
+        assert_schema_matches("devices list", &body);
+    }
+
+    #[tokio::test]
+    async fn networks_list_json_matches_schema_output_fields() {
+        let server = serving_integration(
+            "networks",
+            serde_json::json!([{"name": "LAN", "vlanId": 10, "enabled": true, "default": true}]),
+        )
+        .await;
+        let body = run_json(&server, &["networks", "list"]).await;
+        assert_schema_matches("networks list", &body);
+    }
+
+    #[tokio::test]
+    async fn devices_ports_json_matches_schema_output_fields() {
+        let server = serving_legacy("stat/device", one_switch_with_a_port()).await;
+        let body = run_json(&server, &["devices", "ports", "aa:bb:cc:dd:06:43"]).await;
+        assert_schema_matches("devices ports", &body);
+    }
+
+    #[tokio::test]
+    async fn ports_list_json_matches_schema_output_fields() {
+        let server = serving_legacy("stat/device", one_switch_with_a_port()).await;
+        let body = run_json(&server, &["ports", "list", "aa:bb:cc:dd:06:43"]).await;
+        assert_schema_matches("ports list", &body);
+    }
+
+    #[tokio::test]
+    async fn ports_find_json_matches_schema_output_fields() {
+        let server = serving_legacy("stat/device", one_switch_with_a_port()).await;
+        // `find` resolves a client to the port it is attached to, so it needs
+        // the client roster as well as the port tables.
+        mount_legacy(&server, "stat/sta", one_station()).await;
+        let body = run_json(&server, &["ports", "find", "Workstation"]).await;
+        assert_schema_matches("ports find", &body);
+    }
+
+    #[tokio::test]
+    async fn events_list_json_matches_schema_output_fields() {
+        let server = serving_legacy(
+            "stat/event",
+            serde_json::json!([{
+                "key": "EVT_WU_Connected", "msg": "User connected",
+                "subsystem": "wlan", "time": 1700000000,
+                "datetime": "2024-01-15T10:30:00Z"
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["events", "list"]).await;
+        assert_schema_matches("events list", &body);
+    }
+
+    #[tokio::test]
+    async fn system_health_json_matches_schema_output_fields() {
+        let server = serving_legacy(
+            "stat/health",
+            serde_json::json!([{
+                "subsystem": "wan", "status": "ok", "num_sta": 12, "num_ap": 3,
+                "num_sw": 2, "wan_ip": "203.0.113.4", "isp_name": "Example ISP"
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["system", "health"]).await;
+        assert_schema_matches("system health", &body);
     }
 }
