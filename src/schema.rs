@@ -418,13 +418,17 @@ fn build_global_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
 
 fn infer_arg_type(arg: &clap::Arg) -> &'static str {
     let id = arg.get_id().as_str();
-    // Boolean flags (no value name = flag/switch)
-    if arg.get_value_names().is_none_or(|v| v.is_empty()) {
+    // A flag takes no value. The action is the reliable signal: clap's derive
+    // gives flags a value name too, so an empty value name never matches.
+    if matches!(
+        arg.get_action(),
+        clap::ArgAction::SetTrue | clap::ArgAction::SetFalse
+    ) {
         return "boolean";
     }
     // Known integer args by id
     match id {
-        "limit" | "offset" | "interval" => "integer",
+        "limit" | "offset" | "interval" | "port" | "watch" => "integer",
         _ => "string",
     }
 }

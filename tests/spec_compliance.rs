@@ -38,6 +38,89 @@ fn schema_validates_against_clispec_v02() {
     }
 }
 
+/// Walk every leaf command in `unifi schema`, yielding (path, arg).
+fn schema_args() -> Vec<(String, serde_json::Value)> {
+    let binary = env!("CARGO_BIN_EXE_unifi");
+    let output = std::process::Command::new(binary)
+        .arg("schema")
+        .output()
+        .expect("failed to run unifi schema");
+    let schema: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("schema output is not valid JSON");
+
+    let mut out = Vec::new();
+    let mut stack: Vec<(String, serde_json::Value)> = schema["commands"]
+        .as_array()
+        .expect("schema.commands must be an array")
+        .iter()
+        .map(|c| (String::new(), c.clone()))
+        .collect();
+    while let Some((prefix, cmd)) = stack.pop() {
+        let name = cmd["name"].as_str().unwrap_or_default();
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix} {name}")
+        };
+        match cmd["subcommands"].as_array() {
+            Some(subs) if !subs.is_empty() => {
+                stack.extend(subs.iter().map(|s| (path.clone(), s.clone())));
+            }
+            _ => {
+                for arg in cmd["args"].as_array().into_iter().flatten() {
+                    out.push((path.clone(), arg.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn schema_types_flags_as_boolean_and_numeric_args_as_integer() {
+    // The published type is the contract an agent plans against: a `--live`
+    // typed "string" invites it to pass a value, and a `port` typed "string"
+    // understates a u32. Both were wrong before this test existed.
+    let args = schema_args();
+    assert!(!args.is_empty(), "schema exposed no args at all");
+
+    let mut wrong = Vec::new();
+    let mut saw_flag = false;
+    let mut saw_integer = false;
+    for (path, arg) in &args {
+        let name = arg["name"].as_str().unwrap_or_default();
+        let ty = arg["type"].as_str().unwrap_or_default();
+        // Flags carry no value, so clap parses them with a SetTrue action.
+        let is_flag = matches!(
+            name,
+            "--wired" | "--wireless" | "--off" | "--live" | "--full" | "--yes"
+        );
+        let is_numeric = matches!(
+            name,
+            "--limit" | "--offset" | "--interval" | "--watch" | "port"
+        );
+        if is_flag {
+            saw_flag = true;
+            if ty != "boolean" {
+                wrong.push(format!("{path} {name}: expected boolean, got {ty}"));
+            }
+        } else if is_numeric {
+            saw_integer = true;
+            if ty != "integer" {
+                wrong.push(format!("{path} {name}: expected integer, got {ty}"));
+            }
+        }
+    }
+    // Negative control: if a rename made every arm unreachable the loop above
+    // would pass while checking nothing.
+    assert!(saw_flag, "no boolean flag was reached; the test is vacuous");
+    assert!(
+        saw_integer,
+        "no numeric arg was reached; the test is vacuous"
+    );
+    assert!(wrong.is_empty(), "mistyped args:\n{}", wrong.join("\n"));
+}
+
 #[test]
 fn explicit_text_format_is_not_json() {
     let out = OutputConfig::new(OutputFormat::Text, false);
