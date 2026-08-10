@@ -124,24 +124,50 @@ fn speed_cell(p: &PortEntry) -> String {
     }
 }
 
-/// Split a port's `last_connection` into what is attached *now* and what the
-/// record names regardless of state, as `(attached_mac, last_seen_mac)`.
+/// What a port's `last_connection` record says, split into what is attached
+/// *now* and what the record names regardless of state.
+struct Attachment {
+    /// The MAC only when the controller affirms the record is live.
+    attached_mac: Option<String>,
+    /// The MAC whenever the record names one, live or not.
+    last_seen_mac: Option<String>,
+    /// The controller's own `connected` flag, kept tri-state: `None` means the
+    /// firmware did not report it, which is not the same fact as `false`.
+    connected: Option<bool>,
+}
+
+/// Read a port's `last_connection` record.
 ///
-/// The controller keeps a port's `last_connection` after the device is
-/// unplugged, marking it `connected: false`. A stale record therefore names a
-/// device that may have been gone for months, and reporting it as the
-/// attachment would tell an operator a port is in use moments before they cut
-/// its power. `attached_mac` is `None` unless the record is live; the MAC
-/// itself stays available as `last_seen_mac` so the history is not thrown
-/// away. `cycle_summary` applies the same rule to the confirmation prompt.
-fn attachment(p: &PortEntry) -> (Option<String>, Option<String>) {
+/// The controller keeps the record after the device is unplugged, marking it
+/// `connected: false`. A stale record therefore names a device that may have
+/// been gone for months, and reporting it as the attachment would tell an
+/// operator a port is in use moments before they cut its power. So
+/// `attached_mac` is set only when the controller affirms `connected: true`;
+/// a firmware that omits the flag says nothing about the present, which is
+/// not grounds to claim an attachment either. Nothing is lost: the MAC is
+/// always available as `last_seen_mac` and the raw flag as `connected`, so a
+/// caller can tell "gone" from "not reported". `cycle_summary` applies the
+/// same rule to the confirmation prompt.
+fn attachment(p: &PortEntry) -> Attachment {
     let lc = match p.last_connection.as_ref() {
         Some(lc) => lc,
-        None => return (None, None),
+        None => {
+            return Attachment {
+                attached_mac: None,
+                last_seen_mac: None,
+                connected: None,
+            };
+        }
     };
     let mac = lc.mac.as_deref().map(format_mac);
-    let connected = lc.connected.unwrap_or(false);
-    (connected.then(|| mac.clone()).flatten(), mac)
+    Attachment {
+        attached_mac: match lc.connected {
+            Some(true) => mac.clone(),
+            _ => None,
+        },
+        last_seen_mac: mac,
+        connected: lc.connected,
+    }
 }
 
 /// Right-pad a table cell to `width` visible columns, deriving the padding
@@ -557,7 +583,11 @@ pub async fn show(
     let device = client.get_device_ports(mac).await?;
     let p = find_port(&device, port_idx)?;
     let (device_mac, device_name) = device_identity(&device, "-");
-    let (attached_mac, last_seen_mac) = attachment(p);
+    let Attachment {
+        attached_mac,
+        last_seen_mac,
+        connected: attached_connected,
+    } = attachment(p);
 
     if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
@@ -583,6 +613,7 @@ pub async fn show(
             "poe_good": p.poe_good,
             "attached_mac": attached_mac,
             "attached_last_seen_mac": last_seen_mac,
+            "attached_connected": attached_connected,
             "tx_bytes": p.tx_bytes,
             "rx_bytes": p.rx_bytes,
             "tx_errors": p.tx_errors,
@@ -648,12 +679,15 @@ pub async fn show(
             println!("  {}  {c:.2} mA", label("Current:  "));
         }
     }
-    // A stale record prints as unattached with its MAC qualified, so the line
-    // can never be read as "this device is plugged in right now".
-    let attached_cell = match (&attached_mac, &last_seen_mac) {
-        (Some(mac), _) => mac.clone(),
-        (None, Some(stale)) => format!("- (last seen {stale})"),
-        (None, None) => "-".to_string(),
+    // Only an affirmed connection prints as a bare MAC, so the line can never
+    // be read as "this device is plugged in right now" unless it is. A stale
+    // record and an unreported one are both qualified, and differently: the
+    // first knows the device is gone, the second knows nothing.
+    let attached_cell = match (&attached_mac, &last_seen_mac, attached_connected) {
+        (Some(mac), _, _) => mac.clone(),
+        (None, Some(seen), Some(false)) => format!("- (last seen {seen})"),
+        (None, Some(seen), _) => format!("unknown (last seen {seen})"),
+        (None, None, _) => "-".to_string(),
     };
     println!("  {}  {}", label("Attached: "), attached_cell);
     Ok(())

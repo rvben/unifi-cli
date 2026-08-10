@@ -2150,6 +2150,10 @@ mod command_output {
             body["attached_last_seen_mac"], "aa:bb:cc:dd:ee:ff",
             "the stale MAC must stay available as history: {body}"
         );
+        assert_eq!(
+            body["attached_connected"], false,
+            "the controller's own flag must be reported as it stands: {body}"
+        );
 
         let text_out = run("text");
         assert!(text_out.status.success());
@@ -2157,6 +2161,67 @@ mod command_output {
         assert!(
             text.contains("- (last seen aa:bb:cc:dd:ee:ff)"),
             "the text branch must qualify a stale MAC rather than print it bare: {text}"
+        );
+    }
+
+    // A firmware that reports `last_connection.mac` without a `connected` flag
+    // has said nothing about the present, which is not the same fact as
+    // "disconnected". It is still not grounds to claim an attachment, so
+    // `attached_mac` stays null, but the tri-state `attached_connected` and the
+    // text output both distinguish "not reported" from "gone".
+    #[tokio::test]
+    async fn ports_show_distinguishes_an_unreported_connection_from_a_stale_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "port_table": [{
+                        "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
+                        "last_connection": {"mac": "aabbccddeeff"}
+                    }]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let run = |format: &str| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args([
+                    "--host",
+                    &server.uri(),
+                    "--api-key",
+                    "test-key",
+                    "ports",
+                    "show",
+                    "9c:05:d6:bc:06:43",
+                    "5",
+                    "--output",
+                    format,
+                ])
+                .output()
+                .expect("failed to run the unifi binary")
+        };
+
+        let json_out = run("json");
+        assert!(json_out.status.success());
+        let body: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+        assert!(
+            body["attached_mac"].is_null(),
+            "an unreported connection must not be claimed as attached: {body}"
+        );
+        assert!(
+            body["attached_connected"].is_null(),
+            "a missing connected flag must stay null, not become false: {body}"
+        );
+        assert_eq!(body["attached_last_seen_mac"], "aa:bb:cc:dd:ee:ff");
+
+        let text = String::from_utf8_lossy(&run("text").stdout).to_string();
+        assert!(
+            text.contains("unknown (last seen aa:bb:cc:dd:ee:ff)"),
+            "the text branch must say the state is unknown, not that the device is gone: {text}"
         );
     }
 

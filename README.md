@@ -204,10 +204,14 @@ stale history.
 `ports show` exposes the port's PoE telemetry: `poe_mode`, `poe_class`,
 `poe_voltage`, `poe_current`, `poe_good`, and the MAC of the attached device
 (`attached_mac`). The controller keeps a port's last connection record after
-the device is unplugged, so `attached_mac` is null unless that record is live;
-the MAC is still reported as `attached_last_seen_mac`, and the text output
-renders it as `- (last seen aa:bb:cc:dd:ee:ff)`. Nothing that has been
-unplugged is ever presented as currently attached.
+the device is unplugged, so `attached_mac` is set only when the controller
+affirms the record is live. The MAC is still reported as
+`attached_last_seen_mac` and the controller's own flag as `attached_connected`
+(true, false, or null when the firmware does not report it), so a caller can
+tell "gone" from "not reported". The text output renders the three cases as
+`aa:bb:cc:dd:ee:ff`, `- (last seen aa:bb:cc:dd:ee:ff)` and
+`unknown (last seen aa:bb:cc:dd:ee:ff)`. Nothing that has been unplugged is
+ever presented as currently attached.
 
 `ports cycle` is destructive. On a terminal it shows what is about to lose
 power and asks for confirmation; when piped it requires `--yes` and

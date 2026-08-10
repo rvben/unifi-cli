@@ -203,6 +203,7 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("poe_good", "boolean"),
                 ("attached_mac", "string"),
                 ("attached_last_seen_mac", "string"),
+                ("attached_connected", "boolean"),
                 ("tx_bytes", "integer"),
                 ("rx_bytes", "integer"),
                 ("tx_errors", "integer"),
