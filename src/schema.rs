@@ -320,9 +320,15 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("action", "string"),
                 ("camera_id", "string"),
                 ("streams", "object"),
+                ("requested", "string[]"),
+                ("not_created", "string[]"),
             ],
             true,
-            None,
+            Some(
+                "status is \"ok\" when every requested quality came back with a URL, \
+                 \"partial\" when some did not; not_created lists those, and the \
+                 command exits non-zero",
+            ),
         ),
     );
     m.insert(

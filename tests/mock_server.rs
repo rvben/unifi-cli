@@ -3981,6 +3981,42 @@ mod protect_cameras {
             serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
         assert_eq!(body["status"], "ok", "{body}");
         assert_eq!(body["not_created"].as_array().map(|a| a.len()), Some(0));
+
+        // The schema's published output_fields must exactly match the keys this
+        // command emits, the same property `ports show` holds itself to. The
+        // fields that say a request was only half carried out are worth nothing
+        // if an agent reading the contract cannot learn they exist.
+        let schema_output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .arg("schema")
+            .output()
+            .expect("failed to run unifi schema");
+        let schema: serde_json::Value = serde_json::from_slice(&schema_output.stdout)
+            .expect("unifi schema must print valid JSON");
+        let create = schema["commands"]
+            .as_array()
+            .expect("schema must have a commands array")
+            .iter()
+            .find(|c| c["name"] == "protect rtsps create")
+            .expect("schema must publish a \"protect rtsps create\" command");
+        let mut declared: Vec<&str> = create["output_fields"]
+            .as_array()
+            .expect("protect rtsps create must declare output_fields")
+            .iter()
+            .map(|f| f["name"].as_str().expect("output field must have a name"))
+            .collect();
+        declared.sort_unstable();
+        let mut emitted: Vec<&str> = body
+            .as_object()
+            .expect("output must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        emitted.sort_unstable();
+        assert_eq!(
+            emitted, declared,
+            "protect rtsps create output_fields in the schema must exactly match \
+             the keys it emits"
+        );
     }
 
     /// Stand in for the cookie-authenticated direct Protect API that `--full`
