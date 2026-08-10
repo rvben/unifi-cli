@@ -101,6 +101,15 @@ API keys, passwords, session cookies, and stream URLs.
 When `unifi config init` cannot verify the controller's certificate, it offers
 to trust the controller and saves `accept_invalid_certs = true` for you.
 
+### Destructive commands
+
+`clients block`, `clients unblock`, `clients kick`, `devices restart`,
+`devices upgrade`, `ports cycle` and `protect rtsps delete` all ask before they
+act. On a terminal you get a yes/no question naming the target; declining exits
+2 with `kind: confirmation_required` and sends nothing. When stdin is not a
+terminal there is nobody to ask, so they refuse with the same error unless you
+pass `--yes`, which skips the question everywhere.
+
 ## TUI dashboard
 
 ```bash
