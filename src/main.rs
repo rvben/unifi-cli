@@ -373,7 +373,11 @@ enum ProtectRtspsCommand {
 
 /// Check TTY for destructive commands. When stdin is not a terminal and --yes was not
 /// passed, emit a structured error and exit with code 2.
-fn require_confirmation(yes: bool, action: &str) {
+///
+/// For commands that ask their question later, once they have loaded enough
+/// context to describe what is about to change. Commands that can ask straight
+/// away call `require_confirmation` instead.
+fn refuse_without_tty(yes: bool, action: &str) {
     use std::io::IsTerminal;
     if !yes && !std::io::stdin().is_terminal() {
         print_error_envelope(
@@ -385,8 +389,32 @@ fn require_confirmation(yes: bool, action: &str) {
     }
 }
 
+/// Gate a destructive command behind a confirmation. `--yes` proceeds. Without a
+/// TTY the structured error is emitted and the process exits 2; on a TTY the
+/// question is asked and a decline exits 2 the same way.
+fn require_confirmation(yes: bool, action: &str, question: &str) {
+    refuse_without_tty(yes, action);
+    if yes {
+        return;
+    }
+    let mut stdin = std::io::stdin().lock();
+    let mut stderr = std::io::stderr();
+    let confirmed = confirm_destructive(&mut stdin, &mut stderr, "", question).unwrap_or(false);
+    if !confirmed {
+        print_error_envelope(
+            "confirmation_required",
+            "Aborted: confirmation declined.",
+            None,
+        );
+        std::process::exit(exit_codes::CONFIRMATION_REQUIRED);
+    }
+}
+
 /// Prompt for confirmation of a destructive action. Returns true only on an
 /// explicit yes; an empty line, EOF, or anything else declines.
+///
+/// `summary` is printed above the question when it is non-empty, for callers
+/// that already know which port or device they are about to touch.
 ///
 /// Separate from `prompt_line`, which returns `InitError` and belongs to the
 /// config-init flow. Reader/writer are injected so this is unit-testable
@@ -395,9 +423,12 @@ fn confirm_destructive(
     reader: &mut dyn std::io::BufRead,
     writer: &mut dyn std::io::Write,
     summary: &str,
+    question: &str,
 ) -> std::io::Result<bool> {
-    writeln!(writer, "{summary}")?;
-    write!(writer, "Power-cycle this port? (y/N): ")?;
+    if !summary.is_empty() {
+        writeln!(writer, "{summary}")?;
+    }
+    write!(writer, "{question} (y/N): ")?;
     writer.flush()?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -405,7 +436,7 @@ fn confirm_destructive(
     // so without this the prompt line above stays unterminated on our writer.
     // With stdin a TTY and stderr redirected, a decline's error envelope
     // (printed with `eprintln!` right after) would then land on the same
-    // physical line as the prompt instead of starting fresh — breaking the
+    // physical line as the prompt instead of starting fresh, breaking the
     // "envelope is the last line of stderr" contract (tests/cli_contract.rs,
     // `error_envelope_last_line_is_json` in tests/spec_compliance.rs).
     writeln!(writer)?;
@@ -1295,15 +1326,15 @@ async fn main() {
                 commands::clients::set_fixed_ip(&client, &mac, &ip, name.as_deref(), out).await
             }
             ClientsCommand::Block { mac } => {
-                require_confirmation(cli.yes, "block");
+                require_confirmation(cli.yes, "block", &format!("Block client {mac}?"));
                 commands::clients::block(&client, &mac, out).await
             }
             ClientsCommand::Unblock { mac } => {
-                require_confirmation(cli.yes, "unblock");
+                require_confirmation(cli.yes, "unblock", &format!("Unblock client {mac}?"));
                 commands::clients::unblock(&client, &mac, out).await
             }
             ClientsCommand::Kick { mac } => {
-                require_confirmation(cli.yes, "kick");
+                require_confirmation(cli.yes, "kick", &format!("Disconnect client {mac}?"));
                 commands::clients::kick(&client, &mac, out).await
             }
             ClientsCommand::Top { limit } => commands::clients::top(&client, out, limit).await,
@@ -1324,7 +1355,7 @@ async fn main() {
             }
             DevicesCommand::Show { mac } => commands::devices::show(&client, &mac, out).await,
             DevicesCommand::Restart { mac } => {
-                require_confirmation(cli.yes, "restart");
+                require_confirmation(cli.yes, "restart", &format!("Restart device {mac}?"));
                 commands::devices::restart(&client, &mac, out).await
             }
             DevicesCommand::Locate { mac, off } => {
@@ -1342,7 +1373,7 @@ async fn main() {
                 }
             }
             DevicesCommand::Upgrade { mac } => {
-                require_confirmation(cli.yes, "upgrade");
+                require_confirmation(cli.yes, "upgrade", &format!("Upgrade firmware on {mac}?"));
                 commands::devices::upgrade(&client, &mac, out).await
             }
         },
@@ -1375,17 +1406,19 @@ async fn main() {
                 commands::ports::find(&client, &identifier, out, requested_fields).await
             }
             PortsCommand::Cycle { mac, port } => {
-                require_confirmation(cli.yes, "power-cycle");
+                // Asks after the port table is read, so the prompt can name what
+                // is attached; the TTY gate still has to run before any HTTP.
+                refuse_without_tty(cli.yes, "power-cycle");
                 let skip_prompt = cli.yes;
                 let outcome = commands::ports::cycle(&client, &mac, port, out, |summary| {
                     if skip_prompt {
                         return Ok(true);
                     }
-                    // Reached only on a TTY: require_confirmation already
+                    // Reached only on a TTY: refuse_without_tty already
                     // exited for the piped-without---yes case.
                     let mut stdin = std::io::stdin().lock();
                     let mut stderr = std::io::stderr();
-                    confirm_destructive(&mut stdin, &mut stderr, summary)
+                    confirm_destructive(&mut stdin, &mut stderr, summary, "Power-cycle this port?")
                 })
                 .await;
 
@@ -1456,7 +1489,11 @@ async fn main() {
                     commands::protect::rtsps_create(&client, &camera, &quality, out).await
                 }
                 ProtectRtspsCommand::Delete { camera, quality } => {
-                    require_confirmation(cli.yes, "rtsps delete");
+                    require_confirmation(
+                        cli.yes,
+                        "rtsps delete",
+                        &format!("Delete {} RTSPS stream(s) on {camera}?", quality.join(", ")),
+                    );
                     commands::protect::rtsps_delete(&client, &camera, &quality, out).await
                 }
             },
@@ -1644,7 +1681,8 @@ api_key = "work_key"
             let mut reader = std::io::BufReader::new(input.as_bytes());
             let mut writer: Vec<u8> = Vec::new();
             assert!(
-                confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                confirm_destructive(&mut reader, &mut writer, "Port 4", "Power-cycle this port?")
+                    .unwrap(),
                 "{input:?} must confirm"
             );
         }
@@ -1656,7 +1694,8 @@ api_key = "work_key"
             let mut reader = std::io::BufReader::new(input.as_bytes());
             let mut writer: Vec<u8> = Vec::new();
             assert!(
-                !confirm_destructive(&mut reader, &mut writer, "Port 4").unwrap(),
+                !confirm_destructive(&mut reader, &mut writer, "Port 4", "Power-cycle this port?")
+                    .unwrap(),
                 "{input:?} must decline"
             );
         }
@@ -1666,10 +1705,55 @@ api_key = "work_key"
     fn confirm_destructive_shows_the_summary_and_default_no() {
         let mut reader = std::io::BufReader::new(&b"n\n"[..]);
         let mut writer: Vec<u8> = Vec::new();
-        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        confirm_destructive(
+            &mut reader,
+            &mut writer,
+            "Port 4 on SwitchA",
+            "Power-cycle this port?",
+        )
+        .unwrap();
         let shown = String::from_utf8(writer).unwrap();
         assert!(shown.contains("Port 4 on SwitchA"), "got: {shown}");
+        assert!(shown.contains("Power-cycle this port?"), "got: {shown}");
         assert!(shown.contains("(y/N)"), "default must read as No: {shown}");
+    }
+
+    #[test]
+    fn confirm_destructive_asks_the_question_it_was_given() {
+        // The question is per-command, so a caller that gates `clients block`
+        // must not be able to show the power-cycle wording.
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(
+            &mut reader,
+            &mut writer,
+            "",
+            "Block client aa:bb:cc:dd:ee:ff?",
+        )
+        .unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(
+            shown.contains("Block client aa:bb:cc:dd:ee:ff?"),
+            "got: {shown}"
+        );
+        assert!(
+            !shown.to_lowercase().contains("power-cycle"),
+            "must not leak another command's wording: {shown}"
+        );
+    }
+
+    #[test]
+    fn confirm_destructive_omits_an_empty_summary_line() {
+        // Commands that gate before loading any context pass no summary. A
+        // blank line above the question would read as a rendering glitch.
+        let mut reader = std::io::BufReader::new(&b"n\n"[..]);
+        let mut writer: Vec<u8> = Vec::new();
+        confirm_destructive(&mut reader, &mut writer, "", "Restart device X?").unwrap();
+        let shown = String::from_utf8(writer).unwrap();
+        assert!(
+            shown.starts_with("Restart device X?"),
+            "question must be the first thing written: {shown:?}"
+        );
     }
 
     #[test]
@@ -1682,7 +1766,13 @@ api_key = "work_key"
         // prompt.
         let mut reader = std::io::BufReader::new(&b"n\n"[..]);
         let mut writer: Vec<u8> = Vec::new();
-        confirm_destructive(&mut reader, &mut writer, "Port 4 on SwitchA").unwrap();
+        confirm_destructive(
+            &mut reader,
+            &mut writer,
+            "Port 4 on SwitchA",
+            "Power-cycle this port?",
+        )
+        .unwrap();
         let shown = String::from_utf8(writer).unwrap();
         assert!(
             shown.ends_with('\n'),
