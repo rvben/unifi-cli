@@ -808,15 +808,7 @@ fn run_init_with_io(
     }
     let toml_str = toml::to_string_pretty(&config)
         .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
-    std::fs::write(config_path, &toml_str)
-        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
-
-    // Restrict config file permissions (contains secrets)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
-    }
+    write_config_file(config_path, &toml_str)?;
 
     Ok(InitOutcome::Saved {
         profile: profile_name,
@@ -855,14 +847,46 @@ fn enable_accept_invalid_certs_in_config(
 
     let toml_str = toml::to_string_pretty(&config)
         .map_err(|e| InitError(format!("Failed to serialize config: {e}")))?;
-    std::fs::write(config_path, &toml_str)
+    write_config_file(config_path, &toml_str)
+}
+
+/// Write the config file so that only its owner can read it.
+///
+/// The file holds an API key and optionally a password. It is created with
+/// mode 0600 rather than chmodded afterwards, so the secrets are never
+/// momentarily world-readable, and the mode is then applied to the open handle
+/// as well to cover the case where the file already existed with looser
+/// permissions. A failing chmod is reported instead of ignored: the silent
+/// alternative leaves a credentials file readable by every account on the
+/// machine while `init` prints success.
+#[cfg(unix)]
+fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<(), InitError> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(config_path)
         .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    file.write_all(toml_str.as_bytes())
+        .map_err(|e| InitError(format!("Failed to write config: {e}")))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| {
+            InitError(format!(
+                "Config written to {} but its permissions could not be restricted to 0600: {e}. \
+                 The file contains credentials, so fix its permissions before using it.",
+                config_path.display()
+            ))
+        })
+}
+
+#[cfg(not(unix))]
+fn write_config_file(config_path: &std::path::Path, toml_str: &str) -> Result<(), InitError> {
+    std::fs::write(config_path, toml_str)
+        .map_err(|e| InitError(format!("Failed to write config: {e}")))
 }
 
 /// Prompt for a yes/no answer on stderr (where init status is shown) and read
@@ -1845,6 +1869,60 @@ api_key = "work_key"
         // The summary masks the password rather than echoing it.
         assert!(display.contains("password = ****"));
         assert!(!display.contains("secret"));
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_writes_credentials_readable_only_by_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nmy-api-key\n\ny\n".to_vec());
+        let mut output = Vec::new();
+
+        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("my-api-key")
+        );
+        assert_eq!(mode_of(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_tightens_permissions_of_a_preexisting_world_readable_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "host = \"https://unifi.local\"\napi_key = \"old\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nnew-key\n\ny\n".to_vec());
+        let mut output = Vec::new();
+        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+
+        assert_eq!(mode_of(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enable_accept_invalid_certs_keeps_the_config_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "host = \"https://unifi.local\"\napi_key = \"k\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        enable_accept_invalid_certs_in_config(&path, None).unwrap();
+
+        assert_eq!(mode_of(&path), 0o600);
     }
 
     #[test]

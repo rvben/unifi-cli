@@ -58,7 +58,13 @@ export UNIFI_ACCEPT_INVALID_CERTS=true
 
 ### Config file
 
-`~/.config/unifi/config.toml`:
+Linux: `~/.config/unifi/config.toml`.
+macOS: `~/Library/Application Support/unifi/config.toml`.
+Windows: `%APPDATA%\unifi\config.toml`.
+
+`unifi config init` writes to that path and creates the file with mode 0600,
+since it holds an API key and optionally a Protect password. If it cannot
+restrict the permissions it says so rather than leaving the key readable.
 
 ```toml
 host = "https://unifi.example.com"
