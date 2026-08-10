@@ -773,7 +773,7 @@ fn client_clean_name_falls_back_to_hostname() {
 
 #[test]
 fn client_clean_name_hyphenated_not_stripped() {
-    // "host-ee:ff" has no space before the hex — it's part of the hostname, not a MAC suffix
+    // "host-ee:ff" has no space before the hex, so it's part of the hostname, not a MAC suffix
     let json = r#"{"hostname": "host-ee:ff", "macAddress": "aa:bb:cc:dd:ee:ff"}"#;
     let client: Client = serde_json::from_str(json).unwrap();
     assert_eq!(client.clean_name(), "host-ee:ff");

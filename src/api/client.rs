@@ -105,7 +105,7 @@ impl UnifiClient {
                 .get_integration("/proxy/network/integration/v1/sites")
                 .await?;
             let site = resp.data.into_iter().next().ok_or_else(|| {
-                ApiError::Other("No sites found — check that the API key has site access".into())
+                ApiError::Other("No sites found. Check that the API key has site access".into())
             })?;
             self.site_id = Some(site.id);
         }
@@ -577,7 +577,7 @@ impl ProtectSession {
     ) -> Result<Self, ApiError> {
         let base_url = normalize_base_url(host)?;
 
-        // Don't use cookie_provider — the `partitioned` cookie attribute
+        // Don't use cookie_provider: the `partitioned` cookie attribute
         // isn't handled by reqwest's jar. We extract the token manually.
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(options.accept_invalid_certs)
