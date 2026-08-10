@@ -425,8 +425,9 @@ pub struct ProtectCameraFull {
     pub up_since: Option<u64>,
     pub last_seen: Option<u64>,
     pub is_recording: Option<bool>,
-    #[serde(default)]
-    pub is_motion_detected: bool,
+    /// Tri-state for the same reason as `is_recording`: a camera that did not
+    /// report motion has not reported stillness.
+    pub is_motion_detected: Option<bool>,
     pub is_dark: Option<bool>,
     pub video_codec: Option<String>,
     pub current_resolution: Option<String>,
@@ -453,8 +454,9 @@ pub struct ProtectCameraFull {
 pub struct CameraChannel {
     pub id: u32,
     pub name: Option<String>,
-    #[serde(default)]
-    pub enabled: bool,
+    /// Tri-state like `is_rtsp_enabled` below: a channel whose state the camera
+    /// did not report is not a channel reported as switched off.
+    pub enabled: Option<bool>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<u32>,
@@ -502,8 +504,9 @@ pub struct WifiConnectionState {
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
     pub mode: Option<String>,
-    #[serde(default)]
-    pub enable_motion_detection: bool,
+    /// Tri-state: settings that did not mention motion detection have not said
+    /// it is switched off.
+    pub enable_motion_detection: Option<bool>,
 }
 
 /// RTSPS stream URLs keyed by quality level

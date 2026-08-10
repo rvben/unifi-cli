@@ -4270,6 +4270,84 @@ mod protect_cameras {
         );
     }
 
+    fn show_full_json(server_uri: &str) -> serde_json::Value {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                server_uri,
+                "--api-key",
+                "test-key",
+                "--username",
+                "stand-in",
+                "--password",
+                "stand-in",
+                "-o",
+                "json",
+                "protect",
+                "cameras",
+                "show",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--full",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout was not JSON ({e}): {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+    }
+
+    /// The JSON-only siblings of the flags above. They reach an agent rather
+    /// than a person, where a bare `false` is taken at face value.
+    #[tokio::test]
+    async fn the_flags_only_json_carries_are_null_when_the_camera_omits_them() {
+        let server = serving_full(serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "Front Door",
+            "recordingSettings": {"mode": "always"},
+            "channels": [{"id": 0, "name": "High"}]
+        }))
+        .await;
+
+        let body = show_full_json(&server.uri());
+        assert!(
+            body["motion_detected"].is_null(),
+            "a camera that did not report motion has not reported stillness: {body}"
+        );
+        assert!(
+            body["recording_settings"]["motion_detection"].is_null(),
+            "settings that never mentioned motion detection have not said it is \
+             off: {body}"
+        );
+        assert!(
+            body["channels"][0]["enabled"].is_null(),
+            "a channel whose state was not reported is not a disabled channel: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flags_only_json_carries_survive_when_the_camera_reports_them() {
+        let server = serving_full(serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "Front Door",
+            "isMotionDetected": false,
+            "recordingSettings": {"mode": "always", "enableMotionDetection": true},
+            "channels": [{"id": 0, "name": "High", "enabled": false}]
+        }))
+        .await;
+
+        let body = show_full_json(&server.uri());
+        assert_eq!(body["motion_detected"], false, "{body}");
+        assert_eq!(
+            body["recording_settings"]["motion_detection"], true,
+            "{body}"
+        );
+        assert_eq!(body["channels"][0]["enabled"], false, "{body}");
+    }
+
     #[tokio::test]
     async fn a_camera_page_is_not_requested_when_the_id_is_already_an_id() {
         // Resolution short-circuits on a 24-char hex ID, so no listing is
