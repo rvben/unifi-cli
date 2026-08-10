@@ -185,6 +185,7 @@ pub async fn show(
             "mac": d.mac,
             "ip": d.ip,
             "state": d.state_str(),
+            "firmware": d.version,
             "version": d.version,
             "uptime": d.uptime,
             "num_sta": d.num_sta,

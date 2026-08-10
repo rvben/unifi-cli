@@ -127,7 +127,10 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("version", "string"),
             ],
             false,
-            None,
+            Some(
+                "firmware and version carry the same value: firmware is the name \
+                 devices list uses, version the one this command has always used",
+            ),
         ),
     );
     m.insert(

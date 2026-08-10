@@ -4540,4 +4540,42 @@ mod schema_contract {
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
+
+    async fn serving_one_device() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "mac": "aa:bb:cc:dd:06:43", "name": "Switch Lite 8 PoE",
+                    "model": "USL8LP", "ip": "192.0.2.10", "state": 1,
+                    "version": "7.1.20.16850", "uptime": 401234, "num_sta": 6
+                }]
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn devices_show_json_matches_schema_output_fields() {
+        let server = serving_one_device().await;
+        let body = run_json(&server, &["devices", "show", "aa:bb:cc:dd:06:43"]).await;
+        assert_schema_matches("devices show", &body);
+    }
+
+    // `firmware` is the name `devices list` publishes for this value, so an
+    // agent that reads it there and asks this command for the same device must
+    // find it under the same name.
+    #[tokio::test]
+    async fn devices_show_emits_the_firmware_it_declares() {
+        let server = serving_one_device().await;
+        let body = run_json(&server, &["devices", "show", "aa:bb:cc:dd:06:43"]).await;
+        assert_eq!(body["firmware"], serde_json::json!("7.1.20.16850"));
+        assert_eq!(
+            body["firmware"], body["version"],
+            "firmware and version are the same value under two names: {body}"
+        );
+    }
 }
