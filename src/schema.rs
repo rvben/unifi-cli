@@ -202,6 +202,7 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
                 ("poe_current", "number"),
                 ("poe_good", "boolean"),
                 ("attached_mac", "string"),
+                ("attached_last_seen_mac", "string"),
                 ("tx_bytes", "integer"),
                 ("rx_bytes", "integer"),
                 ("tx_errors", "integer"),
@@ -411,7 +412,7 @@ fn build_global_args(cmd: &clap::Command) -> Vec<serde_json::Value> {
         "name": "--yes",
         "type": "boolean",
         "required": false,
-        "description": "Skip confirmation prompt for destructive commands (required without a TTY)",
+        "description": "Skip the confirmation prompt. Required for any command with confirmation_required: true when stdin is not a terminal; without it those commands exit 2 with kind confirmation_required and send nothing",
     }));
     args
 }
@@ -506,6 +507,16 @@ fn walk_commands(
                     entry["output_fields"] = arr.into();
                 }
                 entry["mutating"] = meta.mutating.into();
+                // Published only for mutating commands, where the answer is
+                // the difference between a run that works unattended and one
+                // that exits 2. The three mutating commands that do not ask
+                // say so explicitly rather than leaving an agent to guess
+                // from the absence of a key.
+                if meta.mutating {
+                    entry["confirmation_required"] = unifi_cli::CONFIRMATION_GATED_COMMANDS
+                        .contains(&path.as_str())
+                        .into();
+                }
                 if let Some(note) = meta.note {
                     entry["note"] = note.into();
                 }
@@ -566,16 +577,22 @@ pub fn print_schema(cmd: clap::Command) {
                 "description": "Requested resource not found (404)",
             },
             {
+                "kind": "client_error",
+                "exit_code": 5,
+                "retryable": false,
+                "description": "API rejected the request itself (4xx other than 401/403/404). The request will not succeed unchanged, so retrying cannot help; the HTTP status is in the error message",
+            },
+            {
                 "kind": "api_error",
                 "exit_code": 5,
                 "retryable": true,
-                "description": "API returned a server-side error (5xx)",
+                "description": "API returned a server-side error (5xx). May be transient",
             },
             {
                 "kind": "conflict",
                 "exit_code": 6,
                 "retryable": false,
-                "description": "Resource already exists with incompatible configuration",
+                "description": "The request cannot succeed against the resource's current state, rejected locally before any API call: an ambiguous match, or a precondition the target does not meet",
             },
         ],
     });

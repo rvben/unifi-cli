@@ -130,6 +130,14 @@ pub fn error_kind_and_code(err: &(dyn std::error::Error + 'static)) -> (&'static
         match api_err {
             crate::api::ApiError::Auth(_) => ("auth_error", exit_codes::AUTH_ERROR),
             crate::api::ApiError::NotFound(_) => ("not_found", exit_codes::NOT_FOUND),
+            // A 4xx the CLI does not map to a more specific kind means the
+            // request itself was rejected, so retrying it unchanged cannot
+            // help. It shares exit code 5 with api_error but reports a
+            // distinct kind, so an agent branching on `retryable` does not
+            // loop on a permanent failure.
+            crate::api::ApiError::Api { status, .. } if (400..500).contains(status) => {
+                ("client_error", exit_codes::API_ERROR)
+            }
             crate::api::ApiError::Api { .. } => ("api_error", exit_codes::API_ERROR),
             crate::api::ApiError::Conflict(_) => ("conflict", exit_codes::CONFLICT),
             crate::api::ApiError::Http(_) | crate::api::ApiError::Other(_) => {
@@ -205,6 +213,33 @@ mod tests {
         let (kind, code) = error_kind_and_code(&err);
         assert_eq!(kind, "not_found");
         assert_eq!(code, exit_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn error_kind_and_code_client_error_for_a_rejected_request() {
+        // The controller answers `power-cycle` on a PoE-disabled port with
+        // HTTP 400 api.err.InvalidTargetPort. Retrying that unchanged can only
+        // fail again, so it must not be published as the retryable api_error.
+        let err = ApiError::Api {
+            status: 400,
+            message: "api.err.InvalidTargetPort".into(),
+        };
+        let (kind, code) = error_kind_and_code(&err);
+        assert_eq!(kind, "client_error");
+        assert_eq!(code, exit_codes::API_ERROR);
+    }
+
+    #[test]
+    fn error_kind_and_code_api_error_stays_for_server_side_failures() {
+        for status in [500u16, 502, 503] {
+            let err = ApiError::Api {
+                status,
+                message: "upstream failure".into(),
+            };
+            let (kind, code) = error_kind_and_code(&err);
+            assert_eq!(kind, "api_error", "status {status}");
+            assert_eq!(code, exit_codes::API_ERROR, "status {status}");
+        }
     }
 
     #[test]

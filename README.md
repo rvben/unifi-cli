@@ -110,6 +110,11 @@ act. On a terminal you get a yes/no question naming the target; declining exits
 terminal there is nobody to ask, so they refuse with the same error unless you
 pass `--yes`, which skips the question everywhere.
 
+`unifi schema` marks exactly these commands `confirmation_required: true`, so a
+caller can tell them apart from mutating commands that act immediately
+(`devices locate`, `clients set-fixed-ip`, `protect rtsps create`) without
+hardcoding the list.
+
 ## TUI dashboard
 
 ```bash
@@ -309,15 +314,20 @@ unifi schema    # Dumps all commands, arguments, output fields as JSON
 
 ### Distinct exit codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Configuration error |
-| 3 | Authentication error (401/403) |
-| 4 | Not found (404) |
-| 5 | API error (server error) |
-| 6 | Conflict (ambiguous match or failed precondition) |
+| Code | `kind` | Meaning |
+|------|--------|---------|
+| 0 | - | Success |
+| 1 | `general_error` | General error (including transport failures) |
+| 2 | `config_error` | Configuration or usage error |
+| 2 | `confirmation_required` | A destructive command ran without `--yes` and without a TTY |
+| 3 | `auth_error` | Authentication error (401/403) |
+| 4 | `not_found` | Not found (404) |
+| 5 | `client_error` | The controller rejected the request itself (4xx other than 401/403/404); retrying it unchanged cannot help |
+| 5 | `api_error` | The controller failed to serve the request (5xx); may be transient |
+| 6 | `conflict` | The request cannot succeed against the resource's current state, refused locally before any API call |
+
+`unifi schema` publishes the same table under `errors`, with a `retryable` flag
+per kind, so an agent can branch on it without parsing prose.
 
 ## Development
 

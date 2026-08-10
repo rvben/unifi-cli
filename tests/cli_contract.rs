@@ -299,17 +299,87 @@ fn every_published_output_field_is_accepted_by_fields() {
     }
 }
 
-#[test]
-fn ports_cycle_requires_yes_without_a_tty() {
-    let out = unifi()
-        .args(["ports", "cycle", "aa:bb:cc:dd:ee:ff", "5"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run binary");
+/// One invocation per gated command, with the argument set it needs.
+const GATED_INVOCATIONS: &[(&str, &[&str])] = &[
+    ("clients block", &["aa:bb:cc:dd:ee:ff"]),
+    ("clients unblock", &["aa:bb:cc:dd:ee:ff"]),
+    ("clients kick", &["aa:bb:cc:dd:ee:ff"]),
+    ("devices restart", &["aa:bb:cc:dd:ee:ff"]),
+    ("devices upgrade", &["aa:bb:cc:dd:ee:ff"]),
+    ("ports cycle", &["aa:bb:cc:dd:ee:ff", "5"]),
+    ("protect rtsps delete", &["front-door"]),
+];
 
-    assert_eq!(out.status.code(), Some(2));
+/// Every command the schema publishes as `confirmation_required` must refuse to
+/// act when there is no `--yes` and no TTY to ask on, and must refuse locally.
+/// The host here is unroutable, so a `confirmation_required` envelope is also
+/// proof that nothing was sent to the controller: a command that fell through
+/// to HTTP would report a connection failure instead.
+#[test]
+fn every_confirmation_gated_command_refuses_without_yes_and_no_tty() {
+    let covered: Vec<&str> = GATED_INVOCATIONS.iter().map(|(c, _)| *c).collect();
+    for command in unifi_cli::CONFIRMATION_GATED_COMMANDS {
+        assert!(
+            covered.contains(command),
+            "`{command}` is confirmation-gated but has no invocation in GATED_INVOCATIONS"
+        );
+    }
     assert_eq!(
-        error_envelope(&out.stderr)["error"]["kind"].as_str(),
-        Some("confirmation_required")
+        covered.len(),
+        unifi_cli::CONFIRMATION_GATED_COMMANDS.len(),
+        "GATED_INVOCATIONS lists a command that is not in CONFIRMATION_GATED_COMMANDS"
     );
+
+    for (command, extra) in GATED_INVOCATIONS {
+        let mut args: Vec<&str> = command.split(' ').collect();
+        args.extend_from_slice(extra);
+
+        let out = unifi()
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("failed to run binary");
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`{command}` should exit 2 without --yes, stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            error_envelope(&out.stderr)["error"]["kind"].as_str(),
+            Some("confirmation_required"),
+            "`{command}` should report confirmation_required, stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// A mutating command that is not gated must not start asking for confirmation:
+/// it reaches the controller (and fails on the unroutable host) instead. This is
+/// the negative control for the test above, which would otherwise still pass if
+/// every command refused everything.
+#[test]
+fn ungated_mutating_commands_do_not_ask_for_confirmation() {
+    for args in [
+        vec!["devices", "locate", "aa:bb:cc:dd:ee:ff"],
+        vec!["clients", "set-fixed-ip", "aa:bb:cc:dd:ee:ff", "192.0.2.10"],
+    ] {
+        let out = unifi()
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("failed to run binary");
+
+        let kind = error_envelope(&out.stderr)["error"]["kind"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert_ne!(
+            kind,
+            "confirmation_required",
+            "`{}` is not in CONFIRMATION_GATED_COMMANDS but asked for confirmation",
+            args.join(" ")
+        );
+    }
 }
