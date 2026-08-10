@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3](https://github.com/rvben/unifi-cli/compare/v0.3.2...v0.3.3) - 2026-08-10
+
+### Fixed
+
+- **api**: decode a response body before judging its content type ([0e49404](https://github.com/rvben/unifi-cli/commit/0e4940467e428f4cea20f54c1eafbc337b6cca00))
+- **api**: report an absent controller application as unsupported ([0f5384c](https://github.com/rvben/unifi-cli/commit/0f5384c84caccc3dfcbf5b5b63831cd97eca55b5))
+
 ## [0.3.2](https://github.com/rvben/unifi-cli/compare/v0.3.1...v0.3.2) - 2026-08-10
 
 ### Fixed
