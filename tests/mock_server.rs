@@ -37,8 +37,8 @@ mod client_api {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
                 "data": [
-                    {"macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "10.0.0.1", "name": "Device1", "type": "WIRED"},
-                    {"macAddress": "11:22:33:44:55:66", "ipAddress": "10.0.0.2", "hostname": "host2", "type": "WIRELESS"}
+                    {"macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "192.0.2.1", "name": "Device1", "type": "WIRED"},
+                    {"macAddress": "11:22:33:44:55:66", "ipAddress": "192.0.2.2", "hostname": "host2", "type": "WIRELESS"}
                 ]
             })))
             .mount(&server)
@@ -98,8 +98,8 @@ mod client_api {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.1", "name": "Target", "is_wired": true, "uptime": 7200},
-                    {"_id": "def", "mac": "11:22:33:44:55:66", "ip": "10.0.0.2"}
+                    {"_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.1", "name": "Target", "is_wired": true, "uptime": 7200},
+                    {"_id": "def", "mac": "11:22:33:44:55:66", "ip": "192.0.2.2"}
                 ]
             })))
             .mount(&server)
@@ -178,7 +178,7 @@ mod client_api {
 
         let client = mock_client(&server).await;
         client
-            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.50", None)
+            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "192.0.2.50", None)
             .await
             .unwrap();
     }
@@ -220,7 +220,7 @@ mod client_api {
 
         let client = mock_client(&server).await;
         client
-            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "10.0.0.99", Some("NewDevice"))
+            .set_fixed_ip("aa:bb:cc:dd:ee:ff", "192.0.2.99", Some("NewDevice"))
             .await
             .unwrap();
     }
@@ -240,7 +240,7 @@ mod client_api {
 
         let client = mock_client(&server).await;
         let err = client
-            .set_fixed_ip("00:00:00:00:00:00", "10.0.0.1", None)
+            .set_fixed_ip("00:00:00:00:00:00", "192.0.2.1", None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("Not found"));
@@ -310,8 +310,8 @@ mod client_api {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
                 "data": [
-                    {"macAddress": "9c:05:d6:bc:06:43", "ipAddress": "192.168.1.1", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"},
-                    {"macAddress": "60:22:32:58:b8:00", "ipAddress": "192.168.1.190", "name": "U6-Lite", "model": "U6 Lite", "state": "ONLINE", "firmwareVersion": "6.7.41"}
+                    {"macAddress": "aa:bb:cc:dd:06:43", "ipAddress": "198.51.100.1", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"},
+                    {"macAddress": "aa:bb:cc:dd:b8:00", "ipAddress": "198.51.100.190", "name": "U6-Lite", "model": "U6 Lite", "state": "ONLINE", "firmwareVersion": "6.7.41"}
                 ]
             })))
             .mount(&server)
@@ -464,7 +464,7 @@ mod client_api {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"subsystem": "wan", "status": "ok", "wan_ip": "81.172.153.156", "isp_name": "Caiway"},
+                    {"subsystem": "wan", "status": "ok", "wan_ip": "203.0.113.156", "isp_name": "ExampleISP"},
                     {"subsystem": "wlan", "status": "ok", "num_ap": 3, "num_sta": 15},
                     {"subsystem": "lan", "status": "ok", "num_sw": 4, "num_sta": 20}
                 ]
@@ -475,7 +475,7 @@ mod client_api {
         let client = mock_client(&server).await;
         let health = client.get_health().await.unwrap();
         assert_eq!(health.len(), 3);
-        assert_eq!(health[0].wan_ip.as_deref(), Some("81.172.153.156"));
+        assert_eq!(health[0].wan_ip.as_deref(), Some("203.0.113.156"));
         assert_eq!(health[1].num_ap, Some(3));
         assert_eq!(health[2].num_switches, Some(4));
     }
@@ -701,8 +701,8 @@ mod error_handling {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.1", "name": "Desktop", "is_wired": true, "tx_bytes": 1000000, "rx_bytes": 2000000},
-                    {"_id": "c2", "mac": "11:22:33:44:55:66", "ip": "10.0.0.2", "hostname": "phone", "is_wired": false, "tx_bytes": 500, "rx_bytes": 300}
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.1", "name": "Desktop", "is_wired": true, "tx_bytes": 1000000, "rx_bytes": 2000000},
+                    {"_id": "c2", "mac": "11:22:33:44:55:66", "ip": "192.0.2.2", "hostname": "phone", "is_wired": false, "tx_bytes": 500, "rx_bytes": 300}
                 ]
             })))
             .mount(&server)
@@ -724,7 +724,7 @@ mod error_handling {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "model": "USW-24-PoE",
                     "port_table": [
                         {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456, "rx_bytes": 654321},
@@ -736,7 +736,7 @@ mod error_handling {
             .await;
 
         let client = mock_client(&server).await;
-        let device = client.get_device_ports("9c:05:d6:bc:06:43").await.unwrap();
+        let device = client.get_device_ports("aa:bb:cc:dd:06:43").await.unwrap();
         assert_eq!(device.port_table.len(), 2);
         assert!(device.port_table[0].up);
         assert!(!device.port_table[1].up);
@@ -897,8 +897,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
                 "data": [
-                    {"macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "10.0.0.1", "name": "Device1", "type": "WIRED"},
-                    {"macAddress": "11:22:33:44:55:66", "ipAddress": "10.0.0.2", "hostname": "host2", "type": "WIRELESS"}
+                    {"macAddress": "aa:bb:cc:dd:ee:ff", "ipAddress": "192.0.2.1", "name": "Device1", "type": "WIRED"},
+                    {"macAddress": "11:22:33:44:55:66", "ipAddress": "192.0.2.2", "hostname": "host2", "type": "WIRELESS"}
                 ]
             })))
             .mount(server)
@@ -909,9 +909,9 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.99",
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.99",
                      "is_wired": true, "network": "Default", "vlan": 1},
-                    {"_id": "2", "mac": "11:22:33:44:55:66", "essid": "Notwork",
+                    {"_id": "2", "mac": "11:22:33:44:55:66", "essid": "GuestNet",
                      "signal": -55, "uptime": 100, "network": "IoT", "vlan": 20}
                 ]
             })))
@@ -979,7 +979,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.1",
+                    "_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.1",
                     "name": "WiredDevice", "is_wired": true, "uptime": 86400,
                     "tx_bytes": 1048576, "rx_bytes": 2097152
                 }]
@@ -1001,10 +1001,10 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "_id": "def", "mac": "11:22:33:44:55:66", "ip": "10.0.0.2",
+                    "_id": "def", "mac": "11:22:33:44:55:66", "ip": "192.0.2.2",
                     "name": "WirelessDevice", "is_wired": false, "uptime": 3600,
                     "tx_bytes": 512000, "rx_bytes": 1024000,
-                    "signal": -55, "essid": "Notwork", "ap_mac": "60:22:32:58:b8:00"
+                    "signal": -55, "essid": "GuestNet", "ap_mac": "aa:bb:cc:dd:b8:00"
                 }]
             })))
             .mount(&server)
@@ -1024,7 +1024,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.0.0.1",
+                    "_id": "abc", "mac": "aa:bb:cc:dd:ee:ff", "ip": "192.0.2.1",
                     "name": "Device", "is_wired": true
                 }]
             })))
@@ -1061,7 +1061,7 @@ mod command_output {
         unifi_cli::commands::clients::set_fixed_ip(
             &client,
             "aa:bb:cc:dd:ee:ff",
-            "10.0.0.50",
+            "192.0.2.50",
             None,
             out_table(),
         )
@@ -1093,7 +1093,7 @@ mod command_output {
         unifi_cli::commands::clients::set_fixed_ip(
             &client,
             "aa:bb:cc:dd:ee:ff",
-            "10.0.0.50",
+            "192.0.2.50",
             Some("MyDevice"),
             out_table(),
         )
@@ -1163,7 +1163,7 @@ mod command_output {
             .and(path_regex(r"/proxy/network/integration/v1/sites/.*/devices"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
-                "data": [{"macAddress": "9c:05:d6:bc:06:43", "ipAddress": "192.168.1.1", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"}]
+                "data": [{"macAddress": "aa:bb:cc:dd:06:43", "ipAddress": "198.51.100.1", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"}]
             })))
             .mount(&server)
             .await;
@@ -1187,7 +1187,7 @@ mod command_output {
             .and(path_regex(r"/proxy/network/integration/v1/sites/.*/devices"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
-                "data": [{"macAddress": "9c:05:d6:bc:06:43", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"}]
+                "data": [{"macAddress": "aa:bb:cc:dd:06:43", "name": "UCG Ultra", "model": "UCG Ultra", "state": "ONLINE", "firmwareVersion": "5.0.12"}]
             })))
             .mount(&server)
             .await;
@@ -1313,7 +1313,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"subsystem": "wan", "status": "ok", "wan_ip": "1.2.3.4", "isp_name": "ISP"},
+                    {"subsystem": "wan", "status": "ok", "wan_ip": "203.0.113.4", "isp_name": "ISP"},
                     {"subsystem": "wlan", "status": "ok", "num_ap": 2, "num_sta": 10},
                     {"subsystem": "lan", "status": "ok", "num_sw": 3, "num_sta": 5},
                     {"subsystem": "vpn", "status": "unknown"}
@@ -1336,7 +1336,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"subsystem": "wan", "status": "ok", "wan_ip": "1.2.3.4", "isp_name": "ISP"}
+                    {"subsystem": "wan", "status": "ok", "wan_ip": "203.0.113.4", "isp_name": "ISP"}
                 ]
             })))
             .mount(&server)
@@ -1410,7 +1410,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "ip": "192.168.1.1",
+                    "mac": "aa:bb:cc:dd:06:43", "ip": "198.51.100.1",
                     "name": "UCG Ultra", "model": "UCG Ultra",
                     "state": 1, "version": "5.0.12", "uptime": 86400, "num_sta": 42
                 }]
@@ -1419,7 +1419,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::show(&client, "9c:05:d6:bc:06:43", out_table())
+        unifi_cli::commands::devices::show(&client, "aa:bb:cc:dd:06:43", out_table())
             .await
             .unwrap();
     }
@@ -1432,7 +1432,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "ip": "192.168.1.1",
+                    "mac": "aa:bb:cc:dd:06:43", "ip": "198.51.100.1",
                     "name": "UCG Ultra", "model": "UCG Ultra",
                     "state": 1, "version": "5.0.12"
                 }]
@@ -1441,7 +1441,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::show(&client, "9c:05:d6:bc:06:43", out_json())
+        unifi_cli::commands::devices::show(&client, "aa:bb:cc:dd:06:43", out_json())
             .await
             .unwrap();
     }
@@ -1632,9 +1632,9 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "10.0.0.1", "name": "Heavy User", "is_wired": true, "tx_bytes": 5000000000_u64, "rx_bytes": 10000000000_u64},
-                    {"_id": "c2", "mac": "aa:bb:cc:dd:ee:02", "ip": "10.0.0.2", "name": "Light User", "is_wired": false, "tx_bytes": 1000, "rx_bytes": 2000},
-                    {"_id": "c3", "mac": "aa:bb:cc:dd:ee:03", "ip": "10.0.0.3", "hostname": "medium-host", "is_wired": true, "tx_bytes": 500000, "rx_bytes": 600000}
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "192.0.2.1", "name": "Heavy User", "is_wired": true, "tx_bytes": 5000000000_u64, "rx_bytes": 10000000000_u64},
+                    {"_id": "c2", "mac": "aa:bb:cc:dd:ee:02", "ip": "192.0.2.2", "name": "Light User", "is_wired": false, "tx_bytes": 1000, "rx_bytes": 2000},
+                    {"_id": "c3", "mac": "aa:bb:cc:dd:ee:03", "ip": "192.0.2.3", "hostname": "medium-host", "is_wired": true, "tx_bytes": 500000, "rx_bytes": 600000}
                 ]
             })))
             .mount(&server)
@@ -1654,7 +1654,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "10.0.0.1", "name": "User1", "is_wired": true, "tx_bytes": 100, "rx_bytes": 200}
+                    {"_id": "c1", "mac": "aa:bb:cc:dd:ee:01", "ip": "192.0.2.1", "name": "User1", "is_wired": true, "tx_bytes": 100, "rx_bytes": 200}
                 ]
             })))
             .mount(&server)
@@ -1676,7 +1676,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE", "model": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE", "model": "USW-24-PoE",
                     "port_table": [
                         {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456789, "rx_bytes": 987654321},
                         {"port_idx": 2, "name": "Port 2", "media": "GE", "up": true, "speed": 100, "full_duplex": false, "poe_enable": false, "port_poe": true, "tx_bytes": 1000, "rx_bytes": 2000},
@@ -1688,7 +1688,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::ports(&client, "9c:05:d6:bc:06:43", out_table())
+        unifi_cli::commands::devices::ports(&client, "aa:bb:cc:dd:06:43", out_table())
             .await
             .unwrap();
     }
@@ -1701,7 +1701,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-Lite-8",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-Lite-8",
                     "port_table": [
                         {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 3.8, "port_poe": true, "tx_bytes": 100, "rx_bytes": 200}
                     ]
@@ -1711,7 +1711,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::devices::ports(&client, "9c:05:d6:bc:06:43", out_json())
+        unifi_cli::commands::devices::ports(&client, "aa:bb:cc:dd:06:43", out_json())
             .await
             .unwrap();
     }
@@ -1854,7 +1854,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [
                         {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true},
                         {
@@ -1874,7 +1874,7 @@ mod command_output {
             .await;
 
         let client = mock_client(&server).await;
-        unifi_cli::commands::ports::show(&client, "9c:05:d6:bc:06:43", 5, out_table())
+        unifi_cli::commands::ports::show(&client, "aa:bb:cc:dd:06:43", 5, out_table())
             .await
             .unwrap();
     }
@@ -1891,7 +1891,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
                         "speed": 1000, "full_duplex": true,
@@ -1913,7 +1913,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "show",
-                "9c:05:d6:bc:06:43",
+                "aa:bb:cc:dd:06:43",
                 "5",
                 "--output",
                 "text",
@@ -1928,7 +1928,7 @@ mod command_output {
 
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(
-            text.contains("Port 5 on USW-24-PoE (9c:05:d6:bc:06:43)"),
+            text.contains("Port 5 on USW-24-PoE (aa:bb:cc:dd:06:43)"),
             "title line: {text}"
         );
         assert!(text.contains("Port 5"), "port name: {text}");
@@ -1954,7 +1954,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
                         "speed": 1000, "full_duplex": true, "autoneg": true, "enable": true,
@@ -1978,7 +1978,7 @@ mod command_output {
                 "test-key",
                 "ports",
                 "show",
-                "9c:05:d6:bc:06:43",
+                "aa:bb:cc:dd:06:43",
                 "5",
                 "--output",
                 "json",
@@ -2002,7 +2002,7 @@ mod command_output {
             .expect("ports show must emit a JSON object");
 
         // Values that were previously fetched and thrown away.
-        assert_eq!(obj["device_mac"], "9c:05:d6:bc:06:43");
+        assert_eq!(obj["device_mac"], "aa:bb:cc:dd:06:43");
         assert_eq!(obj["port_idx"], 5);
         assert_eq!(obj["poe_mode"], "auto");
         assert_eq!(obj["poe_class"], "4");
@@ -2106,7 +2106,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "name": "Port 5", "media": "GE", "up": false,
                         "port_poe": true, "poe_enable": true, "poe_mode": "auto",
@@ -2126,7 +2126,7 @@ mod command_output {
                     "test-key",
                     "ports",
                     "show",
-                    "9c:05:d6:bc:06:43",
+                    "aa:bb:cc:dd:06:43",
                     "5",
                     "--output",
                     format,
@@ -2177,7 +2177,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "name": "Port 5", "media": "GE", "up": true,
                         "last_connection": {"mac": "aabbccddeeff"}
@@ -2196,7 +2196,7 @@ mod command_output {
                     "test-key",
                     "ports",
                     "show",
-                    "9c:05:d6:bc:06:43",
+                    "aa:bb:cc:dd:06:43",
                     "5",
                     "--output",
                     format,
@@ -2514,7 +2514,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [
                         {"port_idx": 1, "name": "Port 1", "media": "GE", "up": true, "speed": 1000, "full_duplex": true, "poe_enable": true, "poe_power": 5.2, "port_poe": true, "tx_bytes": 123456789, "rx_bytes": 987654321},
                         {"port_idx": 2, "name": "Port 2", "media": "GE", "up": true, "speed": 100, "full_duplex": false, "poe_enable": false, "port_poe": true, "tx_bytes": 1000, "rx_bytes": 2000}
@@ -2543,8 +2543,8 @@ mod command_output {
             })
         };
 
-        let alias = run_json(&["devices", "ports", "9c:05:d6:bc:06:43", "-o", "json"]);
-        let canonical = run_json(&["ports", "list", "9c:05:d6:bc:06:43", "-o", "json"]);
+        let alias = run_json(&["devices", "ports", "aa:bb:cc:dd:06:43", "-o", "json"]);
+        let canonical = run_json(&["ports", "list", "aa:bb:cc:dd:06:43", "-o", "json"]);
 
         // 1. `devices ports` must be a bare array, and rows must carry the
         //    device_mac/device_name fields shared with `ports list`.
@@ -2626,7 +2626,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [
                         {"port_idx": 2, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": false}},
                         {"port_idx": 7, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}},
@@ -2712,8 +2712,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap", "ip": "10.0.0.6"},
-                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "10.0.0.7"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap", "ip": "192.0.2.6"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "192.0.2.7"}
                 ]
             })))
             .mount(&server)
@@ -2723,7 +2723,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW Pro XG 8 PoE",
                     "port_table": [
                         {"port_idx": 3, "last_connection": {"mac": "aa:bb:cc:dd:ee:20", "connected": true}},
                         {"port_idx": 4, "last_connection": {"mac": "aa:bb:cc:dd:ee:21", "connected": true}}
@@ -2778,8 +2778,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi", "ip": "10.0.0.5"},
-                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "garage-pi", "ip": "10.0.0.9"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi", "ip": "192.0.2.5"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "garage-pi", "ip": "192.0.2.9"}
                 ]
             })))
             .mount(&server)
@@ -2789,7 +2789,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW Pro XG 8 PoE",
                     "port_table": [
                         {"port_idx": 5, "last_connection": {"mac": "aa:bb:cc:dd:ee:10", "connected": true}}
                     ]
@@ -2843,8 +2843,8 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [
-                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "lobby-display", "ip": "10.0.0.15"},
-                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "lobby-display", "ip": "10.0.0.16"}
+                    {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "lobby-display", "ip": "192.0.2.15"},
+                    {"_id": "2", "mac": "aa:bb:cc:dd:ee:11", "name": "lobby-display", "ip": "192.0.2.16"}
                 ]
             })))
             .mount(&server)
@@ -2854,7 +2854,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW Pro XG 8 PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW Pro XG 8 PoE",
                     "port_table": [
                         {"port_idx": 1, "last_connection": {"mac": "11:22:33:44:55:66", "connected": true}}
                     ]
@@ -2994,7 +2994,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "port_poe": true, "poe_mode": "auto",
                         "poe_enable": true
@@ -3008,7 +3008,7 @@ mod command_output {
             .and(path("/proxy/network/api/s/default/cmd/devmgr"))
             .and(body_json(serde_json::json!({
                 "cmd": "power-cycle",
-                "mac": "9c:05:d6:bc:06:43",
+                "mac": "aa:bb:cc:dd:06:43",
                 "port_idx": 5
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -3021,7 +3021,7 @@ mod command_output {
 
         let client = mock_client(&server).await;
         let outcome =
-            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 5, out_table(), |_| {
+            unifi_cli::commands::ports::cycle(&client, "aa:bb:cc:dd:06:43", 5, out_table(), |_| {
                 Ok(true)
             })
             .await
@@ -3037,7 +3037,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{
                         "port_idx": 5, "port_poe": true, "poe_mode": "auto",
                         "poe_enable": true
@@ -3059,7 +3059,7 @@ mod command_output {
 
         let client = mock_client(&server).await;
         let outcome =
-            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 5, out_table(), |_| {
+            unifi_cli::commands::ports::cycle(&client, "aa:bb:cc:dd:06:43", 5, out_table(), |_| {
                 Ok(false)
             })
             .await
@@ -3075,7 +3075,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-Lite-8",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-Lite-8",
                     "port_table": [{"port_idx": 9, "port_poe": false}]
                 }]
             })))
@@ -3098,7 +3098,7 @@ mod command_output {
         // would approve proves nothing about ordering unless it's wired to run
         // second.
         let err =
-            unifi_cli::commands::ports::cycle(&client, "9c:05:d6:bc:06:43", 9, out_table(), |_| {
+            unifi_cli::commands::ports::cycle(&client, "aa:bb:cc:dd:06:43", 9, out_table(), |_| {
                 Ok(true)
             })
             .await
@@ -3176,7 +3176,7 @@ mod command_output {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "meta": {"rc": "ok"},
                 "data": [{
-                    "mac": "9c:05:d6:bc:06:43", "name": "USW-24-PoE",
+                    "mac": "aa:bb:cc:dd:06:43", "name": "USW-24-PoE",
                     "port_table": [{"port_idx": 1, "port_poe": true}]
                 }]
             })))
@@ -3196,7 +3196,7 @@ mod command_output {
         let client = mock_client(&server).await;
         let err = unifi_cli::commands::ports::cycle(
             &client,
-            "9c:05:d6:bc:06:43",
+            "aa:bb:cc:dd:06:43",
             99,
             out_table(),
             |_| Ok(true),

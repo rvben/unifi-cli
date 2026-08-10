@@ -869,7 +869,7 @@ mod tests {
     fn collect_rows_formats_device_mac_and_falls_back_to_model_when_name_is_absent() {
         let devices = vec![
             device(serde_json::json!({
-                "mac": "9c05d6bc0643", "name": "USW-24-PoE",
+                "mac": "aabbccdd0643", "name": "USW-24-PoE",
                 "port_table": [{"port_idx": 1}]
             })),
             device(serde_json::json!({
@@ -885,7 +885,7 @@ mod tests {
         let rows = collect_rows(&devices);
 
         assert_eq!(
-            rows[0].device_mac, "9c:05:d6:bc:06:43",
+            rows[0].device_mac, "aa:bb:cc:dd:06:43",
             "device_mac must be formatted via format_mac, not passed through raw"
         );
         assert_eq!(rows[0].device_name, "USW-24-PoE");
@@ -1229,9 +1229,9 @@ mod tests {
     // or the fixture will not deserialize.
     fn clients_fixture() -> Vec<crate::api::LegacyClient> {
         serde_json::from_value(serde_json::json!([
-            {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi",   "ip": "10.0.0.5"},
-            {"_id": "2", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap",   "ip": "10.0.0.6"},
-            {"_id": "3", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "10.0.0.7"}
+            {"_id": "1", "mac": "aa:bb:cc:dd:ee:10", "name": "garage-pi",   "ip": "192.0.2.5"},
+            {"_id": "2", "mac": "aa:bb:cc:dd:ee:20", "name": "office-ap",   "ip": "192.0.2.6"},
+            {"_id": "3", "mac": "aa:bb:cc:dd:ee:21", "name": "Main-Office", "ip": "192.0.2.7"}
         ]))
         .expect("fixture must parse")
     }
@@ -1250,7 +1250,7 @@ mod tests {
     fn resolve_candidates_matches_ip_then_name() {
         let c = clients_fixture();
         assert_eq!(
-            resolve_candidates("10.0.0.5", &c).unwrap(),
+            resolve_candidates("192.0.2.5", &c).unwrap(),
             vec!["aabbccddee10"]
         );
         assert_eq!(

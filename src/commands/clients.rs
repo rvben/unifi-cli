@@ -495,33 +495,33 @@ mod tests {
     fn merge_joins_legacy_detail_by_mac() {
         let clients = vec![make_client(
             "Plug",
-            "70:03:9f:90:3c:29",
-            "10.10.20.202",
+            "aa:bb:cc:dd:3c:29",
+            "192.0.2.202",
             "WIRELESS",
         )];
         let legacy_records = vec![legacy(
-            r#"{"_id":"1","mac":"70:03:9f:90:3c:29","ip":"10.10.20.202","essid":"Notwork",
+            r#"{"_id":"1","mac":"aa:bb:cc:dd:3c:29","ip":"192.0.2.202","essid":"GuestNet",
                 "signal":-57,"uptime":321125,"network":"IoT","vlan":20}"#,
         )];
 
         let rows = merge_rows(clients, legacy_records);
         assert_eq!(rows.len(), 1);
         let json = rows[0].to_json();
-        assert_eq!(json["ssid"], "Notwork");
+        assert_eq!(json["ssid"], "GuestNet");
         assert_eq!(json["signal"], -57);
         assert_eq!(json["network"], "IoT");
         assert_eq!(json["vlan"], 20);
-        assert_eq!(json["ip"], "10.10.20.202");
+        assert_eq!(json["ip"], "192.0.2.202");
     }
 
     #[test]
     fn merge_matches_macs_in_different_formats() {
-        let clients = vec![make_client("X", "AA-BB-CC-DD-EE-FF", "10.0.0.1", "WIRED")];
+        let clients = vec![make_client("X", "AA-BB-CC-DD-EE-FF", "192.0.2.1", "WIRED")];
         let legacy_records = vec![legacy(
-            r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:ff","ip":"10.0.0.5"}"#,
+            r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:ff","ip":"192.0.2.5"}"#,
         )];
         let rows = merge_rows(clients, legacy_records);
-        assert_eq!(rows[0].live_ip(), Some("10.0.0.5"));
+        assert_eq!(rows[0].live_ip(), Some("192.0.2.5"));
     }
 
     /// The defect this guards: `clients list` read `ip` from the integration API,
@@ -532,12 +532,12 @@ mod tests {
     fn live_ip_wins_over_the_integration_apis_last_known_address() {
         let clients = vec![make_client(
             "Refrigerator",
-            "c4:dd:57:1d:07:e6",
-            "10.10.20.203",
+            "aa:bb:cc:dd:07:e6",
+            "192.0.2.203",
             "WIRELESS",
         )];
         let legacy_records = vec![legacy(
-            r#"{"_id":"1","mac":"c4:dd:57:1d:07:e6","essid":"Network"}"#,
+            r#"{"_id":"1","mac":"aa:bb:cc:dd:07:e6","essid":"Network"}"#,
         )];
 
         let rows = merge_rows(clients, legacy_records);
@@ -555,7 +555,7 @@ mod tests {
         let clients = vec![make_client(
             "Ghost",
             "aa:bb:cc:dd:ee:ff",
-            "10.0.0.1",
+            "192.0.2.1",
             "WIRED",
         )];
         let rows = merge_rows(clients, vec![]);
@@ -570,12 +570,12 @@ mod tests {
     #[test]
     fn merge_preserves_client_order_and_count() {
         let clients = vec![
-            make_client("A", "aa:bb:cc:dd:ee:01", "10.0.0.1", "WIRED"),
-            make_client("B", "aa:bb:cc:dd:ee:02", "10.0.0.2", "WIRELESS"),
-            make_client("C", "aa:bb:cc:dd:ee:03", "10.0.0.3", "WIRELESS"),
+            make_client("A", "aa:bb:cc:dd:ee:01", "192.0.2.1", "WIRED"),
+            make_client("B", "aa:bb:cc:dd:ee:02", "192.0.2.2", "WIRELESS"),
+            make_client("C", "aa:bb:cc:dd:ee:03", "192.0.2.3", "WIRELESS"),
         ];
         let legacy_records = vec![legacy(
-            r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:02","ip":"1.2.3.4"}"#,
+            r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:02","ip":"192.0.2.104"}"#,
         )];
         let rows = merge_rows(clients, legacy_records);
         let names: Vec<String> = rows
@@ -583,26 +583,26 @@ mod tests {
             .map(|r| r.client.clean_name())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["A", "B", "C"]);
-        assert_eq!(rows[1].live_ip(), Some("1.2.3.4"));
+        assert_eq!(rows[1].live_ip(), Some("192.0.2.104"));
         assert_eq!(rows[0].live_ip(), None);
     }
 
     #[test]
     fn merge_ignores_legacy_records_with_no_matching_client() {
-        let clients = vec![make_client("A", "aa:bb:cc:dd:ee:01", "10.0.0.1", "WIRED")];
+        let clients = vec![make_client("A", "aa:bb:cc:dd:ee:01", "192.0.2.1", "WIRED")];
         let legacy_records = vec![
-            legacy(r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:01","ip":"1.1.1.1"}"#),
-            legacy(r#"{"_id":"2","mac":"ff:ff:ff:ff:ff:ff","ip":"2.2.2.2"}"#),
+            legacy(r#"{"_id":"1","mac":"aa:bb:cc:dd:ee:01","ip":"192.0.2.101"}"#),
+            legacy(r#"{"_id":"2","mac":"ff:ff:ff:ff:ff:ff","ip":"192.0.2.102"}"#),
         ];
         let rows = merge_rows(clients, legacy_records);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].live_ip(), Some("1.1.1.1"));
+        assert_eq!(rows[0].live_ip(), Some("192.0.2.101"));
     }
 
     #[test]
     fn to_json_emits_exactly_the_published_field_set() {
         let rows = merge_rows(
-            vec![make_client("A", "aa:bb:cc:dd:ee:01", "10.0.0.1", "WIRED")],
+            vec![make_client("A", "aa:bb:cc:dd:ee:01", "192.0.2.1", "WIRED")],
             vec![],
         );
         let json = rows[0].to_json();
@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn filter_no_constraints() {
         let clients = vec![
-            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
-            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+            make_client("A", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "192.0.2.2", "WIRELESS"),
         ];
         let filter = ListFilter {
             wired: false,
@@ -661,8 +661,8 @@ mod tests {
     #[test]
     fn filter_wired_only() {
         let clients = vec![
-            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
-            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+            make_client("A", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "192.0.2.2", "WIRELESS"),
         ];
         let filter = ListFilter {
             wired: true,
@@ -677,8 +677,8 @@ mod tests {
     #[test]
     fn filter_wireless_only() {
         let clients = vec![
-            make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
-            make_client("B", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+            make_client("A", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED"),
+            make_client("B", "11:22:33:44:55:66", "192.0.2.2", "WIRELESS"),
         ];
         let filter = ListFilter {
             wired: false,
@@ -693,8 +693,8 @@ mod tests {
     #[test]
     fn filter_by_name_case_insensitive() {
         let clients = vec![
-            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
-            make_client("iPhone", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
+            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED"),
+            make_client("iPhone", "11:22:33:44:55:66", "192.0.2.2", "WIRELESS"),
         ];
         let filter = ListFilter {
             wired: false,
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn filter_by_name_no_match() {
-        let clients = vec![make_client("A", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED")];
+        let clients = vec![make_client("A", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED")];
         let filter = ListFilter {
             wired: false,
             wireless: false,
@@ -720,9 +720,9 @@ mod tests {
     #[test]
     fn filter_combined_type_and_name() {
         let clients = vec![
-            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "10.0.0.1", "WIRED"),
-            make_client("MacBook", "11:22:33:44:55:66", "10.0.0.2", "WIRELESS"),
-            make_client("iPhone", "22:33:44:55:66:77", "10.0.0.3", "WIRELESS"),
+            make_client("Mac Mini", "aa:bb:cc:dd:ee:ff", "192.0.2.1", "WIRED"),
+            make_client("MacBook", "11:22:33:44:55:66", "192.0.2.2", "WIRELESS"),
+            make_client("iPhone", "22:33:44:55:66:77", "192.0.2.3", "WIRELESS"),
         ];
         let filter = ListFilter {
             wired: false,

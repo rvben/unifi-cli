@@ -151,7 +151,7 @@ enum ClientsCommand {
     SetFixedIp {
         /// MAC address (any format: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)
         mac: String,
-        /// Fixed IP address to assign (e.g., 10.0.0.5)
+        /// Fixed IP address to assign (e.g., 192.0.2.5)
         ip: String,
         /// Friendly name for the client
         #[arg(long)]
@@ -2280,14 +2280,14 @@ api_key = "work_key"
             "clients",
             "set-fixed-ip",
             "aa:bb:cc:dd:ee:ff",
-            "10.0.0.5",
+            "192.0.2.5",
             "--name",
             "MyDevice",
         ]);
         match cli.command {
             Command::Clients(ClientsCommand::SetFixedIp { mac, ip, name }) => {
                 assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
-                assert_eq!(ip, "10.0.0.5");
+                assert_eq!(ip, "192.0.2.5");
                 assert_eq!(name.as_deref(), Some("MyDevice"));
             }
             _ => panic!("expected Clients SetFixedIp"),
@@ -2305,7 +2305,7 @@ api_key = "work_key"
             "clients",
             "set-fixed-ip",
             "aa:bb:cc:dd:ee:ff",
-            "10.0.0.5",
+            "192.0.2.5",
         ]);
         match cli.command {
             Command::Clients(ClientsCommand::SetFixedIp { name, .. }) => assert!(name.is_none()),
@@ -3154,8 +3154,8 @@ accept_invalid_certs = true
 
     #[test]
     fn client_new_adds_https_for_ip() {
-        let client = api::UnifiClient::new("192.168.1.1", "key").unwrap();
-        assert_eq!(client.base_url(), "https://192.168.1.1");
+        let client = api::UnifiClient::new("198.51.100.1", "key").unwrap();
+        assert_eq!(client.base_url(), "https://198.51.100.1");
     }
 
     #[test]

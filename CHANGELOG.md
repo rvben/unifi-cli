@@ -130,7 +130,7 @@ Thanks to [@l3wi](https://github.com/l3wi) for reporting the TLS certificate val
 - TUI: device panel shows all devices without scrolling, cursor moves through items
 - TUI: client list viewport follows cursor instead of cursor staying at top
 - CLI: dynamic column widths adapt to data instead of fixed widths causing misalignment
-- CLI: MAC suffixes stripped from display names (e.g., "garage-bluetooth-proxy" instead of "garage-bluetooth-proxy 43:3c")
+- CLI: MAC suffixes stripped from display names (e.g., "lobby-bluetooth-proxy" instead of "lobby-bluetooth-proxy 43:3c")
 
 ### Changed
 - TUI: overlay shortcut hints moved from footer to overlay bottom border

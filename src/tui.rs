@@ -2237,11 +2237,11 @@ mod tests {
 
     #[test]
     fn ip_sort_key_ordering() {
-        let mut ips = vec!["10.0.0.2", "10.0.0.10", "10.0.0.1", "192.168.1.1"];
+        let mut ips = vec!["192.0.2.2", "192.0.2.10", "192.0.2.1", "198.51.100.1"];
         ips.sort_by_key(|ip| ip_sort_key(ip));
         assert_eq!(
             ips,
-            vec!["10.0.0.1", "10.0.0.2", "10.0.0.10", "192.168.1.1"]
+            vec!["192.0.2.1", "192.0.2.2", "192.0.2.10", "198.51.100.1"]
         );
     }
 
@@ -2502,9 +2502,9 @@ mod tests {
     fn sorted_clients_bandwidth_default() {
         let mut state = AppState::new();
         state.clients = vec![
-            make_client("1", "Low", "10.0.0.1", 100, 100),
-            make_client("2", "High", "10.0.0.2", 10000, 10000),
-            make_client("3", "Mid", "10.0.0.3", 1000, 1000),
+            make_client("1", "Low", "192.0.2.1", 100, 100),
+            make_client("2", "High", "192.0.2.2", 10000, 10000),
+            make_client("3", "Mid", "192.0.2.3", 1000, 1000),
         ];
         let sorted = state.sorted_clients();
         assert_eq!(sorted[0].display_name(), "High");
@@ -2517,9 +2517,9 @@ mod tests {
         let mut state = AppState::new();
         state.sort = SortMode::Name;
         state.clients = vec![
-            make_client("1", "Charlie", "10.0.0.1", 0, 0),
-            make_client("2", "Alice", "10.0.0.2", 0, 0),
-            make_client("3", "Bob", "10.0.0.3", 0, 0),
+            make_client("1", "Charlie", "192.0.2.1", 0, 0),
+            make_client("2", "Alice", "192.0.2.2", 0, 0),
+            make_client("3", "Bob", "192.0.2.3", 0, 0),
         ];
         let sorted = state.sorted_clients();
         assert_eq!(sorted[0].display_name(), "Alice");
@@ -2532,14 +2532,14 @@ mod tests {
         let mut state = AppState::new();
         state.sort = SortMode::Ip;
         state.clients = vec![
-            make_client("1", "A", "10.0.0.10", 0, 0),
-            make_client("2", "B", "10.0.0.2", 0, 0),
-            make_client("3", "C", "10.0.0.1", 0, 0),
+            make_client("1", "A", "192.0.2.10", 0, 0),
+            make_client("2", "B", "192.0.2.2", 0, 0),
+            make_client("3", "C", "192.0.2.1", 0, 0),
         ];
         let sorted = state.sorted_clients();
-        assert_eq!(sorted[0].display_name(), "C"); // 10.0.0.1
-        assert_eq!(sorted[1].display_name(), "B"); // 10.0.0.2
-        assert_eq!(sorted[2].display_name(), "A"); // 10.0.0.10
+        assert_eq!(sorted[0].display_name(), "C"); // 192.0.2.1
+        assert_eq!(sorted[1].display_name(), "B"); // 192.0.2.2
+        assert_eq!(sorted[2].display_name(), "A"); // 192.0.2.10
     }
 
     #[test]
@@ -2547,8 +2547,8 @@ mod tests {
         let mut state = AppState::new();
         state.filter = "ali".to_string();
         state.clients = vec![
-            make_client("1", "Alice", "10.0.0.1", 0, 0),
-            make_client("2", "Bob", "10.0.0.2", 0, 0),
+            make_client("1", "Alice", "192.0.2.1", 0, 0),
+            make_client("2", "Bob", "192.0.2.2", 0, 0),
         ];
         let sorted = state.sorted_clients();
         assert_eq!(sorted.len(), 1);
@@ -2558,10 +2558,10 @@ mod tests {
     #[test]
     fn sorted_clients_filter_by_ip() {
         let mut state = AppState::new();
-        state.filter = "10.0.0.2".to_string();
+        state.filter = "192.0.2.2".to_string();
         state.clients = vec![
-            make_client("1", "Alice", "10.0.0.1", 0, 0),
-            make_client("2", "Bob", "10.0.0.2", 0, 0),
+            make_client("1", "Alice", "192.0.2.1", 0, 0),
+            make_client("2", "Bob", "192.0.2.2", 0, 0),
         ];
         let sorted = state.sorted_clients();
         assert_eq!(sorted.len(), 1);
@@ -2588,8 +2588,8 @@ mod tests {
         let mut state = AppState::new();
         state.filter = String::new();
         state.clients = vec![
-            make_client("1", "A", "10.0.0.1", 0, 0),
-            make_client("2", "B", "10.0.0.2", 0, 0),
+            make_client("1", "A", "192.0.2.1", 0, 0),
+            make_client("2", "B", "192.0.2.2", 0, 0),
         ];
         assert_eq!(state.sorted_clients().len(), 2);
     }
