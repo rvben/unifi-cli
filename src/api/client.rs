@@ -11,14 +11,18 @@ pub fn error_for_status(status: u16, message: String) -> ApiError {
     }
 }
 
-/// Decode a successful response as JSON, refusing a body that is not JSON.
+/// Decode a successful response as JSON, naming what answered when it is not.
 ///
 /// UniFi OS answers a request for an application the controller does not have
-/// by proxying it to the web UI, which returns 200 with an HTML page. Parsing
+/// by proxying it to the web UI, which returns 200 with an HTML page. Decoding
 /// that as JSON produces "error decoding response body", which names neither
-/// the endpoint nor the reason, so the caller cannot tell a missing
-/// application from a transport fault. Checking the content type first turns it
-/// into an error that says which endpoint answered and with what.
+/// the endpoint nor the reason, so the caller cannot tell a missing application
+/// from a transport fault worth retrying.
+///
+/// The body is decoded first and the content type only chooses the error for a
+/// body that did not decode: a controller or proxy that serves JSON under
+/// `text/plain` or under no content type at all is still answering the request,
+/// so it must not be reported as an application that is not there.
 async fn json_or_unsupported<T: DeserializeOwned>(
     resp: reqwest::Response,
     endpoint: &str,
@@ -29,17 +33,25 @@ async fn json_or_unsupported<T: DeserializeOwned>(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    if !raw.to_ascii_lowercase().contains("json") {
-        let content_type = match raw.split(';').next().map(str::trim) {
-            Some(t) if !t.is_empty() => t.to_string(),
-            _ => "no content type".to_string(),
-        };
-        return Err(ApiError::Unsupported {
-            endpoint: endpoint.to_string(),
-            content_type,
-        });
+    let bytes = resp.bytes().await?;
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Ok(value),
+        // A body that claims to be JSON and is not is a fault in a controller
+        // that does serve this endpoint, which is a different thing entirely.
+        Err(e) if raw.to_ascii_lowercase().contains("json") => Err(ApiError::Other(format!(
+            "Failed to decode the response from {endpoint}: {e}"
+        ))),
+        Err(_) => {
+            let content_type = match raw.split(';').next().map(str::trim) {
+                Some(t) if !t.is_empty() => t.to_string(),
+                _ => "no content type".to_string(),
+            };
+            Err(ApiError::Unsupported {
+                endpoint: endpoint.to_string(),
+                content_type,
+            })
+        }
     }
-    Ok(resp.json().await?)
 }
 
 /// Valid RTSPS quality levels accepted by the Protect API.

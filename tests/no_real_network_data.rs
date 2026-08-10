@@ -31,32 +31,61 @@ const ALLOWED_IP_PREFIXES: &[&str] = &["192.0.2.", "198.51.100.", "203.0.113."];
 const ALLOWED_IPS: &[&str] = &["127.0.0.1", "0.0.0.0", "255.255.255.255"];
 
 /// Every MAC-shaped token in `text`, normalized to lowercase hex digits.
+///
+/// Both spellings count. The legacy UniFi API reports a MAC as twelve bare hex
+/// digits, and fixtures copy whichever form the endpoint returned, so scanning
+/// only the separated form would let a real address through in exactly the
+/// spelling the controller hands out.
 fn macs(text: &str) -> Vec<String> {
     let bytes: Vec<char> = text.chars().collect();
     let mut found = Vec::new();
     let mut i = 0;
-    while i + 16 < bytes.len() + 1 {
-        // A MAC is six hex pairs joined by a single separator, so it spans 17
-        // characters. Anchor on a boundary or a run of hex digits either side
-        // would match the tail of a longer token.
-        let window: String = bytes[i..(i + 17).min(bytes.len())].iter().collect();
-        if window.len() == 17 && is_mac(&window) {
-            let before_is_hex = i > 0 && (bytes[i - 1].is_ascii_hexdigit() || bytes[i - 1] == ':');
-            let after = bytes.get(i + 17);
-            let after_is_hex =
-                after.is_some_and(|c| c.is_ascii_hexdigit() || *c == ':' || *c == '-');
-            if !before_is_hex && !after_is_hex {
-                found.push(window.to_ascii_lowercase().replace([':', '-'], ""));
-                i += 17;
-                continue;
-            }
+    while i < bytes.len() {
+        // A separated MAC is six hex pairs joined by one separator, so it spans
+        // 17 characters; a bare one spans 12. Either has to sit on a boundary:
+        // matching inside a longer hex run would pick up the tail of a hash.
+        if !boundary_before(&bytes, i) {
+            i += 1;
+            continue;
+        }
+        let separated: String = bytes[i..(i + 17).min(bytes.len())].iter().collect();
+        if separated.chars().count() == 17
+            && is_separated_mac(&separated)
+            && boundary_after(&bytes, i + 17)
+        {
+            found.push(separated.to_ascii_lowercase().replace([':', '-'], ""));
+            i += 17;
+            continue;
+        }
+        let bare: String = bytes[i..(i + 12).min(bytes.len())].iter().collect();
+        if bare.chars().count() == 12
+            && bare.chars().all(|c| c.is_ascii_hexdigit())
+            && boundary_after(&bytes, i + 12)
+        {
+            found.push(bare.to_ascii_lowercase());
+            i += 12;
+            continue;
         }
         i += 1;
     }
     found
 }
 
-fn is_mac(window: &str) -> bool {
+/// True when position `i` starts a token rather than continuing one.
+///
+/// A hyphen counts as part of the preceding token so a UUID's final group,
+/// which is twelve hex digits, is not read as a bare MAC.
+fn boundary_before(bytes: &[char], i: usize) -> bool {
+    i == 0 || !matches!(bytes[i - 1], c if c.is_ascii_hexdigit() || c == ':' || c == '-')
+}
+
+fn boundary_after(bytes: &[char], end: usize) -> bool {
+    !bytes
+        .get(end)
+        .is_some_and(|c| c.is_ascii_hexdigit() || *c == ':' || *c == '-')
+}
+
+fn is_separated_mac(window: &str) -> bool {
     let sep = window.as_bytes()[2] as char;
     if sep != ':' && sep != '-' {
         return false;
@@ -115,16 +144,31 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn no_vendor_assigned_mac_addresses_are_committed() {
-    // Positive control: a real Ubiquiti MAC must be rejected, or a detector
-    // that silently matches nothing would report a clean repository.
-    let probe = format!("mac: \"9c:05:{}:bc:06:43\"", "d6");
+    // Positive control: a real Ubiquiti MAC must be rejected in both the
+    // separated and the bare spelling, or a detector that silently matches
+    // nothing would report a clean repository. Both are assembled at runtime
+    // so this file holds no real address itself.
+    let oui = "d6";
+    let probe = format!("mac: \"9c:05:{oui}:bc:06:43\" raw: \"9c05{oui}bc0643\"");
     let probe_hits = macs(&probe);
     assert_eq!(
         probe_hits.len(),
-        1,
-        "the MAC scanner found nothing in {probe}"
+        2,
+        "the MAC scanner found {probe_hits:?} in {probe}"
     );
-    assert!(!ALLOWED_MAC_PREFIXES.contains(&&probe_hits[0][..6]));
+    for hit in &probe_hits {
+        assert_eq!(hit, "9c05d6bc0643", "both spellings normalize the same way");
+        assert!(!ALLOWED_MAC_PREFIXES.contains(&&hit[..6]));
+    }
+
+    // Negative control: a git SHA and a UUID are not MACs, and flagging them
+    // would push the next person to weaken the allowlist instead of the scan.
+    let benign = "commit a4ea0fbdeadbe and id 550e8400-e29b-41d4-a716-446655440000";
+    assert!(
+        macs(benign).is_empty(),
+        "the scanner read {:?} out of {benign}",
+        macs(benign)
+    );
 
     let mut offenders = Vec::new();
     for file in scanned_files() {

@@ -3446,6 +3446,92 @@ mod unsupported_application {
         );
     }
 
+    // A body that decodes is an answer, whatever the header says it is. A
+    // controller behind a proxy that rewrites or drops the content type is
+    // still serving the endpoint, so reporting it as an application the
+    // controller does not have would be worse than the error this replaced:
+    // it would name a cause that is not merely vague but wrong.
+    #[tokio::test]
+    async fn json_under_a_non_json_content_type_still_decodes() {
+        for content_type in ["text/plain", "application/octet-stream"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/proxy/network/api/s/default/stat/device"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(
+                    r#"{"meta":{"rc":"ok"},"data":[{"mac":"aa:bb:cc:dd:ee:01","name":"SwitchA","port_table":[{"port_idx":1}]}]}"#,
+                    content_type,
+                ))
+                .mount(&server)
+                .await;
+
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+                .args([
+                    "--host",
+                    &server.uri(),
+                    "--api-key",
+                    "test-key",
+                    "ports",
+                    "list",
+                ])
+                .output()
+                .expect("failed to run the unifi binary");
+
+            assert!(
+                output.status.success(),
+                "a JSON body served as {content_type} must still decode: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let body: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|e| panic!("stdout was not JSON ({e}) for {content_type}"));
+            assert_eq!(body["items"][0]["device_name"], "SwitchA", "{content_type}");
+        }
+    }
+
+    // A malformed body from an endpoint the controller does serve is a fault
+    // in that controller, not a missing application, and must keep saying so.
+    #[tokio::test]
+    async fn a_broken_json_body_is_a_general_error_not_unsupported() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(r#"{"meta":{"rc":"ok"},"data":["#, "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                &server.uri(),
+                "--api-key",
+                "test-key",
+                "ports",
+                "list",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope = envelope(&stderr);
+        assert_eq!(
+            envelope["error"]["kind"], "general_error",
+            "the endpoint is served, the body is broken: {stderr}"
+        );
+        let message = envelope["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("/proxy/network/api/s/default/stat/device"),
+            "the message must still name the endpoint: {message}"
+        );
+    }
+
     // The content-type check must not swallow a real JSON answer, including
     // one whose type carries a suffix or a charset.
     #[tokio::test]
