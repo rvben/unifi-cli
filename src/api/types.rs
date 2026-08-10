@@ -384,8 +384,7 @@ pub struct ProtectCamera {
     pub mac: Option<String>,
     pub state: Option<String>,
     pub model_key: Option<String>,
-    #[serde(default)]
-    pub is_mic_enabled: bool,
+    pub is_mic_enabled: Option<bool>,
     pub video_mode: Option<String>,
     pub feature_flags: Option<ProtectFeatureFlags>,
 }
@@ -425,19 +424,16 @@ pub struct ProtectCameraFull {
     pub uptime: Option<u64>,
     pub up_since: Option<u64>,
     pub last_seen: Option<u64>,
-    #[serde(default)]
-    pub is_recording: bool,
+    pub is_recording: Option<bool>,
     #[serde(default)]
     pub is_motion_detected: bool,
-    #[serde(default)]
-    pub is_dark: bool,
+    pub is_dark: Option<bool>,
     pub video_codec: Option<String>,
     pub current_resolution: Option<String>,
     pub video_mode: Option<String>,
     pub hdr_type: Option<String>,
     pub phy_rate: Option<f64>,
-    #[serde(default)]
-    pub is_mic_enabled: bool,
+    pub is_mic_enabled: Option<bool>,
     #[serde(default)]
     pub is_poor_network: bool,
     pub last_motion: Option<u64>,
@@ -463,8 +459,7 @@ pub struct CameraChannel {
     pub height: Option<u32>,
     pub fps: Option<u32>,
     pub bitrate: Option<u64>,
-    #[serde(default)]
-    pub is_rtsp_enabled: bool,
+    pub is_rtsp_enabled: Option<bool>,
     pub rtsp_alias: Option<String>,
 }
 

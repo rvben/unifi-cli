@@ -3757,3 +3757,360 @@ mod events_surface_removed {
         assert_eq!(body["items"][0]["key"], "EVT_GW_Restarted");
     }
 }
+
+// --- The Protect camera surface ---
+//
+// There is no Protect application to test against, so these drive the real
+// binary against a stand-in that serves the payloads Protect's own API is
+// documented to return. That proves what the tool does with a given payload,
+// which is where every finding below lived; it does not prove which payloads
+// Protect actually sends.
+
+mod protect_cameras {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const CAMERAS_PATH: &str = "/proxy/protect/integration/v1/cameras";
+
+    fn run(server_uri: &str, args: &[&str]) -> std::process::Output {
+        let mut argv = vec!["--host", server_uri, "--api-key", "test-key"];
+        argv.extend_from_slice(args);
+        std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args(argv)
+            .output()
+            .expect("failed to run the unifi binary")
+    }
+
+    async fn serving(body: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(CAMERAS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_camera_that_did_not_report_its_mic_is_not_reported_as_muted() {
+        let server = serving(serde_json::json!([
+            {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door", "state": "CONNECTED"}
+        ]))
+        .await;
+
+        let output = run(&server.uri(), &["protect", "cameras", "list", "-o", "json"]);
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+
+        assert!(
+            body[0]["mic_enabled"].is_null(),
+            "an unreported flag is unknown, and `false` cannot be told apart \
+             from a camera that really has its mic off: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_camera_that_reported_its_mic_still_says_so() {
+        let server = serving(serde_json::json!([
+            {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door", "isMicEnabled": false}
+        ]))
+        .await;
+
+        let output = run(&server.uri(), &["protect", "cameras", "list", "-o", "json"]);
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+
+        assert_eq!(
+            body[0]["mic_enabled"], false,
+            "a flag the camera did report must survive: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_camera_matching_a_name_resolves_to_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(CAMERAS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door"},
+                {"id": "bbbbbbbbbbbbbbbbbbbbbbbb", "name": "Back Door"}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door"}),
+            ))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &["protect", "cameras", "show", "Front Door", "-o", "json"],
+        );
+        assert!(
+            output.status.success(),
+            "an unambiguous name must resolve: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        assert_eq!(body["id"], "aaaaaaaaaaaaaaaaaaaaaaaa");
+    }
+
+    #[tokio::test]
+    async fn a_name_two_cameras_share_is_refused_rather_than_guessed() {
+        let server = serving(serde_json::json!([
+            {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door"},
+            {"id": "bbbbbbbbbbbbbbbbbbbbbbbb", "name": "Front Door"}
+        ]))
+        .await;
+
+        let output = run(
+            &server.uri(),
+            &["protect", "cameras", "show", "Front Door", "-o", "json"],
+        );
+
+        assert!(
+            !output.status.success(),
+            "acting on whichever camera was listed first is a silent choice \
+             the caller never made"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("aaaaaaaaaaaaaaaaaaaaaaaa")
+                && stderr.contains("bbbbbbbbbbbbbbbbbbbbbbbb"),
+            "both candidates must be named so the caller can pick one: {stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_the_controller_did_not_return_is_not_reported_as_created() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa/rtsps-stream"
+            )))
+            // Asked for high and medium; only high comes back.
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "high": "rtsps://192.0.2.10:7441/abc"
+            })))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &[
+                "protect",
+                "rtsps",
+                "create",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--quality",
+                "high,medium",
+                "-o",
+                "json",
+            ],
+        );
+
+        assert!(
+            !output.status.success(),
+            "a request carried out in part must not exit 0: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("medium"),
+            "the quality that was not created must be named: {stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_stream_asked_for_coming_back_is_a_plain_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa/rtsps-stream"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "high": "rtsps://192.0.2.10:7441/abc",
+                "medium": "rtsps://192.0.2.10:7441/def"
+            })))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &[
+                "protect",
+                "rtsps",
+                "create",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--quality",
+                "high,medium",
+                "-o",
+                "json",
+            ],
+        );
+
+        assert!(
+            output.status.success(),
+            "nothing was missing: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("stdout was not JSON");
+        assert_eq!(body["status"], "ok", "{body}");
+        assert_eq!(body["not_created"].as_array().map(|a| a.len()), Some(0));
+    }
+
+    /// Stand in for the cookie-authenticated direct Protect API that `--full`
+    /// uses: a login that hands back a TOKEN cookie, plus one camera.
+    async fn serving_full(camera: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("set-cookie", "TOKEN=stand-in; Path=/")
+                    .set_body_json(serde_json::json!({})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door"}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/protect/api/cameras/aaaaaaaaaaaaaaaaaaaaaaaa"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(camera))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn show_full(server_uri: &str) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                server_uri,
+                "--api-key",
+                "test-key",
+                "--username",
+                "stand-in",
+                "--password",
+                "stand-in",
+                "-o",
+                "text",
+                "protect",
+                "cameras",
+                "show",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--full",
+            ])
+            .output()
+            .expect("failed to run the unifi binary")
+    }
+
+    #[tokio::test]
+    async fn a_storage_figure_the_camera_did_not_report_is_not_shown_as_zero() {
+        let server = serving_full(serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "Front Door",
+            "hqBytesPerDay": 12_000_000_000u64
+        }))
+        .await;
+
+        let output = show_full(&server.uri());
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let storage = stdout
+            .lines()
+            .find(|l| l.contains("Storage:"))
+            .unwrap_or_else(|| panic!("no storage line:\n{stdout}"));
+        assert!(
+            storage.contains("- LQ"),
+            "a figure the camera never sent is unknown, not a claim that the \
+             low-quality stream costs nothing: {storage}"
+        );
+    }
+
+    #[tokio::test]
+    async fn both_storage_figures_are_shown_when_the_camera_reports_them() {
+        let server = serving_full(serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "Front Door",
+            "hqBytesPerDay": 12_000_000_000u64,
+            "lqBytesPerDay": 1_000_000_000u64
+        }))
+        .await;
+
+        let stdout = String::from_utf8_lossy(&show_full(&server.uri()).stdout).into_owned();
+        let storage = stdout
+            .lines()
+            .find(|l| l.contains("Storage:"))
+            .unwrap_or_else(|| panic!("no storage line:\n{stdout}"));
+        assert!(
+            storage.contains("GB HQ") && storage.contains("MB LQ"),
+            "reported figures must both render: {storage}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_camera_silent_about_recording_does_not_report_that_it_is_not() {
+        let server = serving_full(serde_json::json!({
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "Front Door"
+        }))
+        .await;
+
+        let stdout = String::from_utf8_lossy(&show_full(&server.uri()).stdout).into_owned();
+        let recording = stdout
+            .lines()
+            .find(|l| l.contains("Recording:"))
+            .unwrap_or_else(|| panic!("no recording line:\n{stdout}"));
+        assert!(
+            recording.contains('-') && !recording.contains("no"),
+            "a camera that said nothing about recording has not said it is \
+             idle: {recording}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_camera_page_is_not_requested_when_the_id_is_already_an_id() {
+        // Resolution short-circuits on a 24-char hex ID, so no listing is
+        // served here at all: if the binary asked for one it would fail.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{CAMERAS_PATH}/aaaaaaaaaaaaaaaaaaaaaaaa")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "name": "Front Door"}),
+            ))
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server.uri(),
+            &[
+                "protect",
+                "cameras",
+                "show",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "-o",
+                "json",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "an ID must resolve without a listing: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

@@ -1,7 +1,19 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{ProtectSession, UnifiClient, format_bytes, format_mac, format_uptime};
+use crate::api::{ApiError, ProtectSession, UnifiClient, format_bytes, format_mac, format_uptime};
 use crate::output::{OutputConfig, use_color};
+
+/// Render a flag the camera may simply not have reported.
+///
+/// A camera that did not say whether it is recording has not said it is idle,
+/// so an unreported flag shows as unknown rather than taking the negative.
+fn flag(value: Option<bool>, yes: &'static str, no: &'static str) -> &'static str {
+    match value {
+        Some(true) => yes,
+        Some(false) => no,
+        None => "-",
+    }
+}
 
 pub async fn cameras_list(
     client: &UnifiClient,
@@ -165,11 +177,7 @@ pub async fn cameras_show(
     println!(
         "  {}  {}",
         label("Mic:       "),
-        if c.is_mic_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        flag(c.is_mic_enabled, "enabled", "disabled")
     );
 
     if let Some(ref flags) = c.feature_flags {
@@ -255,14 +263,32 @@ pub async fn rtsps_create(
     let camera_id = client.resolve_camera_id(id_or_name).await?;
     let streams = client.create_rtsps_streams(&camera_id, qualities).await?;
 
+    // A quality the response carries no URL for was not created, whatever the
+    // status code said. Reporting only what came back would let a request that
+    // was half carried out read as one that succeeded outright.
+    let missing: Vec<&str> = qualities
+        .iter()
+        .map(|q| q.as_str())
+        .filter(|q| !streams.get(*q).is_some_and(|url| url.is_some()))
+        .collect();
+
     if out.is_json() {
         out.print_data(&serde_json::to_string_pretty(&serde_json::json!({
-            "status": "ok",
+            "status": if missing.is_empty() { "ok" } else { "partial" },
             "action": "create_rtsps",
             "camera_id": camera_id,
             "streams": streams,
+            "requested": qualities,
+            "not_created": missing,
         }))?);
-        return Ok(());
+        return if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(Box::new(ApiError::Other(format!(
+                "no stream URL was returned for: {}",
+                missing.join(", ")
+            ))))
+        };
     }
 
     out.print_message(&format!("Created RTSPS streams for camera {id_or_name}:\n"));
@@ -270,6 +296,13 @@ pub async fn rtsps_create(
         if let Some(u) = url {
             println!("  {quality}: {u}");
         }
+    }
+
+    if !missing.is_empty() {
+        return Err(Box::new(ApiError::Other(format!(
+            "no stream URL was returned for: {}",
+            missing.join(", ")
+        ))));
     }
 
     Ok(())
@@ -383,7 +416,7 @@ pub async fn cameras_list_full(
             let ip = c.host.as_deref().unwrap_or("-");
             let state = c.state.as_deref().unwrap_or("-");
             let fw = c.firmware_version.as_deref().unwrap_or("-");
-            let rec = if c.is_recording { "yes" } else { "no" };
+            let rec = flag(c.is_recording, "yes", "no");
             let wifi = c
                 .wifi_connection_state
                 .as_ref()
@@ -561,21 +594,24 @@ pub async fn cameras_show_full(
     println!(
         "  {}  {}",
         label("Recording: "),
-        if c.is_recording { "yes" } else { "no" }
+        flag(c.is_recording, "yes", "no")
     );
     println!(
         "  {}  {}",
         label("Dark:      "),
-        if c.is_dark { "yes" } else { "no" }
+        flag(c.is_dark, "yes", "no")
     );
 
-    if let Some(hq) = c.hq_bytes_per_day {
-        let lq = c.lq_bytes_per_day.unwrap_or(0);
+    // A figure the camera did not report is shown as unknown. Falling back to
+    // zero would claim the low-quality stream consumes no storage, which is a
+    // measurement nobody made.
+    if c.hq_bytes_per_day.is_some() || c.lq_bytes_per_day.is_some() {
+        let per_day = |v: Option<u64>| v.map(format_bytes).unwrap_or_else(|| "-".into());
         println!(
             "  {}  {} HQ / {} LQ per day",
             label("Storage:   "),
-            format_bytes(hq),
-            format_bytes(lq)
+            per_day(c.hq_bytes_per_day),
+            per_day(c.lq_bytes_per_day)
         );
     }
 
@@ -632,11 +668,7 @@ pub async fn cameras_show_full(
                 .bitrate
                 .map(|b| format!("{}kbps", b / 1000))
                 .unwrap_or_else(|| "-".into());
-            let rtsp = if ch.is_rtsp_enabled {
-                "RTSP on"
-            } else {
-                "RTSP off"
-            };
+            let rtsp = flag(ch.is_rtsp_enabled, "RTSP on", "RTSP off");
             println!("    {:<8} {} @ {} {} ({})", name, res, fps, bitrate, rtsp);
         }
     }

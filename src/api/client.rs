@@ -583,6 +583,11 @@ impl UnifiClient {
     /// Resolve a camera identifier (ID or name) to a camera ID.
     /// If the input is a 24-char hex string, treats it as an ID.
     /// Otherwise, searches by name (case-insensitive).
+    ///
+    /// A name that fits more than one camera is an error rather than a choice
+    /// made silently: the caller may be about to delete that camera's streams,
+    /// and picking whichever the controller happened to list first would act on
+    /// a different camera than the one the user was asked to confirm.
     pub async fn resolve_camera_id(&self, id_or_name: &str) -> Result<String, ApiError> {
         // If it looks like a Protect camera ID (24 hex chars), use it directly
         if id_or_name.len() == 24 && id_or_name.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -591,15 +596,30 @@ impl UnifiClient {
         // Otherwise, search by name
         let cameras = self.list_protect_cameras().await?;
         let needle = id_or_name.to_lowercase();
-        cameras
+        let mut matches: Vec<ProtectCamera> = cameras
             .into_iter()
-            .find(|c| {
+            .filter(|c| {
                 c.name
                     .as_deref()
                     .is_some_and(|n| n.trim().to_lowercase() == needle)
             })
-            .map(|c| c.id)
-            .ok_or_else(|| ApiError::NotFound(format!("Camera '{id_or_name}'")))
+            .collect();
+
+        match matches.len() {
+            0 => Err(ApiError::NotFound(format!("Camera '{id_or_name}'"))),
+            1 => Ok(matches.pop().expect("checked len == 1 above").id),
+            _ => {
+                let list = matches
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(ApiError::Conflict(format!(
+                    "'{id_or_name}' matches {} cameras: {list}. Use the ID.",
+                    matches.len()
+                )))
+            }
+        }
     }
 
     // System
