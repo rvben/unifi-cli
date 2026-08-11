@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4](https://github.com/rvben/unifi-cli/compare/v0.3.3...v0.3.4) - 2026-08-11
+
+### Breaking Changes
+
+- **protect**: wrap the camera list in the standard items envelope ([e7b77bf](https://github.com/rvben/unifi-cli/commit/e7b77bf06dc64def4de1312bd3a5d6a207e60262))
+
+### Added
+
+- **protect**: wrap the camera list in the standard items envelope ([e7b77bf](https://github.com/rvben/unifi-cli/commit/e7b77bf06dc64def4de1312bd3a5d6a207e60262))
+
+### Fixed
+
+- **devices**: emit the firmware field devices show declares ([0f007c1](https://github.com/rvben/unifi-cli/commit/0f007c186a285b7250d5a539cebc1b561ba2be80))
+- **system**: report an unchecked update state as unknown, not up to date ([38492bb](https://github.com/rvben/unifi-cli/commit/38492bb6ff45f62e234bcc7409180b683f9a64c0))
+- **protect**: make the remaining reported-flag defaults tri-state ([4decf08](https://github.com/rvben/unifi-cli/commit/4decf08b38a7ed1ef31cfa792d492f3bfc5df76e))
+- **clients**: rank and print unknown traffic as unknown, not zero ([cbe0b66](https://github.com/rvben/unifi-cli/commit/cbe0b663fd9529c918c40a91f27e1b504e674984))
+- **schema**: publish the fields that say an rtsps create was partial ([9eb083e](https://github.com/rvben/unifi-cli/commit/9eb083e2031e192fceec6bbb1aa09c2fac5a3055))
+- **protect**: stop turning absent camera data into confident values ([29cf091](https://github.com/rvben/unifi-cli/commit/29cf091955b5452814957961b066ff4ddc41a8e0))
+- **tui**: let a throughput measurement expire instead of standing forever ([d7ca1f8](https://github.com/rvben/unifi-cli/commit/d7ca1f8499461990d6390427cdffa071716ecec8))
+- **tui**: stop reporting throughput for a port whose link has gone down ([00a18d8](https://github.com/rvben/unifi-cli/commit/00a18d811e969697b78e7260e5515715c336df3e))
+- **tui**: measure port throughput over the window the counters actually changed ([b2ae602](https://github.com/rvben/unifi-cli/commit/b2ae60228f1d8be44a2ae158a4b8a840d371d8fd))
+- **cli**: exit quietly when the output pipe closes early ([518fd96](https://github.com/rvben/unifi-cli/commit/518fd963f9c6eaf21b994ec6439ffa16cb6097a9))
+- **tui**: aim overlay actions at the entity the panel was opened on ([43fdd32](https://github.com/rvben/unifi-cli/commit/43fdd32abfa71fe1a1e7810e87af9c1033deb224))
+- **events**: report an absent event surface as unsupported, not a rejected request ([b3be651](https://github.com/rvben/unifi-cli/commit/b3be65186c65dd0d5849c47f388da63d5eb3a347))
+
 ## [0.3.3](https://github.com/rvben/unifi-cli/compare/v0.3.2...v0.3.3) - 2026-08-10
 
 ### Fixed
