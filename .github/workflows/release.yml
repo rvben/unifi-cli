@@ -210,8 +210,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: |
-            unifi-cli-*-${{ matrix.target }}.tar.gz*
-            unifi-cli-*-${{ matrix.target }}.zip*
+            unifi-cli-${{ github.ref_name }}-${{ matrix.target }}.tar.gz*
+            unifi-cli-${{ github.ref_name }}-${{ matrix.target }}.zip*
           name: release-${{ matrix.target }}
 
   sdist:
@@ -300,10 +300,10 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/release-*/unifi-cli-*.tar.gz
-            artifacts/release-*/unifi-cli-*.tar.gz.sha256
-            artifacts/release-*/unifi-cli-*.zip
-            artifacts/release-*/unifi-cli-*.zip.sha256
+            artifacts/release-*/unifi-cli-${{ github.ref_name }}-*.tar.gz
+            artifacts/release-*/unifi-cli-${{ github.ref_name }}-*.tar.gz.sha256
+            artifacts/release-*/unifi-cli-${{ github.ref_name }}-*.zip
+            artifacts/release-*/unifi-cli-${{ github.ref_name }}-*.zip.sha256
 
       - name: Dry Run Summary
         if: ${{ inputs.dry_run == true }}
