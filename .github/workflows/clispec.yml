@@ -18,7 +18,7 @@ jobs:
       - name: Build CLI
         run: cargo build --locked
       - name: Install clispec scorer
-        run: cargo install clispec-cli --version 0.3.0 --locked
+        run: cargo install clispec --version 0.3.0 --locked
       - name: Require clispec v0.3 Excellent
         shell: bash
         run: |
