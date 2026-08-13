@@ -355,6 +355,18 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     // utility commands
     m.insert("completions", n("Does not require --host or --api-key"));
     m.insert(
+        "capabilities",
+        f(
+            &[
+                ("applications", "array"),
+                ("resources", "array"),
+                ("structured_output", "boolean"),
+            ],
+            false,
+            Some("Does not require --host or --api-key"),
+        ),
+    );
+    m.insert(
         "config init",
         n("Does not require --host or --api-key. Supports named profiles."),
     );
@@ -552,8 +564,8 @@ pub fn print_schema(cmd: clap::Command) {
     let mut commands: Vec<serde_json::Value> = Vec::new();
     walk_commands(&cmd, "", &metadata, &mut commands);
 
-    let schema = serde_json::json!({
-        "clispec": "0.2",
+    let mut schema = serde_json::json!({
+        "clispec": "0.3",
         "name": cmd.get_name(),
         "version": env!("CARGO_PKG_VERSION"),
         "description": cmd.get_about().map(|h| h.to_string()).unwrap_or_default(),
@@ -622,8 +634,101 @@ pub fn print_schema(cmd: clap::Command) {
             },
         ],
     });
+    enrich_v0_3(&mut schema);
     println!(
         "{}",
         serde_json::to_string_pretty(&schema).expect("failed to serialize schema")
     );
+}
+
+fn enrich_v0_3(schema: &mut serde_json::Value) {
+    schema["output"] = serde_json::json!({"tty":"text","piped":"json"});
+    let Some(commands) = schema["commands"].as_array_mut() else {
+        return;
+    };
+    for command in commands {
+        let Some(object) = command.as_object_mut() else {
+            continue;
+        };
+        let name = object["name"].as_str().unwrap_or_default().to_string();
+        if name == "config init" {
+            object.insert("mutating".into(), serde_json::json!(true));
+        }
+        let mutating = object["mutating"].as_bool().unwrap_or(false);
+        object.insert(
+            "effects".into(),
+            serde_json::json!(if !mutating {
+                "read_only"
+            } else if matches!(
+                name.as_str(),
+                "clients kick" | "ports cycle" | "protect rtsps create"
+            ) {
+                "non_idempotent"
+            } else {
+                "idempotent"
+            }),
+        );
+        if name == "completions" {
+            object.insert("output_kind".into(), serde_json::json!("opaque"));
+            object.insert("media_type".into(), serde_json::json!("text/plain"));
+            continue;
+        }
+        if name == "tui" {
+            object.insert("output_kind".into(), serde_json::json!("stream"));
+            object.insert("stream_format".into(), serde_json::json!("terminal"));
+            object.insert("requires_tty".into(), serde_json::json!(true));
+            continue;
+        }
+        object.insert(
+            "cardinality".into(),
+            serde_json::json!(if name.ends_with(" list") {
+                "bounded"
+            } else {
+                "single"
+            }),
+        );
+        if name == "capabilities" {
+            object.insert(
+                "example".into(),
+                serde_json::json!({"args":["capabilities"]}),
+            );
+        }
+        if name == "schema" {
+            object.insert(
+                "stdout_schema".into(),
+                serde_json::json!({"$ref":"https://clispec.dev/schema/v0.3.json"}),
+            );
+        }
+        if object
+            .remove("confirmation_required")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
+            object.insert("confirmation_bypass_arg".into(), serde_json::json!("--yes"));
+        }
+        if let Some(fields) = object
+            .get_mut("output_fields")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for field in fields {
+                let Some(field) = field.as_object_mut() else {
+                    continue;
+                };
+                let kind = field
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("string")
+                    .to_string();
+                if let Some(base) = kind.strip_suffix("[]") {
+                    field.insert("type".into(), serde_json::json!("array"));
+                    field.insert("items".into(), serde_json::json!({"type":base}));
+                } else if kind == "array" {
+                    field.insert("items".into(), serde_json::json!({"type":"string"}));
+                }
+            }
+        }
+        if !object.contains_key("output_fields") && !object.contains_key("stdout_schema") {
+            object.insert("stdout_schema".into(), serde_json::json!({}));
+        }
+    }
 }

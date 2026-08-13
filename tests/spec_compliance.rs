@@ -1,14 +1,14 @@
 use std::io::IsTerminal;
 use unifi_cli::output::{OutputConfig, OutputFormat};
 
-/// Parse the schema output from the binary and validate it against the clispec v0.2 JSON Schema.
+/// Parse the schema output from the binary and validate it against the clispec v0.3 JSON Schema.
 #[test]
 fn schema_validates_against_clispec_v02() {
-    // Load the vendored clispec v0.2 JSON Schema
+    // Load the vendored clispec v0.3 JSON Schema
     let schema_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clispec-v0.2.json");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clispec-v0.3.json");
     let schema_str =
-        std::fs::read_to_string(&schema_path).expect("failed to read clispec-v0.2.json fixture");
+        std::fs::read_to_string(&schema_path).expect("failed to read clispec-v0.3.json fixture");
     let schema_value: serde_json::Value =
         serde_json::from_str(&schema_str).expect("failed to parse clispec schema");
 

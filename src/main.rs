@@ -94,6 +94,9 @@ enum Command {
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
 
+    /// Describe supported UniFi applications without loading credentials
+    Capabilities,
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -1311,6 +1314,24 @@ async fn run() {
             print_schema();
             return;
         }
+        Command::Capabilities => {
+            let value = serde_json::json!({
+                "applications": ["network", "protect"],
+                "resources": ["clients", "devices", "networks", "ports", "events", "cameras", "rtsps"],
+                "structured_output": true
+            });
+            if out.is_json() {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).expect("serialize capabilities")
+                );
+            } else {
+                println!(
+                    "Applications: Network, Protect\nResources: clients, devices, networks, ports, events, cameras, RTSPS"
+                );
+            }
+            return;
+        }
         Command::Completions { shell, install } => {
             if *install {
                 install_completions(*shell);
@@ -1589,7 +1610,10 @@ async fn run() {
             run_config_check(&client).await;
             return;
         }
-        Command::Schema | Command::Completions { .. } | Command::Config(ConfigCommand::Init) => {
+        Command::Schema
+        | Command::Capabilities
+        | Command::Completions { .. }
+        | Command::Config(ConfigCommand::Init) => {
             unreachable!()
         }
     };

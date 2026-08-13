@@ -1,0 +1,27 @@
+name: clispec v0.3
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: 24/24 Excellent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CLI
+        run: cargo build --locked
+      - name: Install clispec scorer
+        run: cargo install clispec-cli --version 0.3.0 --locked
+      - name: Require clispec v0.3 Excellent
+        shell: bash
+        run: |
+          report="$(clispec score target/debug/unifi --output json)"
+          echo "$report" | jq .
+          jq -e '.score == 24 and .max == 24 and .grade == "Excellent"' <<<"$report"

@@ -1,0 +1,663 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clispec.dev/schema/v0.3.json",
+  "title": "The CLI Spec - Schema v0.3",
+  "description": "Machine-readable description of a CLI tool that conforms to The CLI Spec (https://clispec.dev). Emitted to stdout by the tool's `schema` subcommand. Unknown properties are permitted at every level so tools can attach their own metadata; the `x-` prefix is the recommended namespace. Constraints that JSON Schema cannot express (referential integrity, exit-code uniqueness, conditionally required error kinds) are listed in `x-checker-rules` and enforced by conformance tooling.",
+  "type": "object",
+  "required": ["clispec", "name", "version", "commands", "errors"],
+  "properties": {
+    "clispec": {
+      "description": "Version of The CLI Spec schema this document conforms to. Required in v0.3 so a consumer never has to infer which contract applies.",
+      "const": "0.3"
+    },
+    "name": {
+      "description": "The tool's invocation name (the binary name, without path).",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "description": "The tool's version. Free-form, but SemVer is recommended.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "description": "One-line description of what the tool does.",
+      "type": "string"
+    },
+    "output": {
+      "description": "How the tool's default (unflagged) output behaves, so a consumer knows whether it must request structured output. `piped` is the format emitted when stdout is not a TTY and no explicit format flag is given: a structured value (e.g. \"json\") means the tool is safe to pipe into a JSON consumer directly; \"text\" means the consumer should pass the declared format flag.",
+      "type": "object",
+      "required": ["piped"],
+      "properties": {
+        "tty": {
+          "description": "Default format on a TTY (usually \"text\").",
+          "type": "string",
+          "minLength": 1
+        },
+        "piped": {
+          "description": "Default format when stdout is not a TTY and no explicit format is given.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "global_args": {
+      "description": "Arguments accepted by every command (e.g. --output, --quiet, --profile). Listed once here instead of being repeated or omitted per command. For portable invocation, consumers place these arguments before the command path.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/arg" }
+    },
+    "commands": {
+      "description": "Every invocable command the tool exposes, as a flat list. `name` is the complete space-separated command path. v0.3 has a single command layout: there is no nesting and no structural group entry, so every entry is something a consumer can actually run.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "errors": {
+      "description": "The finite set of `kind` values the tool emits in structured errors, with the exit code each maps to. Consumers write exhaustive handlers against this set and branch on the exit code without parsing stderr.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/error" }
+    },
+    "outcomes": {
+      "description": "Documented non-zero exit codes that signal a data state rather than a failure (the diff/grep convention). An outcome exit writes no error envelope; stdout carries the result. Codes must not overlap with the exit codes declared in `errors`.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/outcome" }
+    },
+    "extensions": {
+      "description": "Namespace for tool-specific metadata that is not part of The CLI Spec. Equivalent to prefixing top-level keys with `x-`. Consumers ignore it.",
+      "type": "object"
+    },
+    "command_layout": {
+      "description": "Retired in v0.3. The flat/nested discriminator existed because v0.2 had two command encodings; v0.3 has one, so the key has no meaning and its presence signals a document that was not actually migrated. Unknown keys are otherwise permitted, but a retired key is unambiguously wrong rather than merely unrecognized.",
+      "not": {}
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "required": ["name", "description", "effects"],
+      "properties": {
+        "name": {
+          "description": "The complete space-separated command path (\"list\", \"sites use\", \"files download\"). Segments must not themselves contain whitespace.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\s]+( [^\\s]+)*$"
+        },
+        "description": {
+          "description": "What the command does. Required: it is the first thing an agent reads when choosing between commands.",
+          "type": "string",
+          "minLength": 1
+        },
+        "effects": {
+          "description": "What re-running the command does. `read_only`: does not modify state a consumer cares about. `idempotent`: may modify state, but repeating it converges to the same state and is safe to retry. `non_idempotent`: repeating it may cause an additional effect, so a consumer must not retry blindly. Required, because there is no safe default: a consumer granting trust (auto-approval, automatic retry) needs an explicit claim, not an absent one.",
+          "type": "string",
+          "enum": ["read_only", "idempotent", "non_idempotent"]
+        },
+        "mutating": {
+          "description": "Deprecated in v0.3; superseded by `effects`. Accepted for continuity with v0.2 consumers. When both are present they must agree: `mutating: false` pairs only with `effects: \"read_only\"`, and `mutating: true` pairs only with `idempotent` or `non_idempotent`.",
+          "deprecated": true,
+          "type": "boolean"
+        },
+        "idempotency_key_arg": {
+          "description": "For a `non_idempotent` command, the argument that accepts a caller-supplied key making a repeat safe (e.g. \"--request-id\"). Its presence is what turns an unsafe retry into a safe one.",
+          "type": "string",
+          "minLength": 1
+        },
+        "output_kind": {
+          "description": "What the command's stdout actually is. `data` (the default): a single structured document, subject to the full structured-output rules. `stream`: an unbounded sequence of records emitted incrementally, one per line. `opaque`: bytes with a declared media type (a shell completion script, an archive, a downloaded file, or another program's output passed through), carrying no structured contract. Declaring a kind narrows which conformance rules apply; it never exempts a command from stream separation, structured errors, declared exit codes, or non-interactive behavior.",
+          "type": "string",
+          "enum": ["data", "stream", "opaque"],
+          "default": "data"
+        },
+        "media_type": {
+          "description": "IANA media type of the bytes on stdout. Required for `opaque` commands and meaningless for the other kinds: `opaque` has no safe default, so it must be stated.",
+          "type": "string",
+          "minLength": 1
+        },
+        "stream_format": {
+          "description": "Record encoding for a `stream` command. Defaults to NDJSON, which is the format the spec recommends.",
+          "type": "string",
+          "minLength": 1,
+          "default": "ndjson"
+        },
+        "cardinality": {
+          "description": "How many records the command can return. `single`: one record, or one document that is not a collection. `bounded`: a collection whose size is fixed by the caller's own input or by a small closed domain. `unbounded`: a collection that can grow without limit, so the consumer needs pagination to read it safely. Required on `data` commands, because there is no safe default and it is what decides whether the bounded-output rules apply.",
+          "type": "string",
+          "enum": ["single", "bounded", "unbounded"]
+        },
+        "pagination": {
+          "description": "How a consumer walks an unbounded result. Required when `cardinality` is `unbounded`. A style on its own describes the producer's side only; the arguments that drive it are what make the declaration usable, so each style requires the arguments it is driven by.",
+          "type": "object",
+          "required": ["style"],
+          "properties": {
+            "style": {
+              "description": "`cursor`: the response carries an opaque continuation token. `offset`: the consumer advances a numeric offset. `none`: the command returns everything it has and cannot be paged, which is only valid for a non-unbounded command.",
+              "type": "string",
+              "enum": ["cursor", "offset", "none"]
+            },
+            "cursor_field": {
+              "description": "Response field carrying the continuation token. Required for `cursor` style: it is where the consumer reads the next token.",
+              "type": "string",
+              "minLength": 1
+            },
+            "cursor_arg": {
+              "description": "Argument that accepts the continuation token from the previous response (conventionally \"--cursor\"). Required for `cursor` style: a token the consumer cannot pass back is not a page it can reach.",
+              "type": "string",
+              "minLength": 1
+            },
+            "limit_arg": {
+              "description": "Argument that caps the number of records returned (conventionally \"--limit\"). Required for `cursor` and `offset` style: without it the size of the first response is the producer's choice alone, which is what Principle 6 exists to prevent.",
+              "type": "string",
+              "minLength": 1
+            },
+            "offset_arg": {
+              "description": "Argument that skips records (conventionally \"--offset\"). Required for `offset` style: the offset is the only thing the consumer advances.",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "$comment": "Cursor paging needs a token to read and an argument to send it back in.",
+              "if": {
+                "required": ["style"],
+                "properties": { "style": { "const": "cursor" } }
+              },
+              "then": { "required": ["cursor_field", "cursor_arg", "limit_arg"] }
+            },
+            {
+              "$comment": "Offset paging needs an offset to advance and a page size to advance by.",
+              "if": {
+                "required": ["style"],
+                "properties": { "style": { "const": "offset" } }
+              },
+              "then": { "required": ["offset_arg", "limit_arg"] }
+            }
+          ]
+        },
+        "fields_arg": {
+          "description": "Argument that selects which fields appear in the output (conventionally \"--fields\"). Required on `unbounded` commands, recommended wherever the record is wide.",
+          "type": "string",
+          "minLength": 1
+        },
+        "confirmation_bypass_arg": {
+          "description": "Argument that bypasses this command's confirmation prompt (conventionally \"--yes\"). Its presence declares that the command prompts on a TTY and refuses without one; its absence declares that the command never prompts. A tool with no prompting command needs no bypass flag anywhere.",
+          "type": "string",
+          "minLength": 1
+        },
+        "requires_tty": {
+          "description": "The command is inherently interactive (a shell, an editor, a pager) and cannot run to completion without a terminal. It must still fail safely without one: refuse, write a structured error, and exit non-zero.",
+          "type": "boolean",
+          "default": false
+        },
+        "stability": {
+          "description": "Stability of the command's contract.",
+          "type": "string",
+          "enum": ["stable", "beta", "experimental", "deprecated"]
+        },
+        "args": {
+          "description": "Arguments accepted by this command, beyond the tool's `global_args`.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/arg" }
+        },
+        "output_fields": {
+          "description": "Fields present in the command's structured output, so consumers know the shape without invoking the command. For a collection, these describe one item of the `items` array, not the envelope. Not permitted on `opaque` commands, which have no field structure.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "stdout_schema": {
+          "description": "JSON Schema (draft 2020-12) describing the complete stdout document, envelope included; for a `stream`, one record. Use it when the shape is nested or conditional enough that `output_fields` cannot express it. Pair it with `output_fields` when a compact field summary remains accurate; it may stand alone when no fixed summary can be true. The empty schema `{}` is the explicit way to say the shape follows the caller's input and cannot be stated ahead of time, which is a declaration rather than the silence of declaring nothing.",
+          "type": "object"
+        },
+        "errors": {
+          "description": "The subset of the tool's error kinds this command can actually emit, by `kind`. Every entry must name an error declared at the top level. Omitted means any declared kind is possible.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        },
+        "outcomes": {
+          "description": "The subset of the tool's outcomes this command can actually exit with, by `name`. Every entry must name an outcome declared at the top level. Omitted means any declared outcome is possible.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        },
+        "example": {
+          "description": "A self-contained invocation for exercising this command (used by conformance tooling): the args to pass and optional stdin to feed. It should produce the command's normal output, so a tool whose positional is a path or stdin can be probed without the checker guessing that the command name works as a positional.",
+          "type": "object",
+          "properties": {
+            "args": {
+              "description": "Arguments to pass after the command name.",
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "stdin": {
+              "description": "Text to feed to the command's standard input.",
+              "type": "string"
+            }
+          }
+        },
+        "extensions": {
+          "description": "Namespace for tool-specific metadata that is not part of The CLI Spec.",
+          "type": "object"
+        },
+        "subcommands": {
+          "description": "Retired in v0.3. Nesting is gone: `commands` is a flat list and `name` carries the full path, so a document still using this key was not migrated. Its presence is an error rather than an ignored extension, because a consumer reading only the flat list would silently miss every nested command.",
+          "not": {}
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "A data command must state its cardinality; there is no safe default.",
+          "if": {
+            "anyOf": [
+              { "not": { "required": ["output_kind"] } },
+              {
+                "required": ["output_kind"],
+                "properties": { "output_kind": { "const": "data" } }
+              }
+            ]
+          },
+          "then": { "required": ["cardinality"] }
+        },
+        {
+          "$comment": "A data command must describe its output. An empty stdout_schema is the explicit declaration that the shape follows the caller's input.",
+          "if": {
+            "anyOf": [
+              { "not": { "required": ["output_kind"] } },
+              {
+                "required": ["output_kind"],
+                "properties": { "output_kind": { "const": "data" } }
+              }
+            ]
+          },
+          "then": {
+            "anyOf": [
+              { "required": ["output_fields"] },
+              { "required": ["stdout_schema"] }
+            ]
+          }
+        },
+        {
+          "$comment": "An unbounded result is only usable if the consumer can page through it and select fields.",
+          "if": {
+            "required": ["cardinality"],
+            "properties": { "cardinality": { "const": "unbounded" } }
+          },
+          "then": {
+            "required": ["pagination", "fields_arg"],
+            "properties": {
+              "pagination": {
+                "properties": { "style": { "enum": ["cursor", "offset"] } }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A data command carries neither an artifact media type nor stream framing.",
+          "if": {
+            "anyOf": [
+              { "not": { "required": ["output_kind"] } },
+              {
+                "required": ["output_kind"],
+                "properties": { "output_kind": { "const": "data" } }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "media_type": {
+                "description": "Not allowed on a data command: its stdout is a structured document in the format the consumer selected, not bytes of a fixed type.",
+                "not": {}
+              },
+              "stream_format": {
+                "description": "Not allowed on a data command: a single document has no record framing. A command that emits records incrementally is a stream.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Opaque stdout must name its media type and carries no field structure.",
+          "if": {
+            "required": ["output_kind"],
+            "properties": { "output_kind": { "const": "opaque" } }
+          },
+          "then": {
+            "required": ["media_type"],
+            "properties": {
+              "stream_format": {
+                "description": "Not allowed on an opaque command: an artifact is not a sequence of records.",
+                "not": {}
+              },
+              "output_fields": {
+                "description": "Not allowed on an opaque command: bytes have no field structure.",
+                "not": {}
+              },
+              "stdout_schema": {
+                "description": "Not allowed on an opaque command: stdout is not JSON.",
+                "not": {}
+              },
+              "cardinality": {
+                "description": "Not allowed on an opaque command: a single artifact has no record count.",
+                "not": {}
+              },
+              "pagination": {
+                "description": "Not allowed on an opaque command: an artifact is not paged.",
+                "not": {}
+              },
+              "fields_arg": {
+                "description": "Not allowed on an opaque command: there are no fields to select.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A stream is framed by stream_format and bounded by the consumer, not paged.",
+          "if": {
+            "required": ["output_kind"],
+            "properties": { "output_kind": { "const": "stream" } }
+          },
+          "then": {
+            "properties": {
+              "media_type": {
+                "description": "Not allowed on a stream command: the framing is given by `stream_format`, not a media type.",
+                "not": {}
+              },
+              "cardinality": {
+                "description": "Not allowed on a stream command: a sequence with no end has no record count to declare, and `unbounded` would demand pagination a stream does not have.",
+                "not": {}
+              },
+              "pagination": {
+                "description": "Not allowed on a stream command: the consumer bounds a stream by reading until it has enough and closing the pipe, with time and count controls rather than pages.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An idempotency key only means something for a command that is not already idempotent.",
+          "if": {
+            "required": ["effects"],
+            "properties": { "effects": { "enum": ["read_only", "idempotent"] } }
+          },
+          "then": {
+            "properties": {
+              "idempotency_key_arg": {
+                "description": "Not allowed on a read_only or idempotent command: repeating it is already safe.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Deprecated mutating must agree with effects.",
+          "if": {
+            "required": ["mutating"],
+            "properties": { "mutating": { "const": false } }
+          },
+          "then": { "properties": { "effects": { "const": "read_only" } } }
+        },
+        {
+          "$comment": "Deprecated mutating true rules out read_only.",
+          "if": {
+            "required": ["mutating"],
+            "properties": { "mutating": { "const": true } }
+          },
+          "then": {
+            "properties": { "effects": { "not": { "const": "read_only" } } }
+          }
+        }
+      ]
+    },
+    "arg": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "description": "Flag (e.g. \"--status\") or positional name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "Type name. Deliberately free-form, unlike `field.type`: an argument may carry a domain type a consumer only needs to understand loosely (\"path\", \"duration\", \"url\"), whereas an output field's type drives parsing and must be exact. Common values: \"string\", \"integer\", \"number\", \"boolean\", \"path\", \"string[]\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "short": {
+          "description": "Single-character alias, written with its dash (e.g. \"-o\").",
+          "type": "string",
+          "pattern": "^-[A-Za-z0-9]$"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "default": {},
+        "enum": {
+          "description": "The complete set of accepted values, when the argument is closed.",
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "type_node": {
+      "description": "A type without a name, used for array element types and nested structures.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "description": "JSON type of the value. Closed set: an output field's type drives how a consumer parses the value, so a free-form string like \"integer | null\" or \"object[]\" is not good enough.",
+          "type": "string",
+          "enum": ["string", "integer", "number", "boolean", "object", "array"]
+        },
+        "nullable": {
+          "description": "Whether the value may be null. Replaces the v0.2 convention of writing the union into the type string.",
+          "type": "boolean",
+          "default": false
+        },
+        "enum": {
+          "description": "The complete set of possible values, when the field is closed.",
+          "type": "array"
+        },
+        "fields": {
+          "description": "Members of an object value. Optional: a genuinely free-form object may omit it.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "items": {
+          "description": "Element type of an array value. Required when `type` is `array`.",
+          "$ref": "#/$defs/type_node"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "array" } }
+          },
+          "then": { "required": ["items"] }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "not": { "const": "array" } } }
+          },
+          "then": {
+            "properties": {
+              "items": {
+                "description": "Only an array declares `items`.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "not": { "const": "object" } } }
+          },
+          "then": {
+            "properties": {
+              "fields": {
+                "description": "Only an object declares `fields`.",
+                "not": {}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field": {
+      "description": "A named output field. Same shape as `type_node` plus a name.",
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "enum": ["string", "integer", "number", "boolean", "object", "array"]
+        },
+        "nullable": { "type": "boolean", "default": false },
+        "enum": { "type": "array" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "items": { "$ref": "#/$defs/type_node" },
+        "description": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "array" } }
+          },
+          "then": { "required": ["items"] }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "not": { "const": "array" } } }
+          },
+          "then": {
+            "properties": {
+              "items": {
+                "description": "Only an array declares `items`.",
+                "not": {}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "not": { "const": "object" } } }
+          },
+          "then": {
+            "properties": {
+              "fields": {
+                "description": "Only an object declares `fields`.",
+                "not": {}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["code", "name"],
+      "properties": {
+        "code": {
+          "description": "The exit code the tool returns for this outcome. Consumers branch on it without parsing anything.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "name": {
+          "description": "Stable identifier for the outcome. Snake_case by convention.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["kind", "exit_code"],
+      "properties": {
+        "kind": {
+          "description": "Stable identifier consumers branch on. Snake_case by convention.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "exit_code": {
+          "description": "The exit code the tool returns for this error kind. Required in v0.3: branching on the exit code alone, before parsing anything, is the cheapest thing a consumer can do, and it only works if every kind declares one.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "retryable": {
+          "description": "Whether a consumer should retry on this error.",
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "x-standard-error-kinds": {
+    "description": "Error kinds The CLI Spec reserves for a fixed meaning. A tool need not use any of them, but if it declares one it must mean this, so a consumer can write a handler that works across tools. Any other kind is free-form.",
+    "kinds": {
+      "auth": "Authentication or authorization failed.",
+      "not_found": "The named resource does not exist.",
+      "conflict": "The resource exists in a state incompatible with the request.",
+      "confirmation_required": "A confirmation gate was reached without a TTY; the command refused. The hint names the bypass argument.",
+      "tty_required": "The command needs a terminal and did not get one.",
+      "usage": "The invocation itself was wrong: an unknown flag, a missing argument, a value the parser rejected. Nothing was attempted.",
+      "parse": "The invocation was fine but an input document could not be read as the format it claimed to be.",
+      "io": "A local filesystem or process operation failed.",
+      "rate_limit": "The upstream refused for rate-limiting reasons.",
+      "timeout": "The operation did not finish in time.",
+      "unavailable": "A dependency the command needs is not reachable.",
+      "internal": "The tool failed in a way it does not model."
+    }
+  },
+  "x-checker-rules": {
+    "description": "Conformance constraints that JSON Schema cannot express. A document that violates one is non-conformant even though it validates. Enforced by conformance tooling.",
+    "errors": [
+      "ambiguous-exit-code: no exit code is claimed by both an `errors` entry and an `outcomes` entry, and no two `outcomes` share one. Two error kinds may share a code: that is coarse rather than ambiguous, and the structured `kind` still separates them.",
+      "unique-error-kinds / unique-outcome-names / unique-command-names: every identifier is declared once.",
+      "error-ref-resolves: every string in a command's `errors` names a `kind` declared in the top-level `errors`.",
+      "outcome-ref-resolves: every string in a command's `outcomes` names a `name` declared in the top-level `outcomes`.",
+      "conditional-error-kind: a command declaring `confirmation_bypass_arg` implies the `confirmation_required` kind; a command declaring `requires_tty: true` implies the `tty_required` kind.",
+      "arg-ref-resolves: `pagination.limit_arg`, `pagination.offset_arg`, `pagination.cursor_arg`, `fields_arg`, `confirmation_bypass_arg` and `idempotency_key_arg` each name an argument declared in that command's `args` or in `global_args`.",
+      "stdout-schema-valid: a `stdout_schema`, when present, is a valid JSON Schema in the draft 2020-12 dialect."
+    ],
+    "lints": [
+      "near-miss-key: an unknown key one edit away from a known one is reported as a probable typo. The schema stays open so genuine extensions keep validating; this is what catches `mutatng`.",
+      "near-miss-standard-kind: an error kind one edit away from a reserved kind.",
+      "shared-error-exit-code: two or more error kinds answering with the same exit code. Legal and common, but the consumer has to read the structured kind to tell them apart.",
+      "wide-record-needs-fields: a command returning many fields with no `fields_arg`.",
+      "mutating-without-conflict: mutating commands with no `conflict` kind declared. Advisory rather than a rule, because not every mutating command has a conflicting state.",
+      "non-idempotent-without-key: a `non_idempotent` command with no `idempotency_key_arg`, which leaves a consumer that times out with no safe move."
+    ]
+  }
+}
