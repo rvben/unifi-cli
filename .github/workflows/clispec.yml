@@ -21,7 +21,7 @@ jobs:
   published-artifacts:
     name: Published artifacts
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    uses: rvben/clispec/.github/workflows/published-artifacts.yml@6fb51e2692272f4723fa8b572c3b175b8d41364f
+    uses: rvben/clispec/.github/workflows/published-artifacts.yml@703da8137f537dbd03714761a2da8e1fb026c8c7
     with:
       crates: "unifi-cli"
       pypi: unifi-cli
