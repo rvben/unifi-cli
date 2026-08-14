@@ -544,6 +544,41 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn port_forwards_list_and_resolve_exact_name_or_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/portforward"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "_id": "forward-1", "name": "Plex", "enabled": true,
+                    "proto": "tcp", "dst_port": "32400", "fwd": "192.0.2.10",
+                    "fwd_port": "32400", "pfwd_interface": "wan",
+                    "x_private_key": "must-not-escape"
+                }]
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        assert_eq!(client.list_port_forwards().await.unwrap().len(), 1);
+        assert_eq!(
+            client.get_port_forward("plex").await.unwrap().id,
+            "forward-1"
+        );
+        assert_eq!(
+            client
+                .get_port_forward("forward-1")
+                .await
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Plex")
+        );
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -4852,5 +4887,25 @@ mod schema_contract {
         .await;
         let body = run_json(&server, &["system", "health"]).await;
         assert_schema_matches("system health", &body);
+    }
+
+    #[tokio::test]
+    async fn port_forward_output_matches_schema_and_omits_unknown_fields() {
+        let server = serving_legacy(
+            "rest/portforward",
+            serde_json::json!([{
+                "_id": "forward-1", "name": "Plex", "enabled": true,
+                "proto": "tcp", "src": "any", "dst_port": "32400",
+                "fwd": "192.0.2.10", "fwd_port": "32400", "pfwd_interface": "wan",
+                "log": false, "x_api_token": "must-not-escape"
+            }]),
+        )
+        .await;
+        let list = run_json(&server, &["port-forwards", "list"]).await;
+        let show = run_json(&server, &["port-forwards", "show", "plex"]).await;
+        assert_schema_matches("port-forwards list", &list);
+        assert_schema_matches("port-forwards show", &show);
+        let rendered = format!("{list}{show}");
+        assert!(!rendered.contains("must-not-escape"));
     }
 }
