@@ -445,6 +445,20 @@ impl UnifiClient {
         .await
     }
 
+    pub async fn get_network_detail(&self, identifier: &str) -> Result<LegacyNetwork, ApiError> {
+        let networks: Vec<LegacyNetwork> = self.get_legacy("/rest/networkconf").await?;
+        networks
+            .into_iter()
+            .find(|network| {
+                network.id == identifier
+                    || network
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(identifier))
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("Network not found: {identifier}")))
+    }
+
     // Events
     //
     // Legacy `stat/event` was removed in UniFi Network 9+ (UniFi OS) and now

@@ -544,6 +544,32 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn get_network_detail_matches_name_without_exposing_unknown_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/networkconf"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "_id": "net-1", "name": "IoT", "purpose": "corporate",
+                    "vlan": 20, "ip_subnet": "192.0.2.1/24", "enabled": true,
+                    "dhcpd_enabled": true, "dhcpd_dns_enabled": true,
+                    "dhcpd_dns_1": "192.0.2.53", "mdns_enabled": true,
+                    "lte_lan_enabled": false,
+                    "x_private_key": "must-never-be-deserialized"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        let network = client.get_network_detail("iot").await.unwrap();
+        assert_eq!(network.id, "net-1");
+        assert_eq!(network.vlan, Some(20));
+        assert_eq!(network.lte_lan_enabled, Some(false));
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -4799,6 +4825,31 @@ mod schema_contract {
         .await;
         let body = run_json(&server, &["networks", "list"]).await;
         assert_schema_matches("networks list", &body);
+    }
+
+    #[tokio::test]
+    async fn networks_show_json_matches_schema_and_omits_unknown_fields() {
+        let server = serving_legacy(
+            "rest/networkconf",
+            serde_json::json!([{
+                "_id": "net-1", "name": "LAN", "purpose": "corporate",
+                "vlan": 10, "ip_subnet": "192.0.2.1/24", "enabled": true,
+                "dhcpd_enabled": true, "dhcpd_dns_enabled": true,
+                "dhcpd_dns_1": "192.0.2.53", "dhcpd_dns_2": "192.0.2.54",
+                "mdns_enabled": true, "lte_lan_enabled": false,
+                "x_private_key": "must-not-appear",
+                "x_api_token": "must-not-appear-either"
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["networks", "show", "lan"]).await;
+        assert_schema_matches("networks show", &body);
+        let encoded = body.to_string();
+        assert!(!encoded.contains("must-not-appear"));
+        assert_eq!(
+            body["dns_servers"],
+            serde_json::json!(["192.0.2.53", "192.0.2.54"])
+        );
     }
 
     #[tokio::test]

@@ -294,6 +294,11 @@ enum ConfigCommand {
 enum NetworksCommand {
     /// List networks
     List,
+    /// Show network configuration by name or ID
+    Show {
+        /// Network name or controller ID
+        identifier: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1484,7 +1489,12 @@ async fn run() {
                 commands::devices::upgrade(&client, &mac, out).await
             }
         },
-        Command::Networks { .. } => commands::networks::list(&mut client, out).await,
+        Command::Networks { command } => match command.unwrap_or(NetworksCommand::List) {
+            NetworksCommand::List => commands::networks::list(&mut client, out).await,
+            NetworksCommand::Show { identifier } => {
+                commands::networks::show(&client, &identifier, out).await
+            }
+        },
         Command::Ports(cmd) => match cmd {
             PortsCommand::List {
                 mac,
