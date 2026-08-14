@@ -87,6 +87,10 @@ enum Command {
     #[command(subcommand)]
     System(SystemCommand),
 
+    /// Inspect WAN interfaces and failover state
+    #[command(subcommand)]
+    Wan(WanCommand),
+
     /// Manage Protect cameras and RTSPS streams
     #[command(subcommand)]
     Protect(ProtectCommand),
@@ -318,6 +322,12 @@ enum SystemCommand {
     Health,
     /// Show system info
     Info,
+}
+
+#[derive(Subcommand)]
+enum WanCommand {
+    /// List WAN interfaces
+    List,
 }
 
 #[derive(Subcommand)]
@@ -1565,6 +1575,7 @@ async fn run() {
             SystemCommand::Health => commands::system::health(&client, out).await,
             SystemCommand::Info => commands::system::info(&client, out).await,
         },
+        Command::Wan(WanCommand::List) => commands::wan::list(&client, out).await,
         Command::Protect(cmd) => match cmd {
             ProtectCommand::Cameras(cam_cmd) => match cam_cmd {
                 ProtectCamerasCommand::List { full } => {

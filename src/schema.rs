@@ -267,6 +267,35 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
             ),
         ),
     );
+    m.insert(
+        "wan list",
+        f(
+            &[
+                ("slot", "string"),
+                ("name", "string"),
+                ("interface", "string"),
+                ("enabled", "boolean"),
+                ("up", "boolean"),
+                ("ip", "string"),
+                ("availability", "number"),
+                ("latency_ms", "number"),
+                ("speed_mbps", "integer"),
+                ("rx_bytes", "integer"),
+                ("tx_bytes", "integer"),
+                ("rx_rate", "integer"),
+                ("tx_rate", "integer"),
+                ("cellular", "boolean"),
+                ("cellular_state", "string"),
+                ("signal_percent", "number"),
+                ("radio_access", "string"),
+                ("lte_rsrp", "number"),
+                ("lte_rsrq", "number"),
+                ("lte_sinr", "number"),
+            ],
+            false,
+            None,
+        ),
+    );
 
     // protect
     m.insert(

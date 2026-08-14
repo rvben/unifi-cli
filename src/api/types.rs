@@ -26,6 +26,50 @@ pub struct LegacyMeta {
     pub msg: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GatewayWanStatus {
+    #[serde(rename = "type")]
+    pub device_type: Option<String>,
+    pub wan1: Option<WanInterface>,
+    pub wan2: Option<WanInterface>,
+    pub wan3: Option<WanInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WanInterface {
+    pub name: Option<String>,
+    pub ifname: Option<String>,
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub up: bool,
+    pub ip: Option<String>,
+    pub availability: Option<f64>,
+    pub latency: Option<f64>,
+    pub speed: Option<u64>,
+    pub rx_bytes: Option<u64>,
+    pub tx_bytes: Option<u64>,
+    pub rx_rate: Option<u64>,
+    pub tx_rate: Option<u64>,
+    pub mbb: Option<CellularStatus>,
+    pub mbb_state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CellularStatus {
+    pub signal_pct: Option<f64>,
+    pub rat: Option<String>,
+    pub lte_rsrp: Option<f64>,
+    pub lte_rsrq: Option<f64>,
+    pub lte_sinr: Option<f64>,
+}
+
+#[derive(Debug)]
+pub struct NamedWanInterface {
+    pub slot: &'static str,
+    pub interface: WanInterface,
+}
+
 // Site
 #[derive(Debug, Deserialize)]
 pub struct Site {

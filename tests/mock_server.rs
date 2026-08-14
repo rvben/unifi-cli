@@ -544,6 +544,34 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn wan_inventory_returns_gateway_interfaces_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"type": "usw", "wan1": {"name": "ignore-me"}},
+                    {"type": "udm",
+                     "wan1": {"name": "Primary", "ifname": "eth9", "enable": true, "up": true},
+                     "wan3": {"name": "Backup", "ifname": "gre1", "up": true,
+                        "mbb_state": "ready", "mbb": {"signal_pct": 75, "rat": "LTE"},
+                        "x_private_key": "must-not-escape"}}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = mock_client(&server).await;
+        let interfaces = client.list_wan_interfaces().await.unwrap();
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(interfaces[0].slot, "wan1");
+        assert_eq!(
+            interfaces[1].interface.mbb.as_ref().unwrap().signal_pct,
+            Some(75.0)
+        );
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -4852,5 +4880,24 @@ mod schema_contract {
         .await;
         let body = run_json(&server, &["system", "health"]).await;
         assert_schema_matches("system health", &body);
+    }
+
+    #[tokio::test]
+    async fn wan_output_matches_schema_and_omits_unknown_fields() {
+        let server = serving_legacy(
+            "stat/device",
+            serde_json::json!([{
+                "type": "udm",
+                "wan1": {"name": "Primary", "ifname": "eth9", "enable": true, "up": true,
+                    "ip": "192.0.2.1", "availability": 100, "latency": 12,
+                    "x_api_token": "must-not-escape"},
+                "wan3": {"name": "Backup", "ifname": "gre1", "up": true,
+                    "mbb_state": "ready", "mbb": {"signal_pct": 75, "rat": "LTE"}}
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["wan", "list"]).await;
+        assert_schema_matches("wan list", &body);
+        assert!(!body.to_string().contains("must-not-escape"));
     }
 }
