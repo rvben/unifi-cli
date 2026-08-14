@@ -1,27 +1,28 @@
-name: clispec v0.3
+name: CLI health
 
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '51 4 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   conformance:
-    name: 24/24 Excellent
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build CLI
-        run: cargo build --locked
-      - name: Install clispec scorer
-        run: cargo install clispec --version 0.3.0 --locked
-      - name: Require clispec v0.3 Excellent
-        shell: bash
-        run: |
-          report="$(clispec score target/debug/unifi --output json)"
-          echo "$report" | jq .
-          jq -e '.score == 24 and .max == 24 and .grade == "Excellent"' <<<"$report"
+    name: clispec v0.3
+    uses: rvben/clispec/.github/workflows/conformance.yml@6fb51e2692272f4723fa8b572c3b175b8d41364f
+    with:
+      binary: target/debug/unifi
+
+  published-artifacts:
+    name: Published artifacts
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    uses: rvben/clispec/.github/workflows/published-artifacts.yml@6fb51e2692272f4723fa8b572c3b175b8d41364f
+    with:
+      crates: "unifi-cli"
+      pypi: unifi-cli
+      homebrew-formula: unifi-cli
