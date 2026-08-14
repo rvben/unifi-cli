@@ -165,6 +165,31 @@ pub struct Network {
     pub default: bool,
 }
 
+/// Network configuration from the legacy `rest/networkconf` endpoint.
+///
+/// Keep this deliberately typed: network configuration records can grow new,
+/// sensitive fields over time and commands must never serialize the raw object.
+#[derive(Debug, Deserialize)]
+pub struct LegacyNetwork {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: Option<String>,
+    pub purpose: Option<String>,
+    pub vlan: Option<u16>,
+    pub ip_subnet: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub dhcpd_enabled: bool,
+    #[serde(default)]
+    pub dhcpd_dns_enabled: bool,
+    pub dhcpd_dns_1: Option<String>,
+    pub dhcpd_dns_2: Option<String>,
+    #[serde(default)]
+    pub mdns_enabled: bool,
+    pub lte_lan_enabled: Option<bool>,
+}
+
 // Health subsystem from Legacy stat/health
 #[derive(Debug, Deserialize)]
 pub struct HealthSubsystem {

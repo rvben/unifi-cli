@@ -261,6 +261,7 @@ unifi events list --limit 50                # Last 50 events
 ```bash
 unifi networks list                         # List all networks
 unifi networks                              # Same thing
+unifi networks show IoT                     # DHCP, DNS, mDNS, and cellular-backup details
 ```
 
 ### System

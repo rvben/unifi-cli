@@ -233,6 +233,26 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
 
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));
+    m.insert(
+        "networks show",
+        f(
+            &[
+                ("id", "string"),
+                ("name", "string"),
+                ("purpose", "string"),
+                ("vlan_id", "integer"),
+                ("subnet", "string"),
+                ("enabled", "boolean"),
+                ("dhcp_enabled", "boolean"),
+                ("dns_custom", "boolean"),
+                ("dns_servers", "array"),
+                ("mdns_enabled", "boolean"),
+                ("cellular_backup_enabled", "boolean"),
+            ],
+            false,
+            Some("Uses the richer legacy network configuration endpoint and emits only typed, non-secret fields."),
+        ),
+    );
     m.insert("events list", f(fields::EVENTS_LIST, false, None));
     m.insert(
         "system health",

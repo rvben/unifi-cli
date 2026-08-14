@@ -65,3 +65,91 @@ pub async fn list(
     out.print_message(&format!("\n{} networks", networks.len()));
     Ok(())
 }
+
+pub async fn show(
+    client: &UnifiClient,
+    identifier: &str,
+    out: OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let network = client.get_network_detail(identifier).await?;
+    let dns_servers: Vec<&str> = [
+        network.dhcpd_dns_1.as_deref(),
+        network.dhcpd_dns_2.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|server| !server.is_empty())
+    .collect();
+
+    let record = serde_json::json!({
+        "id": network.id,
+        "name": network.name,
+        "purpose": network.purpose,
+        "vlan_id": network.vlan,
+        "subnet": network.ip_subnet,
+        "enabled": network.enabled,
+        "dhcp_enabled": network.dhcpd_enabled,
+        "dns_custom": network.dhcpd_dns_enabled,
+        "dns_servers": dns_servers,
+        "mdns_enabled": network.mdns_enabled,
+        "cellular_backup_enabled": network.lte_lan_enabled,
+    });
+
+    if out.is_json() {
+        out.print_data(&serde_json::to_string_pretty(&record)?);
+        return Ok(());
+    }
+
+    let name = record["name"].as_str().unwrap_or("-");
+    println!(
+        "{}",
+        if use_color() {
+            format!("{}", name.bold())
+        } else {
+            name.into()
+        }
+    );
+    for (label, value) in [
+        ("ID", record["id"].as_str().unwrap_or("-").to_string()),
+        (
+            "Purpose",
+            record["purpose"].as_str().unwrap_or("-").to_string(),
+        ),
+        (
+            "VLAN",
+            record["vlan_id"]
+                .as_u64()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "Subnet",
+            record["subnet"].as_str().unwrap_or("-").to_string(),
+        ),
+        (
+            "DHCP",
+            record["dhcp_enabled"]
+                .as_bool()
+                .unwrap_or(false)
+                .to_string(),
+        ),
+        ("DNS", dns_servers.join(", ")),
+        (
+            "mDNS",
+            record["mdns_enabled"]
+                .as_bool()
+                .unwrap_or(false)
+                .to_string(),
+        ),
+        (
+            "Cellular backup",
+            record["cellular_backup_enabled"]
+                .as_bool()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+    ] {
+        println!("  {label:<18} {value}");
+    }
+    Ok(())
+}
