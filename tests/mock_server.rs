@@ -544,6 +544,35 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn list_firewall_inventory_uses_typed_records() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/firewallrule"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{"_id": "rule-1", "name": "Allow DNS", "enabled": true,
+                    "ruleset": "LAN_IN", "action": "accept", "protocol": "tcp_udp",
+                    "dst_port": "53", "x_private_key": "must-not-escape"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/firewallgroup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{"_id": "group-1", "name": "DNS", "group_type": "address-group",
+                    "group_members": ["192.0.2.53"], "x_api_token": "must-not-escape"}]
+            })))
+            .mount(&server)
+            .await;
+        let client = mock_client(&server).await;
+        let rules = client.list_firewall_rules().await.unwrap();
+        let groups = client.list_firewall_groups().await.unwrap();
+        assert_eq!(rules[0].dst_port.as_deref(), Some("53"));
+        assert_eq!(groups[0].group_members, ["192.0.2.53"]);
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -4852,5 +4881,35 @@ mod schema_contract {
         .await;
         let body = run_json(&server, &["system", "health"]).await;
         assert_schema_matches("system health", &body);
+    }
+
+    #[tokio::test]
+    async fn firewall_json_matches_schema_and_omits_unknown_fields() {
+        let server = MockServer::start().await;
+        mount_legacy(
+            &server,
+            "rest/firewallrule",
+            serde_json::json!([{
+                "_id": "rule-1", "name": "Allow DNS", "enabled": true,
+                "ruleset": "LAN_IN", "action": "accept", "protocol": "tcp_udp",
+                "dst_port": "53", "rule_index": 10, "x_private_key": "must-not-escape"
+            }]),
+        )
+        .await;
+        mount_legacy(
+            &server,
+            "rest/firewallgroup",
+            serde_json::json!([{
+                "_id": "group-1", "name": "DNS", "group_type": "address-group",
+                "group_members": ["192.0.2.53"], "x_api_token": "must-not-escape"
+            }]),
+        )
+        .await;
+        let rules = run_json(&server, &["firewall", "rules"]).await;
+        let groups = run_json(&server, &["firewall", "groups"]).await;
+        assert_schema_matches("firewall rules", &rules);
+        assert_schema_matches("firewall groups", &groups);
+        let rendered = format!("{rules}{groups}");
+        assert!(!rendered.contains("must-not-escape"));
     }
 }

@@ -75,6 +75,10 @@ enum Command {
         command: Option<NetworksCommand>,
     },
 
+    /// Inspect firewall rules and groups
+    #[command(subcommand)]
+    Firewall(FirewallCommand),
+
     /// Inspect and manage switch ports
     #[command(subcommand)]
     Ports(PortsCommand),
@@ -294,6 +298,14 @@ enum ConfigCommand {
 enum NetworksCommand {
     /// List networks
     List,
+}
+
+#[derive(Subcommand)]
+enum FirewallCommand {
+    /// List firewall rules
+    Rules,
+    /// List firewall address and port groups
+    Groups,
 }
 
 #[derive(Subcommand)]
@@ -1485,6 +1497,10 @@ async fn run() {
             }
         },
         Command::Networks { .. } => commands::networks::list(&mut client, out).await,
+        Command::Firewall(cmd) => match cmd {
+            FirewallCommand::Rules => commands::firewall::list_rules(&client, out).await,
+            FirewallCommand::Groups => commands::firewall::list_groups(&client, out).await,
+        },
         Command::Ports(cmd) => match cmd {
             PortsCommand::List {
                 mac,

@@ -445,6 +445,14 @@ impl UnifiClient {
         .await
     }
 
+    pub async fn list_firewall_rules(&self) -> Result<Vec<FirewallRule>, ApiError> {
+        self.get_legacy("/rest/firewallrule").await
+    }
+
+    pub async fn list_firewall_groups(&self) -> Result<Vec<FirewallGroup>, ApiError> {
+        self.get_legacy("/rest/firewallgroup").await
+    }
+
     // Events
     //
     // Legacy `stat/event` was removed in UniFi Network 9+ (UniFi OS) and now

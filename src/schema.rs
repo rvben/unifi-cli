@@ -233,6 +233,39 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
 
     // networks / events / system
     m.insert("networks list", f(fields::NETWORKS_LIST, false, None));
+    m.insert(
+        "firewall rules",
+        f(
+            &[
+                ("id", "string"),
+                ("name", "string"),
+                ("enabled", "boolean"),
+                ("ruleset", "string"),
+                ("action", "string"),
+                ("protocol", "string"),
+                ("source", "string"),
+                ("destination", "string"),
+                ("destination_port", "string"),
+                ("index", "integer"),
+                ("logging", "boolean"),
+            ],
+            false,
+            None,
+        ),
+    );
+    m.insert(
+        "firewall groups",
+        f(
+            &[
+                ("id", "string"),
+                ("name", "string"),
+                ("type", "string"),
+                ("members", "array"),
+            ],
+            false,
+            None,
+        ),
+    );
     m.insert("events list", f(fields::EVENTS_LIST, false, None));
     m.insert(
         "system health",

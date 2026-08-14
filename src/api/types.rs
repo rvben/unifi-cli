@@ -26,6 +26,34 @@ pub struct LegacyMeta {
     pub msg: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct FirewallRule {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    pub ruleset: Option<String>,
+    pub action: Option<String>,
+    pub protocol: Option<String>,
+    pub src_address: Option<String>,
+    pub dst_address: Option<String>,
+    pub dst_port: Option<String>,
+    pub rule_index: Option<u32>,
+    #[serde(default)]
+    pub logging: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FirewallGroup {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: Option<String>,
+    pub group_type: Option<String>,
+    #[serde(default)]
+    pub group_members: Vec<String>,
+}
+
 // Site
 #[derive(Debug, Deserialize)]
 pub struct Site {

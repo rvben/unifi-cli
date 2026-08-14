@@ -263,6 +263,13 @@ unifi networks list                         # List all networks
 unifi networks                              # Same thing
 ```
 
+### Firewall
+
+```bash
+unifi firewall rules                        # List firewall rules
+unifi firewall groups                       # List address and port groups
+```
+
 ### System
 
 ```bash
