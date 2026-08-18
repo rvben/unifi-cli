@@ -14,14 +14,14 @@ permissions:
 jobs:
   conformance:
     name: clispec v0.3
-    uses: rvben/clispec/.github/workflows/conformance.yml@3b33360d9d55ae419449b4897e79d55049ec5705
+    uses: rvben/clispec/.github/workflows/conformance.yml@10181da8fb10638689b29ec9a0fc6b1973cac9c4 # v0.3.1
     with:
       binary: target/debug/unifi
 
   published-artifacts:
     name: Published artifacts
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    uses: rvben/clispec/.github/workflows/published-artifacts.yml@3b33360d9d55ae419449b4897e79d55049ec5705
+    uses: rvben/clispec/.github/workflows/published-artifacts.yml@10181da8fb10638689b29ec9a0fc6b1973cac9c4 # v0.3.1
     with:
       crates: "unifi-cli"
       pypi: unifi-cli
