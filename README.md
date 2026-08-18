@@ -249,6 +249,13 @@ alias for `unifi ports list <MAC>`; it keeps its original bare-JSON-array
 shape for backward compatibility, and both emit the same per-row fields,
 including `device_mac` and `device_name`.
 
+### Port forwards
+
+```bash
+unifi port-forwards list
+unifi port-forwards show plex
+```
+
 ### Events
 
 ```bash

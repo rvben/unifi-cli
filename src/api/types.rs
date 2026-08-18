@@ -26,6 +26,26 @@ pub struct LegacyMeta {
     pub msg: Option<String>,
 }
 
+/// A port-forward record from the legacy Network API. This intentionally
+/// allowlists only fields useful for policy audits.
+#[derive(Debug, Deserialize)]
+pub struct PortForward {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    pub proto: Option<String>,
+    pub src: Option<String>,
+    pub src_port: Option<String>,
+    pub dst_port: Option<String>,
+    pub fwd: Option<String>,
+    pub fwd_port: Option<String>,
+    pub pfwd_interface: Option<String>,
+    #[serde(default)]
+    pub log: bool,
+}
+
 // Site
 #[derive(Debug, Deserialize)]
 pub struct Site {

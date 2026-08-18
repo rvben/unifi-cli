@@ -459,6 +459,24 @@ impl UnifiClient {
             .ok_or_else(|| ApiError::NotFound(format!("Network not found: {identifier}")))
     }
 
+    pub async fn list_port_forwards(&self) -> Result<Vec<PortForward>, ApiError> {
+        self.get_legacy("/rest/portforward").await
+    }
+
+    pub async fn get_port_forward(&self, identifier: &str) -> Result<PortForward, ApiError> {
+        self.list_port_forwards()
+            .await?
+            .into_iter()
+            .find(|forward| {
+                forward.id == identifier
+                    || forward
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(identifier))
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("Port forward '{identifier}' not found")))
+    }
+
     // Events
     //
     // Legacy `stat/event` was removed in UniFi Network 9+ (UniFi OS) and now

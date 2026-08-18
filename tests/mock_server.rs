@@ -570,6 +570,41 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn port_forwards_list_and_resolve_exact_name_or_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/rest/portforward"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [{
+                    "_id": "forward-1", "name": "Plex", "enabled": true,
+                    "proto": "tcp", "dst_port": "32400", "fwd": "192.0.2.10",
+                    "fwd_port": "32400", "pfwd_interface": "wan",
+                    "x_private_key": "must-not-escape"
+                }]
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let client = mock_client(&server).await;
+        assert_eq!(client.list_port_forwards().await.unwrap().len(), 1);
+        assert_eq!(
+            client.get_port_forward("plex").await.unwrap().id,
+            "forward-1"
+        );
+        assert_eq!(
+            client
+                .get_port_forward("forward-1")
+                .await
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Plex")
+        );
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -4903,5 +4938,70 @@ mod schema_contract {
         .await;
         let body = run_json(&server, &["system", "health"]).await;
         assert_schema_matches("system health", &body);
+    }
+
+    #[tokio::test]
+    async fn port_forward_output_matches_schema_and_omits_unknown_fields() {
+        let server = serving_legacy(
+            "rest/portforward",
+            serde_json::json!([{
+                "_id": "forward-1", "name": "Plex", "enabled": true,
+                "proto": "tcp", "src": "any", "dst_port": "32400",
+                "fwd": "192.0.2.10", "fwd_port": "32400", "pfwd_interface": "wan",
+                "log": false, "x_api_token": "must-not-escape"
+            }]),
+        )
+        .await;
+        let list = run_json(&server, &["port-forwards", "list"]).await;
+        let show = run_json(&server, &["port-forwards", "show", "plex"]).await;
+        assert_schema_matches("port-forwards list", &list);
+        assert_schema_matches("port-forwards show", &show);
+        let rendered = format!("{list}{show}");
+        assert!(!rendered.contains("must-not-escape"));
+    }
+
+    // The order carries the meaning here: a forward reads as source, then the
+    // port it selects, then where that port goes. Sorting the fields by name
+    // instead puts the destination ahead of the source it applies to, and
+    // renders a port the controller never set as a literal `null`.
+    #[tokio::test]
+    async fn port_forwards_show_prints_audit_order_and_dashes_absent_values() {
+        let server = serving_legacy(
+            "rest/portforward",
+            serde_json::json!([{
+                "_id": "forward-1", "name": "Plex", "enabled": true,
+                "proto": "tcp", "src": "any", "dst_port": "32400",
+                "fwd": "192.0.2.10", "fwd_port": "32400",
+                "pfwd_interface": "wan", "log": false
+            }]),
+        )
+        .await;
+        let text = run_text(&server, &["port-forwards", "show", "plex"]);
+
+        assert!(
+            !text.contains("null"),
+            "a value the controller never set renders as a dash, not null: {text}"
+        );
+        let source_port = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("Source port"))
+            .unwrap_or_else(|| panic!("no source port line in: {text}"));
+        assert!(
+            source_port.trim_end().ends_with('-'),
+            "an unset source port renders as a dash: {source_port}"
+        );
+
+        let at = |label: &str| {
+            text.find(label)
+                .unwrap_or_else(|| panic!("no {label} line in: {text}"))
+        };
+        assert!(
+            at("Source") < at("External port"),
+            "the source prints before the port it selects: {text}"
+        );
+        assert!(
+            at("External port") < at("Destination"),
+            "the external port prints before the destination it forwards to: {text}"
+        );
     }
 }

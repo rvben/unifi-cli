@@ -180,6 +180,21 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
 
     // ports
     m.insert("ports list", f(fields::PORTS_LIST, false, None));
+    let port_forward_fields = &[
+        ("id", "string"),
+        ("name", "string"),
+        ("enabled", "boolean"),
+        ("protocol", "string"),
+        ("source", "string"),
+        ("source_port", "string"),
+        ("external_port", "string"),
+        ("destination", "string"),
+        ("destination_port", "string"),
+        ("interface", "string"),
+        ("logging", "boolean"),
+    ];
+    m.insert("port-forwards list", f(port_forward_fields, false, None));
+    m.insert("port-forwards show", f(port_forward_fields, false, None));
     m.insert(
         "ports show",
         f(

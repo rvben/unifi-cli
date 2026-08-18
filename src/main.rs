@@ -79,6 +79,10 @@ enum Command {
     #[command(subcommand)]
     Ports(PortsCommand),
 
+    /// Inspect port forwards
+    #[command(subcommand)]
+    PortForwards(PortForwardsCommand),
+
     /// View controller events
     #[command(subcommand)]
     Events(EventsCommand),
@@ -280,6 +284,14 @@ enum PortsCommand {
         /// Port index (see `unifi ports list <MAC>`)
         port: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum PortForwardsCommand {
+    /// List port forwards
+    List,
+    /// Show one port forward by exact name or ID
+    Show { identifier: String },
 }
 
 #[derive(Subcommand)]
@@ -1555,6 +1567,12 @@ async fn run() {
                     }
                     Err(e) => Err(e),
                 }
+            }
+        },
+        Command::PortForwards(cmd) => match cmd {
+            PortForwardsCommand::List => commands::port_forwards::list(&client, out).await,
+            PortForwardsCommand::Show { identifier } => {
+                commands::port_forwards::show(&client, &identifier, out).await
             }
         },
         Command::Events(cmd) => match cmd {
