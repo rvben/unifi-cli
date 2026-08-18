@@ -46,6 +46,91 @@ pub struct PortForward {
     pub log: bool,
 }
 
+/// A gauge UniFi reports as `-1` when it has no measurement to report.
+///
+/// Decoding that as a reading makes an unmeasured link indistinguishable from
+/// a healthy one, so it decodes as absent instead. This is only applied to
+/// quantities for which no negative value is a measurement: a latency, a
+/// percentage, a counter or a rate. Radio metrics are negative by nature and
+/// are decoded as they arrive.
+fn unmeasured_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f64>::deserialize(deserializer)?.filter(|value| *value >= 0.0))
+}
+
+/// The counter form of `unmeasured_f64`.
+///
+/// Decoding through `i64` keeps a negative marker local to the field that
+/// carries it. Declaring these `u64` instead lets one such value abort the
+/// whole WAN block, which turns a single unknown counter into a command that
+/// reports nothing at all.
+fn unmeasured_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GatewayWanStatus {
+    #[serde(rename = "type")]
+    pub device_type: Option<String>,
+    pub wan1: Option<WanInterface>,
+    pub wan2: Option<WanInterface>,
+    pub wan3: Option<WanInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WanInterface {
+    pub name: Option<String>,
+    pub ifname: Option<String>,
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub up: bool,
+    pub ip: Option<String>,
+    #[serde(default, deserialize_with = "unmeasured_f64")]
+    pub availability: Option<f64>,
+    #[serde(default, deserialize_with = "unmeasured_f64")]
+    pub latency: Option<f64>,
+    #[serde(default, deserialize_with = "unmeasured_u64")]
+    pub speed: Option<u64>,
+    #[serde(default, deserialize_with = "unmeasured_u64")]
+    pub rx_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "unmeasured_u64")]
+    pub tx_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "unmeasured_u64")]
+    pub rx_rate: Option<u64>,
+    #[serde(default, deserialize_with = "unmeasured_u64")]
+    pub tx_rate: Option<u64>,
+    pub mbb: Option<CellularStatus>,
+    pub mbb_state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CellularStatus {
+    #[serde(default, deserialize_with = "unmeasured_f64")]
+    pub signal_pct: Option<f64>,
+    pub rat: Option<String>,
+    /// Reference signal power in dBm, negative across its whole range.
+    pub lte_rsrp: Option<f64>,
+    /// Reference signal quality in dB, negative across its whole range.
+    pub lte_rsrq: Option<f64>,
+    /// Signal to noise ratio in dB, negative on a link that is worse than its
+    /// own noise floor.
+    pub lte_sinr: Option<f64>,
+}
+
+#[derive(Debug)]
+pub struct NamedWanInterface {
+    pub slot: &'static str,
+    pub interface: WanInterface,
+}
+
 // Site
 #[derive(Debug, Deserialize)]
 pub struct Site {

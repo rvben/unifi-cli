@@ -605,6 +605,34 @@ mod client_api {
     }
 
     #[tokio::test]
+    async fn wan_inventory_returns_gateway_interfaces_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/api/s/default/stat/device"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "meta": {"rc": "ok"},
+                "data": [
+                    {"type": "usw", "wan1": {"name": "ignore-me"}},
+                    {"type": "udm",
+                     "wan1": {"name": "Primary", "ifname": "eth9", "enable": true, "up": true},
+                     "wan3": {"name": "Backup", "ifname": "gre1", "up": true,
+                        "mbb_state": "ready", "mbb": {"signal_pct": 75, "rat": "LTE"},
+                        "x_private_key": "must-not-escape"}}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = mock_client(&server).await;
+        let interfaces = client.list_wan_interfaces().await.unwrap();
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(interfaces[0].slot, "wan1");
+        assert_eq!(
+            interfaces[1].interface.mbb.as_ref().unwrap().signal_pct,
+            Some(75.0)
+        );
+    }
+
+    #[tokio::test]
     async fn get_health_returns_subsystems() {
         let server = MockServer::start().await;
 
@@ -5002,6 +5030,82 @@ mod schema_contract {
         assert!(
             at("External port") < at("Destination"),
             "the external port prints before the destination it forwards to: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wan_output_matches_schema_and_omits_unknown_fields() {
+        let server = serving_legacy(
+            "stat/device",
+            serde_json::json!([{
+                "type": "udm",
+                "wan1": {"name": "Primary", "ifname": "eth9", "enable": true, "up": true,
+                    "ip": "192.0.2.1", "availability": 100, "latency": 12,
+                    "x_api_token": "must-not-escape"},
+                "wan3": {"name": "Backup", "ifname": "gre1", "up": true,
+                    "mbb_state": "ready", "mbb": {"signal_pct": 75, "rat": "LTE"}}
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["wan", "list"]).await;
+        assert_schema_matches("wan list", &body);
+        assert!(!body.to_string().contains("must-not-escape"));
+    }
+
+    // UniFi writes `-1` into these gauges when it has nothing to measure, which
+    // a down link produces routinely. Published as readings they are
+    // indistinguishable from real ones, and a caller ranking uplinks by latency
+    // would put the dead link first. Counters are the sharper case: declared as
+    // unsigned, one such marker aborts the whole WAN block, so an unknown byte
+    // count becomes a command that reports no interfaces at all.
+    #[tokio::test]
+    async fn wan_reports_an_unmeasured_gauge_as_absent_not_as_a_reading() {
+        let server = serving_legacy(
+            "stat/device",
+            serde_json::json!([{
+                "type": "udm",
+                "wan1": {"name": "Primary", "ifname": "eth9", "enable": true, "up": false,
+                    "availability": -1, "latency": -1, "speed": -1,
+                    "rx_bytes": -1, "tx_bytes": 4096},
+                "wan3": {"name": "Backup", "ifname": "gre1", "up": true, "mbb_state": "ready",
+                    "mbb": {"signal_pct": -1, "rat": "LTE", "lte_rsrp": -95.0, "lte_sinr": -2.5}}
+            }]),
+        )
+        .await;
+        let body = run_json(&server, &["wan", "list"]).await;
+        assert_eq!(
+            body.as_array().map(Vec::len),
+            Some(2),
+            "an unmeasured counter costs its own field, not the whole block: {body}"
+        );
+
+        let down = &body[0];
+        for gauge in ["availability", "latency_ms", "speed_mbps", "rx_bytes"] {
+            assert!(
+                down[gauge].is_null(),
+                "an unmeasured {gauge} is absent, not a reading: {down}"
+            );
+        }
+        assert_eq!(
+            down["tx_bytes"],
+            serde_json::json!(4096),
+            "a counter the gateway did measure survives beside one it did not: {down}"
+        );
+
+        let cellular = &body[1];
+        assert!(
+            cellular["signal_percent"].is_null(),
+            "an unmeasured signal percentage is absent, not zero signal: {cellular}"
+        );
+        assert_eq!(
+            cellular["lte_rsrp"],
+            serde_json::json!(-95.0),
+            "reference signal power is negative across its range and is a real reading: {cellular}"
+        );
+        assert_eq!(
+            cellular["lte_sinr"],
+            serde_json::json!(-2.5),
+            "a signal to noise ratio below the noise floor is a real reading: {cellular}"
         );
     }
 }

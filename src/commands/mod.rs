@@ -6,3 +6,4 @@ pub mod port_forwards;
 pub mod ports;
 pub mod protect;
 pub mod system;
+pub mod wan;

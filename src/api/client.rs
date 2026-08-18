@@ -477,6 +477,34 @@ impl UnifiClient {
             .ok_or_else(|| ApiError::NotFound(format!("Port forward '{identifier}' not found")))
     }
 
+    pub async fn list_wan_interfaces(&self) -> Result<Vec<NamedWanInterface>, ApiError> {
+        let gateways: Vec<GatewayWanStatus> = self.get_legacy("/stat/device").await?;
+        let gateway = gateways
+            .into_iter()
+            .find(|device| matches!(device.device_type.as_deref(), Some("ugw" | "udm")))
+            .ok_or_else(|| ApiError::NotFound("UniFi gateway not found".into()))?;
+        let mut interfaces = Vec::new();
+        if let Some(interface) = gateway.wan1 {
+            interfaces.push(NamedWanInterface {
+                slot: "wan1",
+                interface,
+            });
+        }
+        if let Some(interface) = gateway.wan2 {
+            interfaces.push(NamedWanInterface {
+                slot: "wan2",
+                interface,
+            });
+        }
+        if let Some(interface) = gateway.wan3 {
+            interfaces.push(NamedWanInterface {
+                slot: "wan3",
+                interface,
+            });
+        }
+        Ok(interfaces)
+    }
+
     // Events
     //
     // Legacy `stat/event` was removed in UniFi Network 9+ (UniFi OS) and now

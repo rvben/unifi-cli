@@ -278,6 +278,12 @@ unifi system health                         # Show subsystem health
 unifi system info                           # Show controller info
 ```
 
+### WAN
+
+```bash
+unifi wan list                              # Show uplinks and failover state
+```
+
 ### Configuration
 
 ```bash
