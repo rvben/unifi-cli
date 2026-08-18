@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0](https://github.com/rvben/unifi-cli/compare/v0.3.5...v0.4.0) - 2026-08-18
+
+### Added
+
+- add WAN status inventory ([c4f908e](https://github.com/rvben/unifi-cli/commit/c4f908ea5b474b0ef26ca16dd6edc5f4b644edf1))
+- add port forward inventory ([9d9b835](https://github.com/rvben/unifi-cli/commit/9d9b835edf33ce70c3c94babc62e25c59b6cc5ce))
+- add network detail inspection ([8047cbb](https://github.com/rvben/unifi-cli/commit/8047cbb03fb2104f5c2f0bcbc3d247a11902909a))
+
+### Fixed
+
+- **release**: scope assets to the current tag ([732b4fa](https://github.com/rvben/unifi-cli/commit/732b4faa345750515c8d52396ffe3c4e7d7d046f))
+
 ## [0.3.4](https://github.com/rvben/unifi-cli/compare/v0.3.3...v0.3.4) - 2026-08-11
 
 ### Breaking Changes
