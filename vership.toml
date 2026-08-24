@@ -1,0 +1,10 @@
+[project]
+branch = "main"
+
+[changelog]
+unconventional = "exclude"
+
+[checks]
+lint = false
+tests = true
+test_command = "make check"
