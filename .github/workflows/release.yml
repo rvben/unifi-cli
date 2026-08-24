@@ -197,7 +197,7 @@ jobs:
       - name: Create release archive
         shell: bash
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION="v$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
           ARCHIVE_NAME="unifi-cli-${VERSION}-${{ matrix.target }}"
 
           mkdir -p release-package
