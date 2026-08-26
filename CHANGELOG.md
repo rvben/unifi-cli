@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.2](https://github.com/rvben/unifi-cli/compare/v0.4.1...v0.4.2) - 2026-08-26
+
+### Added
+
+- **tui**: make controller setup recoverable ([6017bbd](https://github.com/rvben/unifi-cli/commit/6017bbdc591fd512de5eb6c804267961f95e7bf6))
+
 ## [0.4.1](https://github.com/rvben/unifi-cli/compare/v0.4.0...v0.4.1) - 2026-08-26
 
 ### Fixed
