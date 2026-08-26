@@ -116,8 +116,17 @@ enum DeviceAction {
 enum InputOutcome {
     Continue,
     Quit,
+    Configure,
     Spawn(PendingAction),
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TuiExit {
+    Quit,
+    Configure,
+}
+
+pub const API_HELP_URL: &str = "https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API";
 
 struct AppState {
     sysinfo: Option<SysInfo>,
@@ -142,6 +151,7 @@ struct AppState {
     overlay: Option<Overlay>,
     loading: bool,
     last_error: Option<String>,
+    auth_failed: bool,
     status_msg: Option<(String, Instant)>,
     locating: HashMap<String, bool>,
 }
@@ -167,6 +177,7 @@ impl AppState {
             overlay: None,
             loading: true,
             last_error: None,
+            auth_failed: false,
             status_msg: None,
             locating: HashMap::new(),
         }
@@ -199,6 +210,7 @@ impl AppState {
             Err(e) => self.devices_error = Some(e),
         }
         self.last_error = None;
+        self.auth_failed = false;
     }
 
     fn rebuild_device_names(&mut self) {
@@ -364,6 +376,16 @@ impl AppState {
     /// effects (quit, spawn an async action) without performing them, so the
     /// full input behavior can be exercised in tests without a terminal.
     fn handle_key(&mut self, key: KeyEvent) -> InputOutcome {
+        if self.auth_failed {
+            return match key.code {
+                KeyCode::Enter | KeyCode::Char('a') => InputOutcome::Configure,
+                KeyCode::Char('q') | KeyCode::Esc => InputOutcome::Quit,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    InputOutcome::Quit
+                }
+                _ => InputOutcome::Continue,
+            };
+        }
         if self.filtering {
             match key.code {
                 KeyCode::Esc => {
@@ -1853,6 +1875,20 @@ fn draw(f: &mut ratatui::Frame, state: &AppState) {
         return;
     }
 
+    if state.auth_failed {
+        draw_connection_panel(
+            f,
+            " API KEY REQUIRED ",
+            "The controller rejected this API key",
+            state
+                .last_error
+                .as_deref()
+                .unwrap_or("This credential is no longer accepted."),
+            "Enter or a reopens guided configuration, then returns here.",
+        );
+        return;
+    }
+
     // Devices: 2 borders + 1 header + 1 header gap + data rows, minimum 5
     let device_rows = (state.devices.len() + 4).max(5) as u16;
     let chunks = Layout::default()
@@ -1872,7 +1908,7 @@ fn draw(f: &mut ratatui::Frame, state: &AppState) {
     draw_overlay(f, state);
 }
 
-type FetchResult = Result<Snapshot, String>;
+type FetchResult = Result<Snapshot, ApiError>;
 
 /// Puts the terminal into raw mode on the alternate screen, and puts it back
 /// when the TUI ends, however it ends.
@@ -1930,7 +1966,10 @@ fn install_panic_hook() {
     });
 }
 
-pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    api: &UnifiClient,
+    interval_secs: u64,
+) -> Result<TuiExit, Box<dyn std::error::Error>> {
     let _terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -1953,7 +1992,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
             state.loading = state.clients.is_empty();
             tokio::spawn(async move {
                 let result = fetch_data_standalone(&http, &base_url).await;
-                let _ = tx.send(result.map_err(|e| e.to_string())).await;
+                let _ = tx.send(result).await;
             });
         }
 
@@ -1965,7 +2004,12 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                 Ok(snapshot) => state.apply_snapshot(snapshot),
                 Err(e) => {
                     state.loading = false;
-                    state.last_error = Some(e);
+                    state.auth_failed = matches!(e, ApiError::Auth(_));
+                    state.last_error = Some(if state.auth_failed {
+                        "Create or replace the key in UniFi Network → Integrations.".into()
+                    } else {
+                        e.to_string()
+                    });
                 }
             }
         }
@@ -1979,6 +2023,7 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
                     last_tick = Instant::now() - tick_rate;
                 }
                 Err(msg) => {
+                    state.auth_failed = authentication_message(&msg);
                     state.last_error = Some(msg);
                 }
             }
@@ -2015,7 +2060,8 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
 
             match state.handle_key(key) {
                 InputOutcome::Continue => {}
-                InputOutcome::Quit => return Ok(()),
+                InputOutcome::Quit => return Ok(TuiExit::Quit),
+                InputOutcome::Configure => return Ok(TuiExit::Configure),
                 InputOutcome::Spawn(action) => {
                     let http = api.clone_http();
                     let base_url = api.base_url().to_string();
@@ -2038,6 +2084,114 @@ pub async fn run(api: &UnifiClient, interval_secs: u64) -> Result<(), Box<dyn st
             }
         }
     }
+}
+
+fn authentication_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("authentication")
+        || lower.contains("unauthorized")
+        || lower.contains("api error (401)")
+        || lower.contains("api error (403)")
+}
+
+pub fn request_configuration(
+    profile: Option<&str>,
+    host: Option<&str>,
+    reason: &str,
+) -> Result<TuiExit, Box<dyn std::error::Error>> {
+    let _terminal_guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    loop {
+        terminal.draw(|frame| {
+            let target = match (profile, host) {
+                (Some(profile), Some(host)) => format!("Profile {profile} · {host}"),
+                (Some(profile), None) => format!("Profile {profile}"),
+                (None, Some(host)) => host.to_string(),
+                (None, None) => "Default profile".into(),
+            };
+            draw_connection_panel(
+                frame,
+                " CONNECT UNIFI ",
+                "Connect your controller",
+                reason,
+                &format!("{target}. Enter or a starts guided setup."),
+            );
+        })?;
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('a') => return Ok(TuiExit::Configure),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(TuiExit::Quit),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(TuiExit::Quit);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_connection_panel(
+    frame: &mut ratatui::Frame,
+    title: &str,
+    heading: &str,
+    reason: &str,
+    next_step: &str,
+) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Reset)),
+        area,
+    );
+    let width = area.width.saturating_sub(2).clamp(1, 82);
+    let height = area.height.saturating_sub(2).clamp(1, 13);
+    let panel = centered_rect_fixed(width, height, area);
+    let key_style = Style::default()
+        .fg(ACCENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::styled(
+            heading,
+            Style::default()
+                .fg(ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(reason, Style::default()),
+        Line::styled(next_step, Style::default().fg(DIM_COLOR)),
+        Line::raw(""),
+        Line::styled(
+            "Create API keys in UniFi Network → Integrations",
+            Style::default(),
+        ),
+        Line::styled(API_HELP_URL, Style::default().fg(DIM_COLOR)),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("enter / a", key_style),
+            Span::styled(" configure   ", Style::default().fg(DIM_COLOR)),
+            Span::styled("q", key_style),
+            Span::styled(" quit", Style::default().fg(DIM_COLOR)),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(ACCENT_COLOR))
+                    .padding(ratatui::widgets::Padding::horizontal(2)),
+            ),
+        panel,
+    );
 }
 
 // --- Ports Live TUI ---
@@ -2968,6 +3122,35 @@ mod tests {
         let state = AppState::new();
         let text = render(&state, 80, 24);
         assert!(text.contains("Connecting to controller"), "{text}");
+    }
+
+    #[test]
+    fn authentication_failure_has_an_in_place_configuration_action() {
+        let mut state = AppState::new();
+        state.loading = false;
+        state.auth_failed = true;
+        state.last_error =
+            Some("Create or replace the key in UniFi Network → Integrations.".into());
+        let text = render(&state, 100, 26);
+        assert!(text.contains("API KEY REQUIRED"), "{text}");
+        assert!(text.contains("enter / a"), "{text}");
+        assert!(text.contains("configure"), "{text}");
+        assert!(text.contains("help.ui.com"), "{text}");
+        assert!(matches!(
+            state.handle_key(press(KeyCode::Enter)),
+            InputOutcome::Configure
+        ));
+        assert!(matches!(
+            state.handle_key(press(KeyCode::Char('a'))),
+            InputOutcome::Configure
+        ));
+    }
+
+    #[test]
+    fn authentication_message_does_not_confuse_network_failures_with_bad_keys() {
+        assert!(authentication_message("API error (401): Unauthorized"));
+        assert!(authentication_message("Authentication error: invalid key"));
+        assert!(!authentication_message("Connection timed out"));
     }
 
     #[test]

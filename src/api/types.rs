@@ -768,7 +768,7 @@ impl fmt::Display for ApiError {
                 write!(f, "Authentication error: {msg}")?;
                 write!(
                     f,
-                    "\n  Hint: Check your API key. Generate one in UniFi Settings > API"
+                    "\n  Hint: Create or replace the key in UniFi Network > Integrations\n  Guide: https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API"
                 )
             }
             ApiError::Conflict(msg) => write!(f, "{msg}"),

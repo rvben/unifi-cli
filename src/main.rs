@@ -670,6 +670,7 @@ fn run_init_with_io(
     config_path: &std::path::Path,
     use_tty: bool,
     accept_invalid_certs: bool,
+    profile_hint: Option<&str>,
 ) -> Result<InitOutcome, InitError> {
     // Load existing config, warn if file exists but is corrupt
     let existing = match std::fs::read_to_string(config_path) {
@@ -689,9 +690,13 @@ fn run_init_with_io(
     };
 
     // Profile name
-    let profile_input = prompt_line(reader, writer, "Profile name (leave empty for default): ")?;
+    let profile_prompt = profile_hint.map_or_else(
+        || "Profile name (leave empty for default): ".to_string(),
+        |name| format!("Profile name [{name}]: "),
+    );
+    let profile_input = prompt_line(reader, writer, &profile_prompt)?;
     let profile_name = if profile_input.is_empty() {
-        None
+        profile_hint.map(str::to_owned)
     } else {
         Some(profile_input)
     };
@@ -715,13 +720,23 @@ fn run_init_with_io(
         host_input
     };
 
+    // Put creation guidance before the prompt: this is the moment a first-time
+    // user needs to leave the CLI and create the value being requested.
+    let show_key_hint = current.api_key.is_none();
+    if show_key_hint {
+        writeln!(
+            writer,
+            "  Create API keys at: UniFi Network \u{2192} Integrations"
+        )?;
+        writeln!(writer, "  Guide: {}", unifi_cli::tui::API_HELP_URL)?;
+    }
+
     // API key prompt (masked input)
     let key_prompt = match current.api_key {
         Some(ref k) => format!("API key [{}]: ", mask_api_key(k)),
         None => "API key: ".to_string(),
     };
     let key_input = prompt_secret(reader, writer, &key_prompt, use_tty)?;
-    let show_key_hint = current.api_key.is_none();
     let api_key = if key_input.is_empty() {
         current
             .api_key
@@ -729,13 +744,6 @@ fn run_init_with_io(
     } else {
         key_input
     };
-    if show_key_hint {
-        writeln!(
-            writer,
-            "  Create API keys at: UniFi Network \u{2192} Settings \u{2192} API"
-        )?;
-    }
-
     // Optional Protect credentials (username/password for --full commands)
     writeln!(writer)?;
     writeln!(
@@ -971,7 +979,7 @@ fn prompt_yes_no_stderr(reader: &mut dyn std::io::BufRead, prompt: &str) -> bool
     matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-async fn run_init(accept_invalid_certs: bool) {
+async fn run_init(accept_invalid_certs: bool, profile_hint: Option<&str>) -> bool {
     let path = match default_config_path() {
         Ok(p) => p,
         Err(e) => {
@@ -994,6 +1002,7 @@ async fn run_init(accept_invalid_certs: bool) {
         &path,
         use_tty,
         accept_invalid_certs,
+        profile_hint,
     ) {
         Ok(o) => o,
         Err(e) => {
@@ -1008,7 +1017,7 @@ async fn run_init(accept_invalid_certs: bool) {
             host,
             api_key,
         } => (profile, host, api_key),
-        InitOutcome::Cancelled => return,
+        InitOutcome::Cancelled => return false,
     };
 
     // Validate credentials against the API. On a TLS certificate failure (common
@@ -1123,6 +1132,7 @@ async fn run_init(accept_invalid_certs: bool) {
         sym_dim("# shell completions")
     );
     eprintln!();
+    true
 }
 
 fn mask_api_key(key: &str) -> String {
@@ -1256,7 +1266,8 @@ async fn run_config_check(client: &api::UnifiClient) {
         }
         Err(api::ApiError::Auth(msg)) => {
             eprintln!("  \u{2718} Authentication failed: {msg}");
-            eprintln!("\n  Hint: Check your API key. Generate one in UniFi Settings > API");
+            eprintln!("\n  Hint: Create or replace the key in UniFi Network > Integrations");
+            eprintln!("  Guide: {}", unifi_cli::tui::API_HELP_URL);
             std::process::exit(exit_codes::AUTH_ERROR);
         }
         Err(e) => {
@@ -1373,7 +1384,23 @@ async fn run() {
             return;
         }
         Command::Config(ConfigCommand::Init) => {
-            run_init(cli.accept_invalid_certs).await;
+            run_init(cli.accept_invalid_certs, cli.profile.as_deref()).await;
+            return;
+        }
+        Command::Tui { interval } => {
+            let result = run_tui_command(
+                cli.host.clone(),
+                cli.api_key.clone(),
+                cli.profile.clone(),
+                cli.accept_invalid_certs,
+                *interval,
+            )
+            .await;
+            if let Err(error) = result {
+                let (kind, exit_code) = error_kind_and_code(error.as_ref());
+                print_error_envelope(kind, &error.to_string(), None);
+                std::process::exit(exit_code);
+            }
             return;
         }
         _ => {}
@@ -1410,7 +1437,8 @@ async fn run() {
         eprintln!("  - Set UNIFI_API_KEY environment variable");
         eprintln!("  - Use --api-key flag");
         eprintln!();
-        eprintln!("  Generate an API key in UniFi Settings > API");
+        eprintln!("  Create an API key in UniFi Network > Integrations");
+        eprintln!("  Guide: {}", unifi_cli::tui::API_HELP_URL);
         std::process::exit(exit_codes::CONFIG_ERROR);
     });
 
@@ -1644,7 +1672,7 @@ async fn run() {
                 }
             },
         },
-        Command::Tui { interval } => unifi_cli::tui::run(&client, interval).await,
+        Command::Tui { .. } => unreachable!("TUI commands return before shared client setup"),
         Command::Config(ConfigCommand::Check) => {
             run_config_check(&client).await;
             return;
@@ -1661,6 +1689,68 @@ async fn run() {
         let (kind, exit_code) = error_kind_and_code(e.as_ref());
         print_error_envelope(kind, &e.to_string(), None);
         std::process::exit(exit_code);
+    }
+}
+
+async fn run_tui_command(
+    mut host_arg: Option<String>,
+    mut api_key_arg: Option<String>,
+    profile: Option<String>,
+    accept_invalid_certs: bool,
+    interval: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(Box::new(api::ApiError::Other(
+            "the TUI requires an interactive terminal on stdin and stdout".into(),
+        )));
+    }
+
+    loop {
+        let config = load_config(profile.as_deref());
+        let host = host_arg.clone().or(config.host);
+        let api_key = api_key_arg.clone().or(config.api_key);
+        let reason = match (&host, &api_key) {
+            (None, None) => "No controller or API key is configured yet.",
+            (None, Some(_)) => "This profile has an API key but no controller address.",
+            (Some(_), None) => "This controller does not have an API key yet.",
+            (Some(_), Some(_)) => "",
+        };
+        if !reason.is_empty() {
+            if unifi_cli::tui::request_configuration(profile.as_deref(), host.as_deref(), reason)?
+                == unifi_cli::tui::TuiExit::Quit
+            {
+                return Ok(());
+            }
+            if !run_init(accept_invalid_certs, profile.as_deref()).await {
+                return Ok(());
+            }
+            host_arg = None;
+            api_key_arg = None;
+            continue;
+        }
+
+        let host = host.expect("checked above");
+        let api_key = api_key.expect("checked above");
+        let client = api::UnifiClient::new_with_options(
+            &host,
+            &api_key,
+            api::ClientOptions {
+                accept_invalid_certs: accept_invalid_certs || config.accept_invalid_certs,
+            },
+        )?;
+        match unifi_cli::tui::run(&client, interval).await? {
+            unifi_cli::tui::TuiExit::Quit => return Ok(()),
+            unifi_cli::tui::TuiExit::Configure => {
+                if !run_init(accept_invalid_certs, profile.as_deref()).await {
+                    return Ok(());
+                }
+                // Choosing configuration explicitly means the newly saved
+                // values should replace any stale command-line overrides.
+                host_arg = None;
+                api_key_arg = None;
+            }
+        }
     }
 }
 
@@ -1973,11 +2063,45 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false, None).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap_or_default();
         let display = String::from_utf8(output).unwrap();
         (result, written, display)
+    }
+
+    #[test]
+    fn init_profile_hint_is_the_default_when_recovering_from_the_tui() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut reader =
+            std::io::Cursor::new(b"\nhttps://office.local\noffice-api-key\n\ny\n".to_vec());
+        let mut output = Vec::new();
+
+        let result = run_init_with_io(
+            &mut reader,
+            &mut output,
+            &path,
+            false,
+            false,
+            Some("office"),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result,
+            InitOutcome::Saved {
+                profile: Some(ref name),
+                ..
+            } if name == "office"
+        ));
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.contains("[profiles.office]"));
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Profile name [office]")
+        );
     }
 
     #[test]
@@ -2010,7 +2134,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nmy-api-key\n\ny\n".to_vec());
         let mut output = Vec::new();
 
-        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+        run_init_with_io(&mut reader, &mut output, &path, false, false, None).unwrap();
 
         assert!(
             std::fs::read_to_string(&path)
@@ -2031,7 +2155,7 @@ api_key = "work_key"
 
         let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nnew-key\n\ny\n".to_vec());
         let mut output = Vec::new();
-        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+        run_init_with_io(&mut reader, &mut output, &path, false, false, None).unwrap();
 
         assert_eq!(mode_of(&path), 0o600);
     }
@@ -2052,7 +2176,7 @@ api_key = "work_key"
 
         let mut reader = std::io::Cursor::new(b"\nhttps://unifi.local\nnew-key\n\ny\n".to_vec());
         let mut output = Vec::new();
-        run_init_with_io(&mut reader, &mut output, &path, false, false).unwrap();
+        run_init_with_io(&mut reader, &mut output, &path, false, false, None).unwrap();
 
         let exposed = std::fs::read_to_string(&witness).unwrap();
         assert!(
@@ -2090,7 +2214,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        run_init_with_io(&mut reader, &mut output, &path, false, true).unwrap();
+        run_init_with_io(&mut reader, &mut output, &path, false, true, None).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap_or_default();
         let display = String::from_utf8(output).unwrap();
@@ -2179,6 +2303,8 @@ api_key = "work_key"
         assert!(written.contains("host = \"https://unifi.local\""));
         assert!(written.contains("api_key = \"my-api-key\""));
         assert!(display.contains("Create API keys at"));
+        assert!(display.contains(unifi_cli::tui::API_HELP_URL));
+        assert!(display.find("Guide:").unwrap() < display.find("API key:").unwrap());
     }
 
     #[test]
@@ -2293,7 +2419,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false, false);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host is required"));
     }
@@ -2306,7 +2432,7 @@ api_key = "work_key"
         let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
         let mut output = Vec::new();
 
-        let result = run_init_with_io(&mut reader, &mut output, &path, false, false);
+        let result = run_init_with_io(&mut reader, &mut output, &path, false, false, None);
         assert!(result.is_err());
         assert!(
             result

@@ -21,7 +21,9 @@ unifi devices list              # List network devices
 unifi tui                       # Interactive dashboard
 ```
 
-Generate an API key in your UniFi controller under **Settings > API**.
+Generate an API key in your controller under **UniFi Network → Integrations**.
+Ubiquiti documents the current flow in
+[Getting Started with the Official UniFi API](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API).
 
 ## Installation
 
@@ -130,6 +132,10 @@ hardcoding the list.
 ```bash
 unifi tui                       # Launch interactive dashboard
 ```
+
+If the controller is not configured or rejects the saved API key, the dashboard
+offers guided configuration in place. Press `Enter` or `a`, complete the secure
+prompt outside the alternate screen, and the dashboard resumes automatically.
 
 Real-time dashboard with:
 - Client list with bandwidth, connection info, and signal strength
