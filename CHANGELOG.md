@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1](https://github.com/rvben/unifi-cli/compare/v0.4.0...v0.4.1) - 2026-08-26
+
+### Fixed
+
+- **release**: use package version in dry runs ([347b90a](https://github.com/rvben/unifi-cli/commit/347b90a43db9411c0d52cb474adf7256d99678b0))
+- **ci**: install pinned Rust components ([37b0182](https://github.com/rvben/unifi-cli/commit/37b01828f630fa2ed4ef141a31199023107d209a))
+
+### Performance
+
+- **packaging**: make package launcher lightweight ([a3d7c97](https://github.com/rvben/unifi-cli/commit/a3d7c97ee1cab8637842bae9fc6b75408fa4ec7c))
+
 ## [0.4.0](https://github.com/rvben/unifi-cli/compare/v0.3.5...v0.4.0) - 2026-08-18
 
 ### Added
