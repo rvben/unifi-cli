@@ -6,14 +6,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  id-token: write
+  packages: read
+  pull-requests: read
 
 jobs:
   update:
-    uses: rvben/upd/.github/workflows/dependency-health.yml@bdc55ece90b7333f177027ad208705b815b6caab # v0.5.2
+    uses: rvben/upd/.github/workflows/dependency-health.yml@1a8c9cd6e0e5f21251f89b2bd9f9fcbff776030d
     with:
-      upd-version: v0.5.2
       min-age: 7d
       max-bump: minor
       fail-on-blocked: false
