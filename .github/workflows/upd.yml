@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   update:
-    uses: rvben/upd/.github/workflows/dependency-health.yml@1a8c9cd6e0e5f21251f89b2bd9f9fcbff776030d
+    uses: rvben/upd/.github/workflows/dependency-health.yml@1a8c9cd6e0e5f21251f89b2bd9f9fcbff776030d # v0.8.5
     with:
       min-age: 7d
       max-bump: minor
