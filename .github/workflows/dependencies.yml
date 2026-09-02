@@ -1,0 +1,25 @@
+name: Dependency health
+
+on:
+  schedule:
+    - cron: "51 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+  pull-requests: read
+
+jobs:
+  update:
+    uses: rvben/upd/.github/workflows/dependency-health.yml@ecb605d32c4edc8dee4091aeb30b3d37ebdd290a # v0.10.0
+    with:
+      langs: rust,actions
+      lock: true
+      min-age: 7d
+      max-bump: minor
+      validation-command: make check
+      fail-on-blocked: false
+      branch: deps/upd
+      commit-message: "chore(deps): refresh dependencies"
