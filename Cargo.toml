@@ -30,7 +30,7 @@ owo-colors = "4"
 dirs = "6"
 ratatui = "0.30"
 crossterm = "0.29"
-rpassword = "7.4.0"
+rpassword = "7.5.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
