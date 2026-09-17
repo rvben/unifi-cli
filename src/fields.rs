@@ -67,6 +67,18 @@ pub const NETWORKS_LIST: &[Field] = &[
     ("default", "boolean"),
 ];
 
+pub const DNS_LIST: &[Field] = &[
+    ("id", "string"),
+    ("name", "string"),
+    ("type", "string"),
+    ("value", "string"),
+    ("ttl", "integer"),
+    ("enabled", "boolean"),
+    ("priority", "integer"),
+    ("weight", "integer"),
+    ("port", "integer"),
+];
+
 pub const PORTS_LIST: &[Field] = &[
     ("device_mac", "string"),
     ("device_name", "string"),
@@ -233,6 +245,7 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            DNS_LIST,
             PORTS_LIST,
             PORTS_FIND,
         ] {
@@ -252,6 +265,7 @@ mod tests {
             DEVICES_LIST,
             EVENTS_LIST,
             NETWORKS_LIST,
+            DNS_LIST,
             PORTS_LIST,
             PORTS_FIND,
         ] {

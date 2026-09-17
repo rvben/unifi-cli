@@ -894,3 +894,163 @@ fn port_entry_tolerates_absent_last_connection() {
     assert_eq!(p.autoneg, None);
     assert_eq!(p.is_uplink, None);
 }
+
+#[test]
+fn dns_record_type_accepts_integration_and_legacy_spellings() {
+    assert_eq!(DnsRecordType::parse("A").unwrap(), DnsRecordType::A);
+    assert_eq!(DnsRecordType::parse("a_record").unwrap(), DnsRecordType::A);
+    assert_eq!(DnsRecordType::parse("AAAA").unwrap(), DnsRecordType::Aaaa);
+    assert!(DnsRecordType::parse("FORWARD_DOMAIN").is_err());
+}
+
+#[test]
+fn integration_forward_domain_is_not_a_static_record() {
+    let policy: IntegrationDnsPolicy = serde_json::from_value(serde_json::json!({
+        "type": "FORWARD_DOMAIN",
+        "id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "enabled": true,
+        "domain": "corp.example.com",
+        "ipAddress": "192.0.2.53"
+    }))
+    .unwrap();
+    assert!(policy.to_static_record().is_none());
+}
+
+#[test]
+fn integration_a_record_maps_to_the_cli_shape() {
+    let policy: IntegrationDnsPolicy = serde_json::from_value(serde_json::json!({
+        "type": "A_RECORD",
+        "id": "11111111-2222-3333-4444-555555555555",
+        "enabled": true,
+        "domain": "nas.example.com",
+        "ipv4Address": "192.0.2.10",
+        "ttlSeconds": 14400
+    }))
+    .unwrap();
+    let record = policy.to_static_record().unwrap();
+    assert_eq!(record.name, "nas.example.com");
+    assert_eq!(record.record_type, DnsRecordType::A);
+    assert_eq!(record.value, "192.0.2.10");
+    assert_eq!(record.ttl, Some(14400));
+}
+
+#[test]
+fn integration_srv_owner_is_rebuilt_from_split_fields() {
+    let policy: IntegrationDnsPolicy = serde_json::from_value(serde_json::json!({
+        "type": "SRV_RECORD",
+        "id": "11111111-2222-3333-4444-555555555555",
+        "enabled": true,
+        "domain": "example.com",
+        "service": "_ldap",
+        "protocol": "_tcp",
+        "serverDomain": "dir.example.com",
+        "priority": 10,
+        "weight": 20,
+        "port": 389
+    }))
+    .unwrap();
+    let record = policy.to_static_record().unwrap();
+    assert_eq!(record.name, "_ldap._tcp.example.com");
+    assert_eq!(record.value, "dir.example.com");
+    assert_eq!(record.port, Some(389));
+}
+
+#[test]
+fn mx_write_omits_ttl_on_the_integration_body() {
+    let write = StaticDnsWrite {
+        name: "example.com".into(),
+        record_type: DnsRecordType::Mx,
+        value: "mail.example.com".into(),
+        ttl: None,
+        enabled: true,
+        priority: Some(10),
+        weight: None,
+        port: None,
+    };
+    let body = write.integration_body().unwrap();
+    assert!(body.get("ttlSeconds").is_none(), "{body}");
+    assert_eq!(body["mailServerDomain"], "mail.example.com");
+    assert_eq!(body["priority"], 10);
+}
+
+#[test]
+fn resolve_static_dns_prefers_id_and_conflicts_on_duplicate_names() {
+    let records = vec![
+        StaticDnsRecord {
+            id: "id-1".into(),
+            name: "dup.example.com".into(),
+            record_type: DnsRecordType::A,
+            value: "192.0.2.10".into(),
+            ttl: None,
+            enabled: true,
+            priority: None,
+            weight: None,
+            port: None,
+        },
+        StaticDnsRecord {
+            id: "id-2".into(),
+            name: "dup.example.com".into(),
+            record_type: DnsRecordType::A,
+            value: "192.0.2.11".into(),
+            ttl: None,
+            enabled: true,
+            priority: None,
+            weight: None,
+            port: None,
+        },
+    ];
+    assert_eq!(resolve_static_dns(&records, "id-2").unwrap().id, "id-2");
+    match resolve_static_dns(&records, "dup.example.com") {
+        Err(ApiError::Conflict(message)) => {
+            assert!(message.contains("id-1"), "{message}");
+            assert!(message.contains("id-2"), "{message}");
+        }
+        other => panic!("expected conflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn update_from_a_legacy_mx_record_drops_the_ttl_it_cannot_send() {
+    let existing = StaticDnsRecord {
+        id: "aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        name: "example.com".into(),
+        record_type: DnsRecordType::Mx,
+        value: "mail.example.com".into(),
+        ttl: Some(300),
+        enabled: true,
+        priority: Some(10),
+        weight: None,
+        port: None,
+    };
+    let write = StaticDnsWrite::from_record(&existing);
+    assert_eq!(write.ttl, None);
+    write
+        .validate()
+        .expect("an untouched MX record must still validate");
+}
+
+#[test]
+fn legacy_body_keeps_a_trailing_dot_in_txt_data() {
+    let write = StaticDnsWrite {
+        name: "example.com".into(),
+        record_type: DnsRecordType::Txt,
+        value: "v=spf1 -all.".into(),
+        ttl: None,
+        enabled: true,
+        priority: None,
+        weight: None,
+        port: None,
+    };
+    assert_eq!(write.legacy_body().unwrap()["value"], "v=spf1 -all.");
+    let cname = StaticDnsWrite {
+        name: "media.example.com".into(),
+        record_type: DnsRecordType::Cname,
+        value: "nas.example.com.".into(),
+        ttl: None,
+        enabled: true,
+        priority: None,
+        weight: None,
+        port: None,
+    };
+    assert_eq!(cname.legacy_body().unwrap()["value"], "nas.example.com");
+}

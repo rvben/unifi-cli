@@ -83,6 +83,10 @@ enum Command {
     #[command(subcommand)]
     PortForwards(PortForwardsCommand),
 
+    /// Manage static DNS records
+    #[command(subcommand)]
+    Dns(DnsCommand),
+
     /// View controller events
     #[command(subcommand)]
     Events(EventsCommand),
@@ -299,6 +303,86 @@ enum PortForwardsCommand {
 }
 
 #[derive(Subcommand)]
+enum DnsCommand {
+    /// List static DNS records
+    List {
+        /// Record type to show (A, AAAA, CNAME, MX, TXT, SRV, NS)
+        #[arg(long = "type")]
+        record_type: Option<String>,
+        /// Filter by domain name (case-insensitive substring)
+        #[arg(long)]
+        name: Option<String>,
+        /// Maximum number of results to return
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Comma-separated list of fields to include in output (see `unifi schema`)
+        #[arg(long)]
+        fields: Option<String>,
+    },
+    /// Show one static DNS record by exact name or id
+    Show { identifier: String },
+    /// Create a static DNS record
+    Create {
+        /// Domain name (FQDN), for example nas.home.arpa
+        name: String,
+        /// Record value: IPv4, IPv6, hostname, or TXT data
+        value: String,
+        /// Record type (A, AAAA, CNAME, MX, TXT, SRV). Defaults to A
+        #[arg(long = "type", default_value = "A")]
+        record_type: String,
+        /// TTL in seconds. Defaults to 14400 for A, AAAA, and CNAME
+        #[arg(long)]
+        ttl: Option<u32>,
+        /// MX/SRV priority. Lower is preferred
+        #[arg(long)]
+        priority: Option<u32>,
+        /// SRV weight
+        #[arg(long)]
+        weight: Option<u32>,
+        /// SRV port
+        #[arg(long)]
+        port: Option<u32>,
+        /// Create the record disabled
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Update an existing static DNS record
+    Update {
+        /// Record id or exact domain name
+        identifier: String,
+        /// Replacement domain name
+        #[arg(long)]
+        name: Option<String>,
+        /// Replacement value
+        #[arg(long)]
+        value: Option<String>,
+        /// Replacement TTL in seconds
+        #[arg(long)]
+        ttl: Option<u32>,
+        /// Replacement MX/SRV priority
+        #[arg(long)]
+        priority: Option<u32>,
+        /// Replacement SRV weight
+        #[arg(long)]
+        weight: Option<u32>,
+        /// Replacement SRV port
+        #[arg(long)]
+        port: Option<u32>,
+        /// Enable the record
+        #[arg(long, conflicts_with = "disabled")]
+        enabled: bool,
+        /// Disable the record
+        #[arg(long, conflicts_with = "enabled")]
+        disabled: bool,
+    },
+    /// Delete a static DNS record
+    Delete { identifier: String },
+}
+
+#[derive(Subcommand)]
 enum ConfigCommand {
     /// Create or update the configuration file interactively
     Init,
@@ -440,6 +524,19 @@ fn require_confirmation(yes: bool, action: &str, question: &str) {
     }
 }
 
+fn config_exit(message: &str) -> ! {
+    eprintln!("Error: {message}");
+    print_error_envelope("config_error", message, None);
+    std::process::exit(exit_codes::CONFIG_ERROR);
+}
+
+fn parse_dns_record_type(raw: &str) -> unifi_cli::api::DnsRecordType {
+    match unifi_cli::api::DnsRecordType::parse(raw) {
+        Ok(value) => value,
+        Err(message) => config_exit(&message),
+    }
+}
+
 /// Prompt for confirmation of a destructive action. Returns true only on an
 /// explicit yes; an empty line, EOF, or anything else declines.
 ///
@@ -486,6 +583,7 @@ fn validate_requested_fields(command: &Command) -> Result<Option<Vec<String>>, I
         Command::Events(EventsCommand::List { fields, .. }) => (fields, fields::EVENTS_LIST),
         Command::Ports(PortsCommand::List { fields, .. }) => (fields, fields::PORTS_LIST),
         Command::Ports(PortsCommand::Find { fields, .. }) => (fields, fields::PORTS_FIND),
+        Command::Dns(DnsCommand::List { fields, .. }) => (fields, fields::DNS_LIST),
         _ => return Ok(None),
     };
 
@@ -1611,6 +1709,99 @@ async fn run() {
             PortForwardsCommand::List => commands::port_forwards::list(&client, out).await,
             PortForwardsCommand::Show { identifier } => {
                 commands::port_forwards::show(&client, &identifier, out).await
+            }
+        },
+        Command::Dns(cmd) => match cmd {
+            DnsCommand::List {
+                record_type,
+                name,
+                limit,
+                offset,
+                fields: _,
+            } => {
+                let record_type = record_type.map(|raw| parse_dns_record_type(&raw));
+                let filter = commands::dns::ListFilter { record_type, name };
+                let pagination = commands::dns::Pagination {
+                    limit,
+                    offset,
+                    fields: requested_fields,
+                };
+                commands::dns::list(&mut client, out, filter, pagination).await
+            }
+            DnsCommand::Show { identifier } => {
+                commands::dns::show(&mut client, &identifier, out).await
+            }
+            DnsCommand::Create {
+                name,
+                value,
+                record_type,
+                ttl,
+                priority,
+                weight,
+                port,
+                disabled,
+            } => {
+                let write = match commands::dns::write_from_create_args(commands::dns::CreateArgs {
+                    name,
+                    value,
+                    record_type,
+                    ttl,
+                    priority,
+                    weight,
+                    port,
+                    disabled,
+                }) {
+                    Ok(write) => write,
+                    Err(message) => config_exit(&message),
+                };
+                commands::dns::create(&mut client, &write, out).await
+            }
+            DnsCommand::Update {
+                identifier,
+                name,
+                value,
+                ttl,
+                priority,
+                weight,
+                port,
+                enabled,
+                disabled,
+            } => {
+                let existing = match client.get_static_dns(&identifier).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        let (kind, exit_code) = error_kind_and_code(&error);
+                        print_error_envelope(kind, &error.to_string(), None);
+                        std::process::exit(exit_code);
+                    }
+                };
+                let write = match commands::dns::write_from_update_args(
+                    &existing,
+                    commands::dns::UpdateArgs {
+                        name,
+                        value,
+                        ttl,
+                        priority,
+                        weight,
+                        port,
+                        enabled,
+                        disabled,
+                    },
+                ) {
+                    Ok(write) => write,
+                    Err(message) => config_exit(&message),
+                };
+                // Resolve by the id already found so the second lookup cannot
+                // land on a different record than the one the merge was based on.
+                commands::dns::update(&mut client, &existing.id, &write, out).await
+            }
+            DnsCommand::Delete { identifier } => {
+                require_confirmation(
+                    cli.yes,
+                    "dns delete",
+                    &format!("Delete DNS record {identifier}?"),
+                );
+                commands::dns::delete(&mut client, &identifier, out).await
             }
         },
         Command::Events(cmd) => match cmd {
@@ -3178,6 +3369,83 @@ api_key = "work_key"
                 assert_eq!(mac, "aa:bb:cc:dd:ee:ff");
             }
             _ => panic!("expected Devices Upgrade"),
+        }
+    }
+
+    #[test]
+    fn cli_dns_list() {
+        let cli = parse(&["unifi", "--host", "h", "--api-key", "k", "dns", "list"]);
+        assert!(matches!(cli.command, Command::Dns(DnsCommand::List { .. })));
+    }
+
+    #[test]
+    fn cli_dns_create_defaults_to_a() {
+        let cli = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "dns",
+            "create",
+            "nas.example.com",
+            "192.0.2.10",
+        ]);
+        match cli.command {
+            Command::Dns(DnsCommand::Create {
+                name,
+                value,
+                record_type,
+                disabled,
+                ..
+            }) => {
+                assert_eq!(name, "nas.example.com");
+                assert_eq!(value, "192.0.2.10");
+                assert_eq!(record_type, "A");
+                assert!(!disabled);
+            }
+            _ => panic!("expected Dns Create"),
+        }
+    }
+
+    #[test]
+    fn cli_dns_update_and_delete_take_an_identifier() {
+        let update = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "dns",
+            "update",
+            "nas.example.com",
+            "--value",
+            "192.0.2.11",
+        ]);
+        match update.command {
+            Command::Dns(DnsCommand::Update {
+                identifier, value, ..
+            }) => {
+                assert_eq!(identifier, "nas.example.com");
+                assert_eq!(value.as_deref(), Some("192.0.2.11"));
+            }
+            _ => panic!("expected Dns Update"),
+        }
+        let delete = parse(&[
+            "unifi",
+            "--host",
+            "h",
+            "--api-key",
+            "k",
+            "dns",
+            "delete",
+            "rec-1",
+        ]);
+        match delete.command {
+            Command::Dns(DnsCommand::Delete { identifier }) => {
+                assert_eq!(identifier, "rec-1");
+            }
+            _ => panic!("expected Dns Delete"),
         }
     }
 

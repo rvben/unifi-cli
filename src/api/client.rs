@@ -118,10 +118,17 @@ fn normalize_base_url(host: &str) -> Result<String, ApiError> {
     Ok(candidate)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DnsApiKind {
+    Integration,
+    LegacyV2,
+}
+
 pub struct UnifiClient {
     http: reqwest::Client,
     base_url: String,
     site_id: Option<String>,
+    dns_api: Option<DnsApiKind>,
 }
 
 impl UnifiClient {
@@ -153,6 +160,7 @@ impl UnifiClient {
             http,
             base_url,
             site_id: None,
+            dns_api: None,
         })
     }
 
@@ -254,6 +262,53 @@ impl UnifiClient {
             return Err(error_for_status(status, body));
         }
         json_or_unsupported(resp, &endpoint).await
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response, ApiError> {
+        let url = format!("{}{path}", self.base_url);
+        let mut req = self.http.request(method, &url);
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(error_for_status(status, body));
+        }
+        Ok(resp)
+    }
+
+    async fn send_json<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, ApiError> {
+        let resp = self.send(method, path, body).await?;
+        json_or_unsupported(resp, path).await
+    }
+
+    async fn send_empty(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), ApiError> {
+        self.send(method, path, body).await?;
+        Ok(())
+    }
+
+    /// True when a DNS endpoint is not there: the legacy markers, plus the
+    /// `Unsupported` that `json_or_unsupported` raises when UniFi OS proxies
+    /// an unknown path to the web UI.
+    fn is_absent_dns_endpoint(err: &ApiError) -> bool {
+        is_absent_legacy_endpoint(err) || matches!(err, ApiError::Unsupported { .. })
     }
 
     // Paginate through all results from Integration API
@@ -475,6 +530,210 @@ impl UnifiClient {
                         .is_some_and(|name| name.eq_ignore_ascii_case(identifier))
             })
             .ok_or_else(|| ApiError::NotFound(format!("Port forward '{identifier}' not found")))
+    }
+
+    // Static DNS records.
+    //
+    // Network 10.1+ serves these as Integration DNS policies:
+    // `/proxy/network/integration/v1/sites/{siteId}/dns/policies`. Network 8.2+
+    // serves the same records at `/proxy/network/v2/api/site/{site}/static-dns`.
+    // Domain-forward policies live on the Integration collection too and are
+    // not static records, so they are dropped.
+
+    async fn ensure_dns_api(&mut self) -> Result<DnsApiKind, ApiError> {
+        if let Some(kind) = self.dns_api {
+            return Ok(kind);
+        }
+        match self.probe_integration_dns().await {
+            Ok(()) => {
+                self.dns_api = Some(DnsApiKind::Integration);
+                Ok(DnsApiKind::Integration)
+            }
+            Err(err) if Self::is_absent_dns_endpoint(&err) => {
+                match self.list_legacy_static_dns().await {
+                    Ok(_) => {
+                        self.dns_api = Some(DnsApiKind::LegacyV2);
+                        Ok(DnsApiKind::LegacyV2)
+                    }
+                    Err(legacy_err) if Self::is_absent_dns_endpoint(&legacy_err) => {
+                        Err(ApiError::Unsupported {
+                            endpoint: "/proxy/network/integration/v1/sites/{siteId}/dns/policies"
+                                .into(),
+                            reason: UnsupportedReason::Removed,
+                        })
+                    }
+                    Err(legacy_err) => Err(legacy_err),
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn probe_integration_dns(&mut self) -> Result<(), ApiError> {
+        let site_id = self.ensure_site_id().await?.to_string();
+        let _: PaginatedResponse<IntegrationDnsPolicy> = self
+            .get_integration(&format!(
+                "/proxy/network/integration/v1/sites/{site_id}/dns/policies?offset=0&limit=1"
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn list_integration_dns_policies(&mut self) -> Result<Vec<StaticDnsRecord>, ApiError> {
+        let site_id = self.ensure_site_id().await?.to_string();
+        let policies: Vec<IntegrationDnsPolicy> = self
+            .paginate_all(&format!(
+                "/proxy/network/integration/v1/sites/{site_id}/dns/policies"
+            ))
+            .await?;
+        Ok(policies
+            .iter()
+            .filter_map(IntegrationDnsPolicy::to_static_record)
+            .collect())
+    }
+
+    async fn list_legacy_static_dns(&self) -> Result<Vec<StaticDnsRecord>, ApiError> {
+        let records: Vec<LegacyStaticDns> = self
+            .send_json(
+                reqwest::Method::GET,
+                "/proxy/network/v2/api/site/default/static-dns",
+                None,
+            )
+            .await?;
+        Ok(records
+            .iter()
+            .filter_map(LegacyStaticDns::to_static_record)
+            .collect())
+    }
+
+    pub async fn list_static_dns(&mut self) -> Result<Vec<StaticDnsRecord>, ApiError> {
+        match self.ensure_dns_api().await? {
+            DnsApiKind::Integration => self.list_integration_dns_policies().await,
+            DnsApiKind::LegacyV2 => self.list_legacy_static_dns().await,
+        }
+    }
+
+    pub async fn get_static_dns(&mut self, identifier: &str) -> Result<StaticDnsRecord, ApiError> {
+        let records = self.list_static_dns().await?;
+        resolve_static_dns(&records, identifier).cloned()
+    }
+
+    pub async fn create_static_dns(
+        &mut self,
+        write: &StaticDnsWrite,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        match self.ensure_dns_api().await? {
+            DnsApiKind::Integration => self.create_integration_dns(write).await,
+            DnsApiKind::LegacyV2 => self.create_legacy_static_dns(write).await,
+        }
+    }
+
+    pub async fn update_static_dns(
+        &mut self,
+        identifier: &str,
+        write: &StaticDnsWrite,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        let existing = self.get_static_dns(identifier).await?;
+        match self.dns_api {
+            Some(DnsApiKind::Integration) => self.update_integration_dns(&existing.id, write).await,
+            Some(DnsApiKind::LegacyV2) => {
+                // The v2 API has no PUT. Replacing the record is the documented
+                // update path; if create fails after delete, the original is gone.
+                self.delete_legacy_static_dns(&existing.id).await?;
+                self.create_legacy_static_dns(write).await
+            }
+            None => unreachable!("get_static_dns selects an API"),
+        }
+    }
+
+    pub async fn delete_static_dns(
+        &mut self,
+        identifier: &str,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        let existing = self.get_static_dns(identifier).await?;
+        match self.dns_api {
+            Some(DnsApiKind::Integration) => {
+                self.delete_integration_dns(&existing.id).await?;
+            }
+            Some(DnsApiKind::LegacyV2) => {
+                self.delete_legacy_static_dns(&existing.id).await?;
+            }
+            None => unreachable!("get_static_dns selects an API"),
+        }
+        Ok(existing)
+    }
+
+    async fn create_integration_dns(
+        &mut self,
+        write: &StaticDnsWrite,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        let site_id = self.ensure_site_id().await?.to_string();
+        let body = write.integration_body().map_err(ApiError::Other)?;
+        let created: IntegrationDnsPolicy = self
+            .send_json(
+                reqwest::Method::POST,
+                &format!("/proxy/network/integration/v1/sites/{site_id}/dns/policies"),
+                Some(&body),
+            )
+            .await?;
+        created.to_static_record().ok_or_else(|| {
+            ApiError::Other("Controller created a DNS policy that is not a static record".into())
+        })
+    }
+
+    async fn update_integration_dns(
+        &mut self,
+        id: &str,
+        write: &StaticDnsWrite,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        let site_id = self.ensure_site_id().await?.to_string();
+        let body = write.integration_body().map_err(ApiError::Other)?;
+        let updated: IntegrationDnsPolicy = self
+            .send_json(
+                reqwest::Method::PUT,
+                &format!("/proxy/network/integration/v1/sites/{site_id}/dns/policies/{id}"),
+                Some(&body),
+            )
+            .await?;
+        updated.to_static_record().ok_or_else(|| {
+            ApiError::Other("Controller updated a DNS policy that is not a static record".into())
+        })
+    }
+
+    async fn delete_integration_dns(&mut self, id: &str) -> Result<(), ApiError> {
+        let site_id = self.ensure_site_id().await?.to_string();
+        self.send_empty(
+            reqwest::Method::DELETE,
+            &format!("/proxy/network/integration/v1/sites/{site_id}/dns/policies/{id}"),
+            None,
+        )
+        .await
+    }
+
+    async fn create_legacy_static_dns(
+        &self,
+        write: &StaticDnsWrite,
+    ) -> Result<StaticDnsRecord, ApiError> {
+        let body = write.legacy_body().map_err(ApiError::Other)?;
+        let created: LegacyStaticDns = self
+            .send_json(
+                reqwest::Method::POST,
+                "/proxy/network/v2/api/site/default/static-dns",
+                Some(&body),
+            )
+            .await?;
+        created.to_static_record().ok_or_else(|| {
+            ApiError::Other("Controller created an unreadable static DNS record".into())
+        })
+    }
+
+    async fn delete_legacy_static_dns(&self, id: &str) -> Result<(), ApiError> {
+        self.send_empty(
+            reqwest::Method::DELETE,
+            &format!("/proxy/network/v2/api/site/default/static-dns/{id}"),
+            None,
+        )
+        .await
     }
 
     pub async fn list_wan_interfaces(&self) -> Result<Vec<NamedWanInterface>, ApiError> {

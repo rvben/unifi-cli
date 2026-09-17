@@ -93,11 +93,26 @@ fn schema_types_flags_as_boolean_and_numeric_args_as_integer() {
         // Flags carry no value, so clap parses them with a SetTrue action.
         let is_flag = matches!(
             name,
-            "--wired" | "--wireless" | "--off" | "--live" | "--full" | "--yes"
+            "--wired"
+                | "--wireless"
+                | "--off"
+                | "--live"
+                | "--full"
+                | "--yes"
+                | "--disabled"
+                | "--enabled"
         );
         let is_numeric = matches!(
             name,
-            "--limit" | "--offset" | "--interval" | "--watch" | "port"
+            "--limit"
+                | "--offset"
+                | "--interval"
+                | "--watch"
+                | "port"
+                | "--ttl"
+                | "--priority"
+                | "--weight"
+                | "--port"
         );
         if is_flag {
             saw_flag = true;

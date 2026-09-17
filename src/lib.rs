@@ -12,8 +12,9 @@ pub mod tui;
 /// which invocations need `--yes` before it runs them, `main` gates these
 /// commands on it, and the contract tests drive every entry to prove the gate
 /// is really there. A mutating command is not automatically on this list;
-/// `devices locate` only blinks an LED, and `clients set-fixed-ip` and
-/// `protect rtsps create` add configuration rather than taking something away.
+/// `devices locate` only blinks an LED, and `clients set-fixed-ip`,
+/// `protect rtsps create`, `dns create` and `dns update` add or change
+/// configuration rather than taking something away.
 pub const CONFIRMATION_GATED_COMMANDS: &[&str] = &[
     "clients block",
     "clients unblock",
@@ -22,4 +23,5 @@ pub const CONFIRMATION_GATED_COMMANDS: &[&str] = &[
     "devices upgrade",
     "ports cycle",
     "protect rtsps delete",
+    "dns delete",
 ];

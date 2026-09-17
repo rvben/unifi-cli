@@ -181,6 +181,45 @@ fn ports_list_rejects_unknown_field() {
 }
 
 #[test]
+fn dns_list_rejects_unknown_field() {
+    let out = unifi()
+        .args(["dns", "list", "--fields", "bogus"])
+        .output()
+        .expect("failed to run binary");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected usage exit code 2, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        error_envelope(&out.stderr)["error"]["kind"].as_str(),
+        Some("config_error")
+    );
+}
+
+#[test]
+fn dns_create_rejects_ns_records() {
+    let out = unifi()
+        .args([
+            "dns",
+            "create",
+            "example.com",
+            "ns1.example.com",
+            "--type",
+            "NS",
+        ])
+        .output()
+        .expect("failed to run binary");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        error_envelope(&out.stderr)["error"]["kind"].as_str(),
+        Some("config_error")
+    );
+}
+
+#[test]
 fn devices_ports_and_ports_list_are_the_same_command() {
     // Both spellings must accept a MAC and reach the network layer, not fail
     // at argument parsing. Pointed at an unroutable host, so no controller.
@@ -269,13 +308,52 @@ fn schema_advertises_networks_list() {
     );
 }
 
+#[test]
+fn schema_advertises_dns_commands() {
+    let schema = schema_json();
+    let names: Vec<&str> = schema["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    for command in [
+        "dns list",
+        "dns show",
+        "dns create",
+        "dns update",
+        "dns delete",
+    ] {
+        assert!(
+            names.contains(&command),
+            "schema must advertise `{command}`, found: {names:?}"
+        );
+    }
+    assert_eq!(
+        schema_command(&schema, "dns delete")["confirmation_bypass_arg"],
+        "--yes"
+    );
+    assert!(
+        schema_command(&schema, "dns create")
+            .get("confirmation_bypass_arg")
+            .is_none()
+    );
+    assert!(
+        schema_command(&schema, "dns update")
+            .get("confirmation_bypass_arg")
+            .is_none()
+    );
+    assert_eq!(schema_command(&schema, "dns create")["mutating"], true);
+    assert_eq!(schema_command(&schema, "dns update")["mutating"], true);
+}
+
 /// The schema is the contract. `--fields` must accept exactly what it publishes,
 /// otherwise an agent reading `output_fields` gets a usage error for a field the
 /// CLI itself advertised.
 #[test]
 fn every_published_output_field_is_accepted_by_fields() {
     let schema = schema_json();
-    for command in ["clients list", "devices list", "events list"] {
+    for command in ["clients list", "devices list", "events list", "dns list"] {
         let fields: Vec<String> = schema_command(&schema, command)["output_fields"]
             .as_array()
             .unwrap_or_else(|| panic!("{command} publishes output_fields"))
@@ -308,6 +386,7 @@ const GATED_INVOCATIONS: &[(&str, &[&str])] = &[
     ("devices upgrade", &["aa:bb:cc:dd:ee:ff"]),
     ("ports cycle", &["aa:bb:cc:dd:ee:ff", "5"]),
     ("protect rtsps delete", &["front-door"]),
+    ("dns delete", &["nas.example.com"]),
 ];
 
 /// Every command the schema publishes as `confirmation_required` must refuse to
@@ -364,6 +443,8 @@ fn ungated_mutating_commands_do_not_ask_for_confirmation() {
     for args in [
         vec!["devices", "locate", "aa:bb:cc:dd:ee:ff"],
         vec!["clients", "set-fixed-ip", "aa:bb:cc:dd:ee:ff", "192.0.2.10"],
+        vec!["dns", "create", "nas.example.com", "192.0.2.10"],
+        vec!["dns", "update", "nas.example.com", "--value", "192.0.2.11"],
     ] {
         let out = unifi()
             .args(&args)

@@ -196,6 +196,56 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
     m.insert("port-forwards list", f(port_forward_fields, false, None));
     m.insert("port-forwards show", f(port_forward_fields, false, None));
     m.insert(
+        "dns list",
+        f(
+            fields::DNS_LIST,
+            false,
+            Some(
+                "Static DNS records only. Network 10.1+ uses Integration DNS policies; \
+                 older controllers fall back to the v2 static-dns API. Domain-forward \
+                 policies are omitted.",
+            ),
+        ),
+    );
+    m.insert("dns show", f(fields::DNS_LIST, false, None));
+    let dns_mutation = &[
+        ("status", "string"),
+        ("action", "string"),
+        ("id", "string"),
+        ("name", "string"),
+        ("type", "string"),
+        ("value", "string"),
+        ("ttl", "integer"),
+        ("enabled", "boolean"),
+        ("priority", "integer"),
+        ("weight", "integer"),
+        ("port", "integer"),
+    ];
+    m.insert(
+        "dns create",
+        f(
+            dns_mutation,
+            true,
+            Some(
+                "Creates A, AAAA, CNAME, MX, TXT, or SRV. NS cannot be created. \
+                 TTL defaults to 14400 for A, AAAA, and CNAME.",
+            ),
+        ),
+    );
+    m.insert(
+        "dns update",
+        f(
+            dns_mutation,
+            true,
+            Some(
+                "Replaces the named fields on an existing record. On controllers \
+                 that only serve v2 static-dns, this deletes the record and creates \
+                 a replacement because that API has no PUT.",
+            ),
+        ),
+    );
+    m.insert("dns delete", f(dns_mutation, true, None));
+    m.insert(
         "ports show",
         f(
             &[
@@ -519,7 +569,9 @@ fn infer_arg_type(arg: &clap::Arg) -> &'static str {
     }
     // Known integer args by id
     match id {
-        "limit" | "offset" | "interval" | "port" | "watch" => "integer",
+        "limit" | "offset" | "interval" | "port" | "watch" | "ttl" | "priority" | "weight" => {
+            "integer"
+        }
         _ => "string",
     }
 }
@@ -599,9 +651,9 @@ fn walk_commands(
                 entry["mutating"] = meta.mutating.into();
                 // Published only for mutating commands, where the answer is
                 // the difference between a run that works unattended and one
-                // that exits 2. The three mutating commands that do not ask
-                // say so explicitly rather than leaving an agent to guess
-                // from the absence of a key.
+                // that exits 2. Mutating commands that do not ask say so
+                // explicitly rather than leaving an agent to guess from the
+                // absence of a key.
                 if meta.mutating {
                     entry["confirmation_required"] = unifi_cli::CONFIRMATION_GATED_COMMANDS
                         .contains(&path.as_str())
@@ -725,7 +777,11 @@ fn enrich_v0_3(schema: &mut serde_json::Value) {
                 "read_only"
             } else if matches!(
                 name.as_str(),
-                "clients kick" | "ports cycle" | "protect rtsps create"
+                "clients kick"
+                    | "ports cycle"
+                    | "protect rtsps create"
+                    | "dns create"
+                    | "dns delete"
             ) {
                 "non_idempotent"
             } else {

@@ -116,16 +116,16 @@ to trust the controller and saves `accept_invalid_certs = true` for you.
 ### Destructive commands
 
 `clients block`, `clients unblock`, `clients kick`, `devices restart`,
-`devices upgrade`, `ports cycle` and `protect rtsps delete` all ask before they
-act. On a terminal you get a yes/no question naming the target; declining exits
-2 with `kind: confirmation_required` and sends nothing. When stdin is not a
-terminal there is nobody to ask, so they refuse with the same error unless you
-pass `--yes`, which skips the question everywhere.
+`devices upgrade`, `ports cycle`, `protect rtsps delete` and `dns delete` all
+ask before they act. On a terminal you get a yes/no question naming the target;
+declining exits 2 with `kind: confirmation_required` and sends nothing. When
+stdin is not a terminal there is nobody to ask, so they refuse with the same
+error unless you pass `--yes`, which skips the question everywhere.
 
 `unifi schema` marks exactly these commands `confirmation_required: true`, so a
 caller can tell them apart from mutating commands that act immediately
-(`devices locate`, `clients set-fixed-ip`, `protect rtsps create`) without
-hardcoding the list.
+(`devices locate`, `clients set-fixed-ip`, `protect rtsps create`, `dns create`,
+`dns update`) without hardcoding the list.
 
 ## TUI dashboard
 
@@ -261,6 +261,28 @@ including `device_mac` and `device_name`.
 unifi port-forwards list
 unifi port-forwards show plex
 ```
+
+### DNS records
+
+Static DNS records the controller answers locally. Network 10.1+ uses the
+official DNS-policies Integration API; older controllers fall back to the v2
+`static-dns` API. Domain-forward policies are not listed.
+
+```bash
+unifi dns list
+unifi dns list --type A
+unifi dns show nas.example.com
+unifi dns create nas.example.com 192.0.2.10
+unifi dns create printer.example.com 2001:db8::10 --type AAAA
+unifi dns create media.example.com nas.example.com --type CNAME
+unifi dns update nas.example.com --value 192.0.2.11
+unifi dns delete nas.example.com
+```
+
+`dns delete` is destructive and follows the same confirmation rules as
+`clients block`. Create and update act immediately. Update on a controller that
+only has the v2 API deletes the existing record and creates a replacement,
+because that API has no PUT.
 
 ### Events
 

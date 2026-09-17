@@ -5108,4 +5108,259 @@ mod schema_contract {
             "a signal to noise ratio below the noise floor is a real reading: {cellular}"
         );
     }
+
+    fn integration_dns_records() -> serde_json::Value {
+        serde_json::json!({
+            "offset": 0, "limit": 200, "count": 3, "totalCount": 3,
+            "data": [
+                {
+                    "type": "A_RECORD",
+                    "id": "11111111-2222-3333-4444-555555555555",
+                    "enabled": true,
+                    "domain": "nas.example.com",
+                    "ipv4Address": "192.0.2.10",
+                    "ttlSeconds": 14400
+                },
+                {
+                    "type": "CNAME_RECORD",
+                    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "enabled": true,
+                    "domain": "media.example.com",
+                    "targetDomain": "nas.example.com",
+                    "ttlSeconds": 14400
+                },
+                {
+                    "type": "FORWARD_DOMAIN",
+                    "id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                    "enabled": true,
+                    "domain": "corp.example.com",
+                    "ipAddress": "192.0.2.53"
+                }
+            ]
+        })
+    }
+
+    async fn serving_integration_dns() -> MockServer {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(integration_dns_records()))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn dns_list_json_matches_schema() {
+        let server = serving_integration_dns().await;
+        let body = run_json(&server, &["dns", "list"]).await;
+        assert_schema_matches("dns list", &body);
+        let items = body["items"].as_array().expect("paginated items");
+        assert_eq!(
+            items.len(),
+            2,
+            "FORWARD_DOMAIN policies are not static records: {body}"
+        );
+        assert_eq!(items[0]["name"], "nas.example.com");
+        assert_eq!(items[0]["type"], "A");
+        assert_eq!(items[0]["value"], "192.0.2.10");
+        assert_eq!(items[1]["type"], "CNAME");
+    }
+
+    #[tokio::test]
+    async fn dns_show_json_matches_schema() {
+        let server = serving_integration_dns().await;
+        let body = run_json(&server, &["dns", "show", "nas.example.com"]).await;
+        assert_schema_matches("dns show", &body);
+        assert_eq!(body["id"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(body["value"], "192.0.2.10");
+    }
+
+    #[tokio::test]
+    async fn dns_create_posts_an_a_record_to_the_integration_api() {
+        let server = serving_integration_dns().await;
+        Mock::given(method("POST"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .and(body_json(serde_json::json!({
+                "type": "A_RECORD",
+                "enabled": true,
+                "domain": "printer.example.com",
+                "ipv4Address": "192.0.2.20",
+                "ttlSeconds": 14400
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "A_RECORD",
+                "id": "99999999-9999-9999-9999-999999999999",
+                "enabled": true,
+                "domain": "printer.example.com",
+                "ipv4Address": "192.0.2.20",
+                "ttlSeconds": 14400
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &["dns", "create", "printer.example.com", "192.0.2.20"],
+        )
+        .await;
+        assert_schema_matches("dns create", &body);
+        assert_eq!(body["action"], "create");
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["name"], "printer.example.com");
+        assert_eq!(body["value"], "192.0.2.20");
+    }
+
+    #[tokio::test]
+    async fn dns_update_puts_the_integration_policy() {
+        let server = serving_integration_dns().await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/proxy/network/integration/v1/sites/test-site-uuid/dns/policies/11111111-2222-3333-4444-555555555555",
+            ))
+            .and(body_json(serde_json::json!({
+                "type": "A_RECORD",
+                "enabled": true,
+                "domain": "nas.example.com",
+                "ipv4Address": "192.0.2.11",
+                "ttlSeconds": 14400
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "A_RECORD",
+                "id": "11111111-2222-3333-4444-555555555555",
+                "enabled": true,
+                "domain": "nas.example.com",
+                "ipv4Address": "192.0.2.11",
+                "ttlSeconds": 14400
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &["dns", "update", "nas.example.com", "--value", "192.0.2.11"],
+        )
+        .await;
+        assert_schema_matches("dns update", &body);
+        assert_eq!(body["action"], "update");
+        assert_eq!(body["value"], "192.0.2.11");
+    }
+
+    #[tokio::test]
+    async fn dns_delete_removes_the_integration_policy() {
+        let server = serving_integration_dns().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/proxy/network/integration/v1/sites/test-site-uuid/dns/policies/11111111-2222-3333-4444-555555555555",
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(&server, &["--yes", "dns", "delete", "nas.example.com"]).await;
+        assert_schema_matches("dns delete", &body);
+        assert_eq!(body["action"], "delete");
+        assert_eq!(body["name"], "nas.example.com");
+    }
+
+    #[tokio::test]
+    async fn dns_list_falls_back_to_v2_static_dns_when_policies_are_absent() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/v2/api/site/default/static-dns"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+                    "enabled": true,
+                    "key": "gateway.example.com",
+                    "record_type": "A",
+                    "value": "192.0.2.1",
+                    "ttl": 300
+                }
+            ])))
+            .mount(&server)
+            .await;
+
+        let body = run_json(&server, &["dns", "list"]).await;
+        assert_eq!(body["items"][0]["name"], "gateway.example.com");
+        assert_eq!(body["items"][0]["type"], "A");
+        assert_eq!(body["items"][0]["value"], "192.0.2.1");
+        assert_eq!(body["items"][0]["ttl"], 300);
+        assert_schema_matches("dns list", &body);
+    }
+
+    #[tokio::test]
+    async fn dns_show_reports_conflict_when_a_name_matches_two_records() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 2, "totalCount": 2,
+                "data": [
+                    {
+                        "type": "A_RECORD",
+                        "id": "11111111-2222-3333-4444-555555555555",
+                        "enabled": true,
+                        "domain": "dup.example.com",
+                        "ipv4Address": "192.0.2.10",
+                        "ttlSeconds": 14400
+                    },
+                    {
+                        "type": "A_RECORD",
+                        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "enabled": true,
+                        "domain": "dup.example.com",
+                        "ipv4Address": "192.0.2.11",
+                        "ttlSeconds": 14400
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let uri = server.uri();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                uri.as_str(),
+                "--api-key",
+                "test-key",
+                "--output",
+                "json",
+                "dns",
+                "show",
+                "dup.example.com",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert_eq!(
+            output.status.code(),
+            Some(6),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let last = stderr.trim_end().lines().last().unwrap_or("");
+        let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
+        assert_eq!(envelope["error"]["kind"], "conflict");
+    }
 }

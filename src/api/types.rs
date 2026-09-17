@@ -26,6 +26,470 @@ pub struct LegacyMeta {
     pub msg: Option<String>,
 }
 
+/// UniFi's documented default TTL for A, AAAA, and CNAME policies.
+pub const DEFAULT_DNS_TTL_SECONDS: u32 = 14400;
+
+/// A static DNS record type UniFi can store.
+///
+/// The Integration API names these `A_RECORD`, `AAAA_RECORD`, and so on. The
+/// v2 `static-dns` API uses the usual DNS tokens (`A`, `AAAA`, ...). Commands
+/// accept either spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsRecordType {
+    A,
+    Aaaa,
+    Cname,
+    Mx,
+    Txt,
+    Srv,
+    Ns,
+}
+
+impl DnsRecordType {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let upper = raw.trim().to_ascii_uppercase();
+        let token = upper.strip_suffix("_RECORD").unwrap_or(&upper);
+        match token {
+            "A" => Ok(Self::A),
+            "AAAA" => Ok(Self::Aaaa),
+            "CNAME" => Ok(Self::Cname),
+            "MX" => Ok(Self::Mx),
+            "TXT" => Ok(Self::Txt),
+            "SRV" => Ok(Self::Srv),
+            "NS" => Ok(Self::Ns),
+            _ => Err(format!(
+                "unknown DNS record type '{raw}'. Valid types: A, AAAA, CNAME, MX, TXT, SRV, NS"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+            Self::Cname => "CNAME",
+            Self::Mx => "MX",
+            Self::Txt => "TXT",
+            Self::Srv => "SRV",
+            Self::Ns => "NS",
+        }
+    }
+
+    pub fn integration_name(self) -> Option<&'static str> {
+        match self {
+            Self::A => Some("A_RECORD"),
+            Self::Aaaa => Some("AAAA_RECORD"),
+            Self::Cname => Some("CNAME_RECORD"),
+            Self::Mx => Some("MX_RECORD"),
+            Self::Txt => Some("TXT_RECORD"),
+            Self::Srv => Some("SRV_RECORD"),
+            Self::Ns => None,
+        }
+    }
+
+    pub fn accepts_ttl(self) -> bool {
+        matches!(self, Self::A | Self::Aaaa | Self::Cname | Self::Ns)
+    }
+
+    pub fn can_create(self) -> bool {
+        !matches!(self, Self::Ns)
+    }
+}
+
+/// A static DNS record after both controller APIs have been normalized.
+///
+/// Commands emit this shape. The Integration DNS-policies API and the v2
+/// `static-dns` API disagree on field names, so neither raw object is ever
+/// serialized to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticDnsRecord {
+    pub id: String,
+    pub name: String,
+    pub record_type: DnsRecordType,
+    pub value: String,
+    pub ttl: Option<u32>,
+    pub enabled: bool,
+    pub priority: Option<u32>,
+    pub weight: Option<u32>,
+    pub port: Option<u32>,
+}
+
+impl StaticDnsRecord {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "type": self.record_type.as_str(),
+            "value": self.value,
+            "ttl": self.ttl,
+            "enabled": self.enabled,
+            "priority": self.priority,
+            "weight": self.weight,
+            "port": self.port,
+        })
+    }
+}
+
+/// Fields for creating a record, or the merged result of an update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticDnsWrite {
+    pub name: String,
+    pub record_type: DnsRecordType,
+    pub value: String,
+    pub ttl: Option<u32>,
+    pub enabled: bool,
+    pub priority: Option<u32>,
+    pub weight: Option<u32>,
+    pub port: Option<u32>,
+}
+
+impl StaticDnsWrite {
+    /// Start an update from what the controller holds.
+    ///
+    /// The v2 `static-dns` API stores a TTL on every record, including MX and
+    /// TXT, while `validate` rejects a TTL on those types. Copying it across
+    /// would make an update that never mentioned `--ttl` fail, so it is only
+    /// carried for types that accept one.
+    pub fn from_record(record: &StaticDnsRecord) -> Self {
+        Self {
+            name: record.name.clone(),
+            record_type: record.record_type,
+            value: record.value.clone(),
+            ttl: record.ttl.filter(|_| record.record_type.accepts_ttl()),
+            enabled: record.enabled,
+            priority: record.priority,
+            weight: record.weight,
+            port: record.port,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("DNS record name must not be empty".into());
+        }
+        if !self.record_type.can_create() {
+            return Err(
+                "NS records cannot be created or updated; delete an existing NS record with `dns delete`"
+                    .into(),
+            );
+        }
+        match self.record_type {
+            DnsRecordType::A => {
+                if !is_ipv4(&self.value) {
+                    return Err(format!(
+                        "A record value must be an IPv4 address, got '{}'",
+                        self.value
+                    ));
+                }
+            }
+            DnsRecordType::Aaaa => {
+                if !is_ipv6(&self.value) {
+                    return Err(format!(
+                        "AAAA record value must be an IPv6 address, got '{}'",
+                        self.value
+                    ));
+                }
+            }
+            DnsRecordType::Mx => {
+                if self.priority.is_none() {
+                    return Err("MX records require --priority".into());
+                }
+            }
+            DnsRecordType::Srv => {
+                split_srv_owner(&self.name)?;
+                if self.priority.is_none() || self.weight.is_none() || self.port.is_none() {
+                    return Err("SRV records require --priority, --weight, and --port".into());
+                }
+            }
+            DnsRecordType::Cname | DnsRecordType::Txt | DnsRecordType::Ns => {}
+        }
+        if self.priority.is_some()
+            && !matches!(self.record_type, DnsRecordType::Mx | DnsRecordType::Srv)
+        {
+            return Err("--priority is only valid for MX and SRV records".into());
+        }
+        if (self.weight.is_some() || self.port.is_some()) && self.record_type != DnsRecordType::Srv
+        {
+            return Err("--weight and --port are only valid for SRV records".into());
+        }
+        if self.ttl.is_some() && !self.record_type.accepts_ttl() {
+            return Err(format!(
+                "--ttl is not accepted for {} records on UniFi Network 10.1+",
+                self.record_type.as_str()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn integration_body(&self) -> Result<serde_json::Value, String> {
+        self.validate()?;
+        let type_name = self
+            .record_type
+            .integration_name()
+            .ok_or_else(|| "NS records are not supported by the Integration API".to_string())?;
+        let mut body = serde_json::json!({
+            "type": type_name,
+            "enabled": self.enabled,
+        });
+        let value = strip_trailing_dot(&self.value);
+        match self.record_type {
+            DnsRecordType::A => {
+                body["domain"] = self.name.clone().into();
+                body["ipv4Address"] = value.into();
+                body["ttlSeconds"] = self.ttl.unwrap_or(DEFAULT_DNS_TTL_SECONDS).into();
+            }
+            DnsRecordType::Aaaa => {
+                body["domain"] = self.name.clone().into();
+                body["ipv6Address"] = value.into();
+                body["ttlSeconds"] = self.ttl.unwrap_or(DEFAULT_DNS_TTL_SECONDS).into();
+            }
+            DnsRecordType::Cname => {
+                body["domain"] = self.name.clone().into();
+                body["targetDomain"] = value.into();
+                body["ttlSeconds"] = self.ttl.unwrap_or(DEFAULT_DNS_TTL_SECONDS).into();
+            }
+            DnsRecordType::Mx => {
+                body["domain"] = self.name.clone().into();
+                body["mailServerDomain"] = value.into();
+                body["priority"] = self.priority.expect("validated").into();
+            }
+            DnsRecordType::Txt => {
+                body["domain"] = self.name.clone().into();
+                body["text"] = self.value.clone().into();
+            }
+            DnsRecordType::Srv => {
+                let (service, protocol, domain) = split_srv_owner(&self.name)?;
+                body["service"] = service.into();
+                body["protocol"] = protocol.into();
+                body["domain"] = domain.into();
+                body["serverDomain"] = value.into();
+                body["priority"] = self.priority.expect("validated").into();
+                body["weight"] = self.weight.expect("validated").into();
+                body["port"] = self.port.expect("validated").into();
+            }
+            DnsRecordType::Ns => unreachable!("validate rejects NS"),
+        }
+        Ok(body)
+    }
+
+    pub fn legacy_body(&self) -> Result<serde_json::Value, String> {
+        self.validate()?;
+        // A trailing dot on a TXT value is data, not a root label.
+        let value = if self.record_type == DnsRecordType::Txt {
+            self.value.clone()
+        } else {
+            strip_trailing_dot(&self.value)
+        };
+        let mut body = serde_json::json!({
+            "enabled": self.enabled,
+            "key": self.name,
+            "record_type": self.record_type.as_str(),
+            "value": value,
+        });
+        if self.record_type.accepts_ttl() {
+            body["ttl"] = self.ttl.unwrap_or(DEFAULT_DNS_TTL_SECONDS).into();
+        }
+        if let Some(priority) = self.priority {
+            body["priority"] = priority.into();
+        }
+        if let Some(weight) = self.weight {
+            body["weight"] = weight.into();
+        }
+        if let Some(port) = self.port {
+            body["port"] = port.into();
+        }
+        Ok(body)
+    }
+}
+
+/// A DNS policy as the Integration API returns it.
+///
+/// The schema is polymorphic on `type`. Optional fields cover every static
+/// record variant; domain-forward policies are dropped before they become a
+/// `StaticDnsRecord`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationDnsPolicy {
+    #[serde(rename = "type")]
+    pub policy_type: String,
+    pub id: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    pub domain: Option<String>,
+    pub ipv4_address: Option<String>,
+    pub ipv6_address: Option<String>,
+    pub target_domain: Option<String>,
+    pub mail_server_domain: Option<String>,
+    pub text: Option<String>,
+    pub server_domain: Option<String>,
+    pub ttl_seconds: Option<u32>,
+    pub priority: Option<u32>,
+    pub weight: Option<u32>,
+    pub port: Option<u32>,
+    pub service: Option<String>,
+    pub protocol: Option<String>,
+}
+
+impl IntegrationDnsPolicy {
+    pub fn to_static_record(&self) -> Option<StaticDnsRecord> {
+        if self.policy_type.eq_ignore_ascii_case("FORWARD_DOMAIN") {
+            return None;
+        }
+        let record_type = DnsRecordType::parse(&self.policy_type).ok()?;
+        let id = self.id.clone().unwrap_or_default();
+        let name = match record_type {
+            DnsRecordType::Srv => srv_owner_from_parts(
+                self.service.as_deref(),
+                self.protocol.as_deref(),
+                self.domain.as_deref(),
+            ),
+            _ => self.domain.clone().unwrap_or_default(),
+        };
+        let value = match record_type {
+            DnsRecordType::A => self.ipv4_address.clone(),
+            DnsRecordType::Aaaa => self.ipv6_address.clone(),
+            DnsRecordType::Cname => self.target_domain.clone(),
+            DnsRecordType::Mx => self.mail_server_domain.clone(),
+            DnsRecordType::Txt => self.text.clone(),
+            DnsRecordType::Srv => self.server_domain.clone(),
+            DnsRecordType::Ns => None,
+        }
+        .unwrap_or_default();
+        Some(StaticDnsRecord {
+            id,
+            name,
+            record_type,
+            value,
+            ttl: self.ttl_seconds.filter(|ttl| *ttl > 0),
+            enabled: self.enabled,
+            priority: self.priority,
+            weight: self.weight,
+            port: self.port,
+        })
+    }
+}
+
+/// A record from `/proxy/network/v2/api/site/{site}/static-dns`.
+#[derive(Debug, Deserialize)]
+pub struct LegacyStaticDns {
+    #[serde(rename = "_id")]
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    pub key: Option<String>,
+    pub record_type: Option<String>,
+    pub value: Option<String>,
+    pub ttl: Option<u32>,
+    pub port: Option<u32>,
+    pub priority: Option<u32>,
+    pub weight: Option<u32>,
+}
+
+impl LegacyStaticDns {
+    pub fn to_static_record(&self) -> Option<StaticDnsRecord> {
+        let record_type = DnsRecordType::parse(self.record_type.as_deref().unwrap_or("")).ok()?;
+        Some(StaticDnsRecord {
+            id: self.id.clone(),
+            name: self.key.clone().unwrap_or_default(),
+            record_type,
+            value: self.value.clone().unwrap_or_default(),
+            ttl: self.ttl.filter(|ttl| *ttl > 0),
+            enabled: self.enabled,
+            priority: self.priority,
+            weight: self.weight,
+            port: self.port,
+        })
+    }
+}
+
+/// Find a record by exact id, or by case-insensitive exact name.
+///
+/// A name that matches more than one record is a conflict rather than a guess:
+/// the caller may be about to delete it.
+pub fn resolve_static_dns<'a>(
+    records: &'a [StaticDnsRecord],
+    identifier: &str,
+) -> Result<&'a StaticDnsRecord, ApiError> {
+    if let Some(by_id) = records.iter().find(|record| record.id == identifier) {
+        return Ok(by_id);
+    }
+    let needle = identifier.to_ascii_lowercase();
+    let mut matches: Vec<&StaticDnsRecord> = records
+        .iter()
+        .filter(|record| record.name.to_ascii_lowercase() == needle)
+        .collect();
+    match matches.len() {
+        0 => Err(ApiError::NotFound(format!("DNS record '{identifier}'"))),
+        1 => Ok(matches.pop().expect("checked len == 1")),
+        _ => {
+            let ids = matches
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ApiError::Conflict(format!(
+                "'{identifier}' matches {} DNS records: {ids}. Use the id.",
+                matches.len()
+            )))
+        }
+    }
+}
+
+fn is_ipv4(value: &str) -> bool {
+    matches!(
+        value.parse::<std::net::IpAddr>(),
+        Ok(std::net::IpAddr::V4(_))
+    )
+}
+
+fn is_ipv6(value: &str) -> bool {
+    matches!(
+        value.parse::<std::net::IpAddr>(),
+        Ok(std::net::IpAddr::V6(_))
+    )
+}
+
+fn strip_trailing_dot(value: &str) -> String {
+    value.trim_end_matches('.').to_string()
+}
+
+/// Split `_service._protocol.domain` into the parts the Integration API wants.
+pub fn split_srv_owner(name: &str) -> Result<(String, String, String), String> {
+    let parts: Vec<&str> = name.splitn(3, '.').collect();
+    if parts.len() < 3 || parts.iter().any(|part| part.is_empty()) {
+        return Err(format!(
+            "SRV name '{name}' must be _service._protocol.domain, for example _ldap._tcp.example.com"
+        ));
+    }
+    let with_underscore = |label: &str| {
+        if label.starts_with('_') {
+            label.to_string()
+        } else {
+            format!("_{label}")
+        }
+    };
+    Ok((
+        with_underscore(parts[0]),
+        with_underscore(parts[1]),
+        parts[2].to_string(),
+    ))
+}
+
+fn srv_owner_from_parts(
+    service: Option<&str>,
+    protocol: Option<&str>,
+    domain: Option<&str>,
+) -> String {
+    match (service, protocol, domain) {
+        (Some(service), Some(protocol), Some(domain))
+            if !service.is_empty() && !protocol.is_empty() && !domain.is_empty() =>
+        {
+            format!("{service}.{protocol}.{domain}")
+        }
+        _ => domain.unwrap_or_default().to_string(),
+    }
+}
+
 /// A port-forward record from the legacy Network API. This intentionally
 /// allowlists only fields useful for policy audits.
 #[derive(Debug, Deserialize)]
