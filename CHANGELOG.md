@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3](https://github.com/rvben/unifi-cli/compare/v0.4.2...v0.4.3) - 2026-09-17
+
+### Added
+
+- **dns**: manage static DNS records ([149edf3](https://github.com/rvben/unifi-cli/commit/149edf379d1df00e79ea8c2b783c9895e4d7f74e))
+
+### Fixed
+
+- **dns**: stop update from destroying records on v2 controllers ([445be02](https://github.com/rvben/unifi-cli/commit/445be02b5ab59dd04382ac93787afc407b7d4bd9))
+
 ## [0.4.2](https://github.com/rvben/unifi-cli/compare/v0.4.1...v0.4.2) - 2026-08-26
 
 ### Added
