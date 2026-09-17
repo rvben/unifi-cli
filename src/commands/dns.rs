@@ -397,4 +397,38 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("nothing to change"), "{err}");
     }
+
+    #[test]
+    fn create_args_reject_a_port_above_the_16_bit_range() {
+        let err = write_from_create_args(CreateArgs {
+            name: "_ldap._tcp.example.com".into(),
+            value: "dir.example.com".into(),
+            record_type: "SRV".into(),
+            ttl: None,
+            priority: Some(10),
+            weight: Some(20),
+            port: Some(100000),
+            disabled: false,
+        })
+        .unwrap_err();
+        assert!(err.contains("--port"), "{err}");
+        assert!(err.contains("65535"), "{err}");
+    }
+
+    #[test]
+    fn create_args_reject_a_priority_above_the_16_bit_range() {
+        let err = write_from_create_args(CreateArgs {
+            name: "example.com".into(),
+            value: "mail.example.com".into(),
+            record_type: "MX".into(),
+            ttl: None,
+            priority: Some(70000),
+            weight: None,
+            port: None,
+            disabled: false,
+        })
+        .unwrap_err();
+        assert!(err.contains("--priority"), "{err}");
+        assert!(err.contains("65535"), "{err}");
+    }
 }

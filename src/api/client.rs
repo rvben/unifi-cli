@@ -637,10 +637,14 @@ impl UnifiClient {
         match self.dns_api {
             Some(DnsApiKind::Integration) => self.update_integration_dns(&existing.id, write).await,
             Some(DnsApiKind::LegacyV2) => {
-                // The v2 API has no PUT. Replacing the record is the documented
-                // update path; if create fails after delete, the original is gone.
-                self.delete_legacy_static_dns(&existing.id).await?;
-                self.create_legacy_static_dns(write).await
+                // The v2 API has no PUT. Deleting the record and recreating it
+                // would lose it outright whenever the create fails, and the
+                // caller asked to edit a record, not to risk it. Deleting is
+                // still available as its own confirmed command.
+                Err(ApiError::Unsupported {
+                    endpoint: "/proxy/network/v2/api/site/default/static-dns".into(),
+                    reason: UnsupportedReason::NoUpdateEndpoint,
+                })
             }
             None => unreachable!("get_static_dns selects an API"),
         }

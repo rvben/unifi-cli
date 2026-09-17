@@ -280,9 +280,12 @@ unifi dns delete nas.example.com
 ```
 
 `dns delete` is destructive and follows the same confirmation rules as
-`clients block`. Create and update act immediately. Update on a controller that
-only has the v2 API deletes the existing record and creates a replacement,
-because that API has no PUT.
+`clients block`. Create and update act immediately.
+
+The v2 API has no PUT, so `dns update` is refused on a controller that falls
+back to it. Editing a record there means `dns delete` followed by
+`dns create`, which keeps the delete explicit and confirmed instead of hiding
+it inside an update that cannot undo it when the create fails.
 
 ### Events
 

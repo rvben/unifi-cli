@@ -173,6 +173,21 @@ impl StaticDnsWrite {
                     .into(),
             );
         }
+        // Priority, weight and port are 16-bit in every record type that carries
+        // them. They are held as u32 because that is what the controller sends,
+        // so an out-of-range value reaches validation intact and is rejected
+        // here rather than by the controller after the write has begun.
+        for (flag, value) in [
+            ("--priority", self.priority),
+            ("--weight", self.weight),
+            ("--port", self.port),
+        ] {
+            if let Some(value) = value
+                && value > u32::from(u16::MAX)
+            {
+                return Err(format!("{flag} must be between 0 and 65535, got {value}"));
+            }
+        }
         match self.record_type {
             DnsRecordType::A => {
                 if !is_ipv4(&self.value) {
@@ -360,7 +375,7 @@ impl IntegrationDnsPolicy {
             name,
             record_type,
             value,
-            ttl: self.ttl_seconds.filter(|ttl| *ttl > 0),
+            ttl: self.ttl_seconds,
             enabled: self.enabled,
             priority: self.priority,
             weight: self.weight,
@@ -393,7 +408,7 @@ impl LegacyStaticDns {
             name: self.key.clone().unwrap_or_default(),
             record_type,
             value: self.value.clone().unwrap_or_default(),
-            ttl: self.ttl.filter(|ttl| *ttl > 0),
+            ttl: self.ttl,
             enabled: self.enabled,
             priority: self.priority,
             weight: self.weight,
@@ -1154,6 +1169,10 @@ pub enum UnsupportedReason {
     /// firmware that has dropped an endpoint is indistinguishable from one
     /// that never had it, and neither is worth retrying.
     Removed,
+    /// The collection is served and readable, but has no endpoint that edits a
+    /// record in place. Editing it would mean deleting the record and creating
+    /// a replacement, which destroys the original whenever the create fails.
+    NoUpdateEndpoint,
 }
 
 /// Scan a single error string for TLS certificate failure markers. rustls
@@ -1247,6 +1266,13 @@ impl fmt::Display for ApiError {
                         f,
                         "This controller does not serve {endpoint}: it rejected the endpoint \
                          itself, so no parameter or identifier would change the result"
+                    )?,
+                    UnsupportedReason::NoUpdateEndpoint => write!(
+                        f,
+                        "This controller serves {endpoint} but cannot edit a record in place. \
+                         Run `dns delete` and then `dns create`, so the delete is explicit and \
+                         confirmed rather than something an update does on your behalf and \
+                         cannot undo when the create fails"
                     )?,
                 }
                 if endpoint.contains("/protect/") {

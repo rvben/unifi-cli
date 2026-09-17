@@ -238,9 +238,9 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
             dns_mutation,
             true,
             Some(
-                "Replaces the named fields on an existing record. On controllers \
-                 that only serve v2 static-dns, this deletes the record and creates \
-                 a replacement because that API has no PUT.",
+                "Replaces the named fields on an existing record. Refused on \
+                 controllers that only serve v2 static-dns, because that API has \
+                 no PUT; edit a record there with `dns delete` then `dns create`.",
             ),
         ),
     );

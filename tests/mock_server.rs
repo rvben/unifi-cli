@@ -5363,4 +5363,147 @@ mod schema_contract {
         let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
         assert_eq!(envelope["error"]["kind"], "conflict");
     }
+
+    /// A v2-only controller has no PUT for static DNS. Replacing the record
+    /// with a delete and a create would destroy it whenever the create fails,
+    /// so the update is refused before anything is deleted.
+    #[tokio::test]
+    async fn dns_update_is_refused_on_a_v2_controller_without_deleting() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/proxy/network/v2/api/site/default/static-dns"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "_id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+                    "enabled": true,
+                    "key": "gateway.example.com",
+                    "record_type": "A",
+                    "value": "192.0.2.1",
+                    "ttl": 300
+                }
+            ])))
+            .mount(&server)
+            .await;
+
+        let uri = server.uri();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                uri.as_str(),
+                "--api-key",
+                "test-key",
+                "--output",
+                "json",
+                "dns",
+                "update",
+                "gateway.example.com",
+                "--value",
+                "192.0.2.99",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "stderr: {stderr}");
+        let last = stderr.trim_end().lines().last().unwrap_or("");
+        let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
+        assert_eq!(envelope["error"]["kind"], "unsupported", "stderr: {stderr}");
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("dns delete") && m.contains("dns create")),
+            "the message has to name the two commands that do this safely: {envelope}"
+        );
+
+        let requests = server.received_requests().await.expect("request log");
+        assert!(
+            !requests
+                .iter()
+                .any(|request| request.method.to_string() == "DELETE"),
+            "a refused update must not delete the record first: {:?}",
+            requests
+                .iter()
+                .map(|r| format!("{} {}", r.method, r.url.path()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A TTL of zero is a real value. An update that never mentioned --ttl must
+    /// send it back unchanged rather than substituting the create-time default.
+    #[tokio::test]
+    async fn dns_update_preserves_a_zero_ttl_it_was_not_asked_to_change() {
+        let server = MockServer::start().await;
+        mount_site_discovery(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"/proxy/network/integration/v1/sites/.*/dns/policies$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "offset": 0, "limit": 200, "count": 1, "totalCount": 1,
+                "data": [{
+                    "type": "A_RECORD",
+                    "id": "11111111-2222-3333-4444-555555555555",
+                    "enabled": true,
+                    "domain": "nas.example.com",
+                    "ipv4Address": "192.0.2.10",
+                    "ttlSeconds": 0
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path_regex(r"/dns/policies/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "type": "A_RECORD",
+                "id": "11111111-2222-3333-4444-555555555555",
+                "enabled": false,
+                "domain": "nas.example.com",
+                "ipv4Address": "192.0.2.10",
+                "ttlSeconds": 0
+            })))
+            .mount(&server)
+            .await;
+
+        let uri = server.uri();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args([
+                "--host",
+                uri.as_str(),
+                "--api-key",
+                "test-key",
+                "--output",
+                "json",
+                "dns",
+                "update",
+                "nas.example.com",
+                "--disabled",
+            ])
+            .output()
+            .expect("failed to run the unifi binary");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let requests = server.received_requests().await.expect("request log");
+        let put = requests
+            .iter()
+            .find(|request| request.method.to_string() == "PUT")
+            .expect("the update has to reach the controller");
+        let body: serde_json::Value = serde_json::from_slice(&put.body).expect("json body");
+        assert_eq!(
+            body["ttlSeconds"],
+            serde_json::json!(0),
+            "the record's own TTL must survive an update that never mentioned --ttl: {body}"
+        );
+    }
 }
