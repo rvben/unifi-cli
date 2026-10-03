@@ -1,2 +1,6 @@
 /target
 .claude/investigations/
+.direnv/
+result
+result-*
+flake.lock

@@ -45,6 +45,58 @@ uvx unifi-cli clients list
 
 Pre-built binaries for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64) on the [releases page](https://github.com/rvben/unifi-cli/releases).
 
+### With Nix
+
+Run without installing:
+
+```bash
+nix run github:rvben/unifi-cli -- clients list
+```
+
+To install it from a flake-based NixOS or Home Manager setup, add the input and have it follow your `nixpkgs`:
+
+```nix
+# flake.nix
+inputs = {
+  nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+  unifi-cli = {
+    url = "github:rvben/unifi-cli";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+};
+```
+
+Then add the package. As a Home Manager module:
+
+```nix
+{ inputs, ... }:
+
+{
+  flake.modules.homeManager.unifi-cli =
+    { pkgs, ... }:
+    {
+      home.packages = [
+        inputs.unifi-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
+      ];
+    };
+}
+```
+
+Or as a NixOS module:
+
+```nix
+environment.systemPackages = [
+  inputs.unifi-cli.packages.${pkgs.stdenv.hostPlatform.system}.default
+];
+```
+
+The package installs both `unifi` and `unifi-cli`. An overlay is also exported as `inputs.unifi-cli.overlays.default`, which adds `pkgs.unifi-cli`.
+
+The flake reads the version from `Cargo.toml` and dependencies from `Cargo.lock`, so it needs no manual updates on release.
+
+For development, `nix develop` (or `direnv allow`) provides the Rust toolchain.
+
 ## Configuration
 
 Run `unifi config init` for interactive setup, or configure manually:
