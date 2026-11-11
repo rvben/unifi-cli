@@ -4899,6 +4899,7 @@ mod schema_contract {
                 "vlan": 10, "ip_subnet": "192.0.2.1/24", "enabled": true,
                 "dhcpd_enabled": true, "dhcpd_dns_enabled": true,
                 "dhcpd_dns_1": "192.0.2.53", "dhcpd_dns_2": "192.0.2.54",
+                "dhcpd_dns_3": "192.0.2.55", "dhcpd_dns_4": "192.0.2.56",
                 "mdns_enabled": true, "lte_lan_enabled": false,
                 "x_private_key": "must-not-appear",
                 "x_api_token": "must-not-appear-either"
@@ -4911,7 +4912,7 @@ mod schema_contract {
         assert!(!encoded.contains("must-not-appear"));
         assert_eq!(
             body["dns_servers"],
-            serde_json::json!(["192.0.2.53", "192.0.2.54"])
+            serde_json::json!(["192.0.2.53", "192.0.2.54", "192.0.2.55", "192.0.2.56"])
         );
     }
 

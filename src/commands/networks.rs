@@ -72,14 +72,7 @@ pub async fn show(
     out: OutputConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = client.get_network_detail(identifier).await?;
-    let dns_servers: Vec<&str> = [
-        network.dhcpd_dns_1.as_deref(),
-        network.dhcpd_dns_2.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|server| !server.is_empty())
-    .collect();
+    let dns_servers = network.dns_servers();
 
     let record = serde_json::json!({
         "id": network.id,

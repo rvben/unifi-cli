@@ -769,9 +769,29 @@ pub struct LegacyNetwork {
     pub dhcpd_dns_enabled: bool,
     pub dhcpd_dns_1: Option<String>,
     pub dhcpd_dns_2: Option<String>,
+    pub dhcpd_dns_3: Option<String>,
+    pub dhcpd_dns_4: Option<String>,
     #[serde(default)]
     pub mdns_enabled: bool,
     pub lte_lan_enabled: Option<bool>,
+}
+
+impl LegacyNetwork {
+    /// The DNS servers DHCP hands out, in slot order. The controller stores
+    /// an unused slot as an empty string, so those are skipped.
+    pub fn dns_servers(&self) -> Vec<String> {
+        [
+            &self.dhcpd_dns_1,
+            &self.dhcpd_dns_2,
+            &self.dhcpd_dns_3,
+            &self.dhcpd_dns_4,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|server| !server.is_empty())
+        .cloned()
+        .collect()
+    }
 }
 
 // Health subsystem from Legacy stat/health
