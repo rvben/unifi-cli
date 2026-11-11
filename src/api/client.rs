@@ -505,17 +505,43 @@ impl UnifiClient {
     }
 
     pub async fn get_network_detail(&self, identifier: &str) -> Result<LegacyNetwork, ApiError> {
-        let networks: Vec<LegacyNetwork> = self.get_legacy("/rest/networkconf").await?;
-        networks
+        Ok(self.get_network_config(identifier).await?.into_network())
+    }
+
+    /// One network's complete configuration record, by id or case-insensitive
+    /// name.
+    pub async fn get_network_config(&self, identifier: &str) -> Result<NetworkConfig, ApiError> {
+        let networks: Vec<serde_json::Value> = self.get_legacy("/rest/networkconf").await?;
+        let raw = networks
             .into_iter()
             .find(|network| {
-                network.id == identifier
-                    || network
-                        .name
-                        .as_deref()
+                network["_id"].as_str() == Some(identifier)
+                    || network["name"]
+                        .as_str()
                         .is_some_and(|name| name.eq_ignore_ascii_case(identifier))
             })
-            .ok_or_else(|| ApiError::NotFound(format!("Network not found: {identifier}")))
+            .ok_or_else(|| ApiError::NotFound(format!("Network not found: {identifier}")))?;
+        NetworkConfig::from_raw(raw)
+    }
+
+    /// Set the DNS servers a network's DHCP server hands out.
+    ///
+    /// Writes back the record `config` was read from with only the DNS fields
+    /// changed (see [`NetworkConfig::with_dhcp_dns`]), then reads the network
+    /// again and returns what the controller now reports, so the caller sees
+    /// the stored result rather than its own request echoed back.
+    pub async fn set_network_dhcp_dns(
+        &self,
+        config: &NetworkConfig,
+        dns: &DhcpDns,
+    ) -> Result<LegacyNetwork, ApiError> {
+        let id = &config.network().id;
+        self.put_legacy(
+            &format!("/rest/networkconf/{id}"),
+            &config.with_dhcp_dns(dns),
+        )
+        .await?;
+        self.get_network_detail(id).await
     }
 
     pub async fn list_port_forwards(&self) -> Result<Vec<PortForward>, ApiError> {

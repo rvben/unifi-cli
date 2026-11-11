@@ -413,6 +413,20 @@ enum NetworksCommand {
         /// Network name or controller ID
         identifier: String,
     },
+    /// Set the DNS servers a network's DHCP server hands out
+    ///
+    /// Replaces the whole list: servers not named are removed. Clients pick up
+    /// the change when they renew their DHCP lease.
+    SetDns {
+        /// Network name or controller ID
+        identifier: String,
+        /// IPv4 DNS servers in order of preference, at most 4
+        #[arg(required_unless_present = "auto", conflicts_with = "auto")]
+        servers: Vec<std::net::Ipv4Addr>,
+        /// Hand out the gateway itself as DNS server instead of custom servers
+        #[arg(long)]
+        auto: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1682,6 +1696,43 @@ async fn run() {
             NetworksCommand::List => commands::networks::list(&mut client, out).await,
             NetworksCommand::Show { identifier } => {
                 commands::networks::show(&client, &identifier, out).await
+            }
+            NetworksCommand::SetDns {
+                identifier,
+                servers,
+                auto,
+            } => {
+                let dns = match commands::networks::dhcp_dns_from_args(auto, &servers) {
+                    Ok(dns) => dns,
+                    Err(message) => config_exit(&message),
+                };
+                // Asks once the network is read, so the prompt can show the
+                // current servers next to the new ones; the TTY gate still has
+                // to run before any HTTP.
+                refuse_without_tty(cli.yes, "networks set-dns");
+                let skip_prompt = cli.yes;
+                let outcome =
+                    commands::networks::set_dns(&client, &identifier, &dns, out, |summary| {
+                        if skip_prompt {
+                            return Ok(true);
+                        }
+                        let mut stdin = std::io::stdin().lock();
+                        let mut stderr = std::io::stderr();
+                        confirm_destructive(&mut stdin, &mut stderr, summary, "Apply this change?")
+                    })
+                    .await;
+                match outcome {
+                    Ok(commands::networks::SetDnsOutcome::Done) => Ok(()),
+                    Ok(commands::networks::SetDnsOutcome::Declined) => {
+                        print_error_envelope(
+                            "confirmation_required",
+                            "Aborted: confirmation declined.",
+                            None,
+                        );
+                        std::process::exit(exit_codes::CONFIRMATION_REQUIRED);
+                    }
+                    Err(e) => Err(e),
+                }
             }
         },
         Command::Ports(cmd) => match cmd {

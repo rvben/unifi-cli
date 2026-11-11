@@ -23,6 +23,7 @@ pub const CONFIRMATION_GATED_COMMANDS: &[&str] = &[
     "devices restart",
     "devices upgrade",
     "ports cycle",
+    "networks set-dns",
     "protect rtsps delete",
     "dns delete",
 ];

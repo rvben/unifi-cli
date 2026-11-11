@@ -333,6 +333,30 @@ fn command_metadata() -> HashMap<&'static str, CommandMeta> {
         ),
     );
     m.insert(
+        "networks set-dns",
+        f(
+            &[
+                ("status", "string"),
+                ("action", "string"),
+                ("id", "string"),
+                ("name", "string"),
+                ("changed", "boolean"),
+                ("dns_custom", "boolean"),
+                ("dns_servers", "array"),
+                ("previous_dns_custom", "boolean"),
+                ("previous_dns_servers", "array"),
+            ],
+            true,
+            Some(
+                "Replaces the whole DHCP DNS list; --auto hands out the gateway instead. \
+                 A network that already hands out exactly the requested servers is not \
+                 written and reports changed: false. dns_servers is read back from the \
+                 controller after the write. Refused with kind conflict for a network \
+                 without a DHCP server. Clients pick up the change on DHCP lease renewal.",
+            ),
+        ),
+    );
+    m.insert(
         "events list",
         f(
             fields::EVENTS_LIST,

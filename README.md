@@ -228,7 +228,7 @@ to trust the controller and saves `accept_invalid_certs = true` for you.
 ### Destructive commands
 
 `clients block`, `clients unblock`, `clients kick`, `devices restart`,
-`devices upgrade`, `ports cycle`, `protect rtsps delete` and `dns delete` all
+`devices upgrade`, `ports cycle`, `networks set-dns`, `protect rtsps delete` and `dns delete` all
 ask before they act. On a terminal you get a yes/no question naming the target;
 declining exits 2 with `kind: confirmation_required` and sends nothing. When
 stdin is not a terminal there is nobody to ask, so they refuse with the same
@@ -442,7 +442,14 @@ Temporary sessions are left to expire under the controller's session policy.
 unifi networks list                         # List all networks
 unifi networks                              # Same thing
 unifi networks show IoT                     # DHCP, DNS, mDNS, and cellular-backup details
+unifi networks set-dns IoT 192.0.2.53       # DNS servers handed out by DHCP (up to 4, in order)
+unifi networks set-dns IoT --auto           # Hand out the gateway's own DNS again
 ```
+
+`set-dns` replaces the whole list and leaves every other network setting as it
+was. It shows the current and new servers and asks before writing; a network
+that already hands out exactly those servers is left alone (`changed: false`).
+Clients pick up the change when they renew their DHCP lease.
 
 ### System
 

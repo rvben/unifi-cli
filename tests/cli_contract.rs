@@ -385,6 +385,7 @@ const GATED_INVOCATIONS: &[(&str, &[&str])] = &[
     ("devices restart", &["aa:bb:cc:dd:ee:ff"]),
     ("devices upgrade", &["aa:bb:cc:dd:ee:ff"]),
     ("ports cycle", &["aa:bb:cc:dd:ee:ff", "5"]),
+    ("networks set-dns", &["LAN", "192.0.2.53"]),
     ("protect rtsps delete", &["front-door"]),
     ("dns delete", &["nas.example.com"]),
 ];

@@ -5643,3 +5643,332 @@ mod event_pagination {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
+
+// --- networks set-dns ---
+
+mod networks_set_dns {
+    use super::*;
+
+    const NETWORKCONF: &str = "/proxy/network/api/s/default/rest/networkconf";
+    const LAN_PUT: &str = "/proxy/network/api/s/default/rest/networkconf/net-1";
+
+    /// A LAN record carrying fields this tool does not model: DHCP range, IPv6,
+    /// a secret, and a nested value. A write that rebuilt the record from the
+    /// typed view would drop or alter these.
+    fn lan(dns_enabled: bool, slots: [&str; 4]) -> serde_json::Value {
+        serde_json::json!({
+            "_id": "net-1", "name": "LAN", "purpose": "corporate", "vlan": 10,
+            "ip_subnet": "192.0.2.1/24", "enabled": true, "site_id": "site-1",
+            "dhcpd_enabled": true, "dhcpd_start": "192.0.2.100",
+            "dhcpd_stop": "192.0.2.200", "dhcpd_leasetime": 86400,
+            "dhcpd_dns_enabled": dns_enabled,
+            "dhcpd_dns_1": slots[0], "dhcpd_dns_2": slots[1],
+            "dhcpd_dns_3": slots[2], "dhcpd_dns_4": slots[3],
+            "ipv6_interface_type": "none", "mdns_enabled": false,
+            "x_unmodelled_secret": "keep-me-but-never-print-me",
+            "future_field": {"nested": [1, 2]}
+        })
+    }
+
+    fn legacy_ok(data: serde_json::Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "meta": {"rc": "ok"}, "data": data
+        }))
+    }
+
+    /// Serve `before` for the first read of networkconf and `after` for every
+    /// later one, so the command's read-back sees what a real controller would
+    /// report once the PUT landed.
+    async fn serving_before_and_after(
+        before: serde_json::Value,
+        after: serde_json::Value,
+    ) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(NETWORKCONF))
+            .respond_with(legacy_ok(serde_json::json!([before])))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(NETWORKCONF))
+            .respond_with(legacy_ok(serde_json::json!([after])))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Serve the same networkconf `data` for every read.
+    async fn serving_networks(data: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(NETWORKCONF))
+            .respond_with(legacy_ok(data))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn run(server: &MockServer, args: &[&str]) -> std::process::Output {
+        let uri = server.uri();
+        let mut argv = vec!["--host", uri.as_str(), "--api-key", "test-key"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&["--output", "json"]);
+        std::process::Command::new(env!("CARGO_BIN_EXE_unifi"))
+            .args(&argv)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("failed to run the unifi binary")
+    }
+
+    fn envelope(stderr: &[u8]) -> serde_json::Value {
+        let text = String::from_utf8_lossy(stderr);
+        let last = text.lines().last().unwrap_or_default();
+        serde_json::from_str(last).unwrap_or_else(|e| panic!("no error envelope ({e}): {text}"))
+    }
+
+    #[tokio::test]
+    async fn writes_back_the_whole_record_with_only_the_dns_fields_changed() {
+        let before = lan(true, ["192.0.2.53", "198.51.100.53", "", ""]);
+        let after = lan(true, ["192.0.2.53", "", "", ""]);
+        let server = serving_before_and_after(before, after.clone()).await;
+        // The exact body: every unmodelled field intact, and the dropped
+        // second server cleared rather than left behind in its slot.
+        Mock::given(method("PUT"))
+            .and(path(LAN_PUT))
+            .and(body_json(after.clone()))
+            .respond_with(legacy_ok(serde_json::json!([after])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &["--yes", "networks", "set-dns", "lan", "192.0.2.53"],
+        )
+        .await;
+
+        assert_schema_matches("networks set-dns", &body);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["action"], "set-dns");
+        assert_eq!(body["id"], "net-1");
+        assert_eq!(body["name"], "LAN");
+        assert_eq!(body["changed"], true);
+        assert_eq!(body["dns_custom"], true);
+        assert_eq!(body["dns_servers"], serde_json::json!(["192.0.2.53"]));
+        assert_eq!(body["previous_dns_custom"], true);
+        assert_eq!(
+            body["previous_dns_servers"],
+            serde_json::json!(["192.0.2.53", "198.51.100.53"])
+        );
+        assert!(!body.to_string().contains("keep-me"));
+    }
+
+    #[tokio::test]
+    async fn fills_all_four_slots_in_the_given_order() {
+        let before = lan(false, ["", "", "", ""]);
+        let after = lan(
+            true,
+            ["203.0.113.4", "203.0.113.3", "203.0.113.2", "203.0.113.1"],
+        );
+        let server = serving_before_and_after(before, after.clone()).await;
+        Mock::given(method("PUT"))
+            .and(path(LAN_PUT))
+            .and(body_json(after.clone()))
+            .respond_with(legacy_ok(serde_json::json!([after])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &[
+                "--yes",
+                "networks",
+                "set-dns",
+                "LAN",
+                "203.0.113.4",
+                "203.0.113.3",
+                "203.0.113.2",
+                "203.0.113.1",
+            ],
+        )
+        .await;
+
+        assert_eq!(body["previous_dns_custom"], false);
+        assert_eq!(body["previous_dns_servers"], serde_json::json!([]));
+        assert_eq!(
+            body["dns_servers"],
+            serde_json::json!(["203.0.113.4", "203.0.113.3", "203.0.113.2", "203.0.113.1"])
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_disables_custom_dns_and_clears_every_slot() {
+        let before = lan(true, ["192.0.2.53", "198.51.100.53", "", ""]);
+        let after = lan(false, ["", "", "", ""]);
+        let server = serving_before_and_after(before, after.clone()).await;
+        Mock::given(method("PUT"))
+            .and(path(LAN_PUT))
+            .and(body_json(after.clone()))
+            .respond_with(legacy_ok(serde_json::json!([after])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(&server, &["--yes", "networks", "set-dns", "LAN", "--auto"]).await;
+
+        assert_eq!(body["changed"], true);
+        assert_eq!(body["dns_custom"], false);
+        assert_eq!(body["dns_servers"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_network_is_not_written() {
+        let current = lan(true, ["192.0.2.53", "", "", ""]);
+        let server = serving_networks(serde_json::json!([current])).await;
+        Mock::given(method("PUT"))
+            .respond_with(legacy_ok(serde_json::json!([])))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &["--yes", "networks", "set-dns", "LAN", "192.0.2.53"],
+        )
+        .await;
+
+        assert_schema_matches("networks set-dns", &body);
+        assert_eq!(body["changed"], false);
+        assert_eq!(body["dns_servers"], serde_json::json!(["192.0.2.53"]));
+        assert_eq!(
+            body["previous_dns_servers"],
+            serde_json::json!(["192.0.2.53"])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_servers_in_another_order_are_a_change() {
+        let before = lan(true, ["192.0.2.53", "198.51.100.53", "", ""]);
+        let after = lan(true, ["198.51.100.53", "192.0.2.53", "", ""]);
+        let server = serving_before_and_after(before, after.clone()).await;
+        Mock::given(method("PUT"))
+            .and(path(LAN_PUT))
+            .and(body_json(after.clone()))
+            .respond_with(legacy_ok(serde_json::json!([after])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = run_json(
+            &server,
+            &[
+                "--yes",
+                "networks",
+                "set-dns",
+                "LAN",
+                "198.51.100.53",
+                "192.0.2.53",
+            ],
+        )
+        .await;
+
+        assert_eq!(body["changed"], true);
+    }
+
+    #[tokio::test]
+    async fn a_network_without_a_dhcp_server_is_refused_before_any_write() {
+        let mut wan = lan(false, ["", "", "", ""]);
+        wan["dhcpd_enabled"] = serde_json::json!(false);
+        let server = serving_networks(serde_json::json!([wan])).await;
+        Mock::given(method("PUT"))
+            .respond_with(legacy_ok(serde_json::json!([])))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server,
+            &["--yes", "networks", "set-dns", "LAN", "192.0.2.53"],
+        );
+
+        assert_eq!(output.status.code(), Some(6));
+        assert!(output.stdout.is_empty());
+        assert_eq!(envelope(&output.stderr)["error"]["kind"], "conflict");
+    }
+
+    #[tokio::test]
+    async fn a_write_the_controller_did_not_store_is_reported_as_a_failure() {
+        // The controller answers the PUT with success but keeps the old
+        // servers. Reporting the requested list would claim a change that
+        // never happened.
+        let before = lan(true, ["192.0.2.53", "198.51.100.53", "", ""]);
+        let server = serving_before_and_after(before.clone(), before.clone()).await;
+        Mock::given(method("PUT"))
+            .and(path(LAN_PUT))
+            .respond_with(legacy_ok(serde_json::json!([before])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let output = run(
+            &server,
+            &["--yes", "networks", "set-dns", "LAN", "192.0.2.53"],
+        );
+
+        assert_ne!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        let message = envelope(&output.stderr)["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(message.contains("192.0.2.53, 198.51.100.53"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_network_is_not_found() {
+        let server =
+            serving_networks(serde_json::json!([lan(true, ["192.0.2.53", "", "", ""])])).await;
+
+        let output = run(
+            &server,
+            &["--yes", "networks", "set-dns", "Nope", "192.0.2.53"],
+        );
+
+        assert_eq!(envelope(&output.stderr)["error"]["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn invalid_arguments_are_refused_before_any_request() {
+        let server = MockServer::start().await;
+        for args in [
+            vec!["networks", "set-dns", "LAN"],
+            vec!["networks", "set-dns", "LAN", "not-an-ip"],
+            vec!["networks", "set-dns", "LAN", "2001:db8::53"],
+            vec!["networks", "set-dns", "LAN", "192.0.2.53", "--auto"],
+            vec!["networks", "set-dns", "LAN", "192.0.2.53", "192.0.2.53"],
+            vec![
+                "networks",
+                "set-dns",
+                "LAN",
+                "192.0.2.1",
+                "192.0.2.2",
+                "192.0.2.3",
+                "192.0.2.4",
+                "192.0.2.5",
+            ],
+        ] {
+            let mut with_yes = vec!["--yes"];
+            with_yes.extend_from_slice(&args);
+            let output = run(&server, &with_yes);
+            assert_ne!(
+                output.status.code(),
+                Some(0),
+                "`{}` should have been refused",
+                args.join(" ")
+            );
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}

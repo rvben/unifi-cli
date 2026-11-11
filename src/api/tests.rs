@@ -1068,3 +1068,25 @@ fn legacy_body_keeps_a_trailing_dot_in_txt_data() {
     };
     assert_eq!(cname.legacy_body().unwrap()["value"], "nas.example.com");
 }
+
+// --- NetworkConfig ---
+
+#[test]
+fn network_config_debug_never_prints_the_raw_record() {
+    let config = NetworkConfig::from_raw(serde_json::json!({
+        "_id": "net-1", "name": "LAN", "x_wireguard_private_key": "secret-value"
+    }))
+    .unwrap();
+    let printed = format!("{config:?}");
+    assert!(printed.contains("LAN"), "{printed}");
+    assert!(!printed.contains("secret-value"), "{printed}");
+}
+
+#[test]
+fn network_config_rejects_a_record_without_an_id() {
+    let err = NetworkConfig::from_raw(serde_json::json!({"name": "LAN"})).unwrap_err();
+    assert!(
+        err.to_string().contains("Unexpected network record"),
+        "{err}"
+    );
+}

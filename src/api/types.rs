@@ -792,6 +792,132 @@ impl LegacyNetwork {
         .cloned()
         .collect()
     }
+
+    /// What DHCP on this network hands out as DNS.
+    pub fn dns_setting(&self) -> DhcpDns {
+        if self.dhcpd_dns_enabled {
+            DhcpDns::Servers(self.dns_servers())
+        } else {
+            DhcpDns::Auto
+        }
+    }
+}
+
+/// A complete `rest/networkconf` record, for changing a network in place.
+///
+/// The controller's PUT for a network is answered by writing back the record it
+/// served with only the intended fields changed, the same way its own UI saves
+/// a network. That keeps every setting this tool does not model (DHCP ranges,
+/// IPv6, firewall zone, and fields newer firmware adds) exactly as it was.
+///
+/// The raw record carries secrets such as VPN keys, so it is private: callers
+/// see the typed [`LegacyNetwork`] view, and the raw form only ever goes back to
+/// the controller it came from.
+pub struct NetworkConfig {
+    raw: serde_json::Map<String, serde_json::Value>,
+    network: LegacyNetwork,
+}
+
+/// Shows only the typed view, so a debug print or panic message cannot leak
+/// the secrets in the raw record.
+impl std::fmt::Debug for NetworkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkConfig")
+            .field("network", &self.network)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NetworkConfig {
+    pub fn from_raw(raw: serde_json::Value) -> Result<Self, ApiError> {
+        let network: LegacyNetwork = serde_json::from_value(raw.clone())
+            .map_err(|e| ApiError::Other(format!("Unexpected network record: {e}")))?;
+        let serde_json::Value::Object(raw) = raw else {
+            unreachable!("a record that deserializes into a struct is a JSON object")
+        };
+        Ok(Self { raw, network })
+    }
+
+    pub fn network(&self) -> &LegacyNetwork {
+        &self.network
+    }
+
+    pub fn into_network(self) -> LegacyNetwork {
+        self.network
+    }
+
+    /// Refuse a DNS change that could never reach a client.
+    ///
+    /// DHCP DNS servers are only handed out by a network that runs a DHCP
+    /// server. WAN and VPN records have none, and a LAN with DHCP disabled
+    /// would store the servers without ever serving them, which reads as
+    /// success while changing nothing a client sees.
+    pub fn check_dhcp_dns_settable(&self) -> Result<(), ApiError> {
+        let name = self.network.name.as_deref().unwrap_or(&self.network.id);
+        if !self.network.dhcpd_enabled {
+            return Err(ApiError::Conflict(format!(
+                "Network '{name}' does not run a DHCP server, so it hands out no DNS servers."
+            )));
+        }
+        Ok(())
+    }
+
+    /// The record to PUT back: identical to the one served, except for the
+    /// DHCP DNS mode and all four server slots.
+    ///
+    /// Every slot is written, unused ones as the empty string the controller
+    /// itself uses, so a shorter list cannot leave an old server behind in a
+    /// trailing slot. `Auto` clears the slots too, so switching back to custom
+    /// servers later never silently revives a stale entry.
+    pub fn with_dhcp_dns(&self, dns: &DhcpDns) -> serde_json::Value {
+        let mut raw = self.raw.clone();
+        raw.insert(
+            "dhcpd_dns_enabled".into(),
+            serde_json::Value::Bool(dns.is_custom()),
+        );
+        let servers = dns.servers();
+        for slot in 0..DhcpDns::MAX_SERVERS {
+            let value = servers.get(slot).cloned().unwrap_or_default();
+            raw.insert(
+                format!("dhcpd_dns_{}", slot + 1),
+                serde_json::Value::String(value),
+            );
+        }
+        serde_json::Value::Object(raw)
+    }
+}
+
+/// The DNS servers a network's DHCP server hands out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DhcpDns {
+    /// The gateway hands out itself as resolver (the controller's "Auto").
+    Auto,
+    /// Custom servers, in order of preference. One to four entries.
+    Servers(Vec<String>),
+}
+
+impl DhcpDns {
+    /// The number of DNS slots a UniFi network has.
+    pub const MAX_SERVERS: usize = 4;
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, DhcpDns::Servers(_))
+    }
+
+    pub fn servers(&self) -> &[String] {
+        match self {
+            DhcpDns::Auto => &[],
+            DhcpDns::Servers(servers) => servers,
+        }
+    }
+
+    /// Human-readable form: the server list, or `auto (gateway)`.
+    pub fn describe(&self) -> String {
+        match self {
+            DhcpDns::Auto => "auto (gateway)".into(),
+            DhcpDns::Servers(servers) => servers.join(", "),
+        }
+    }
 }
 
 // Health subsystem from Legacy stat/health
