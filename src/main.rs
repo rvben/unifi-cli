@@ -661,8 +661,35 @@ fn load_config(profile: Option<&str>) -> ConfigValues {
 /// Where `config init` writes: always the XDG path when `XDG_CONFIG_HOME` is
 /// set, even if `config_path()` is still falling back to the platform file.
 fn default_config_path() -> Result<std::path::PathBuf, InitError> {
-    preferred_config_path(xdg_config_home().as_deref(), dirs::config_dir().as_deref())
-        .ok_or(InitError("Could not determine config directory".into()))
+    preferred_config_path(
+        xdg_config_home().as_deref(),
+        platform_config_dir().as_deref(),
+    )
+    .ok_or(InitError("Could not determine config directory".into()))
+}
+
+/// The native default without an XDG override, for legacy config fallback.
+fn platform_config_dir() -> Option<std::path::PathBuf> {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_arch = "wasm32"
+    ))]
+    {
+        dirs::config_dir()
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_arch = "wasm32"
+    )))]
+    {
+        // dirs::config_dir() already applies XDG on these platforms, which
+        // would make the preferred and legacy paths identical.
+        dirs::home_dir().map(|home| home.join(".config"))
+    }
 }
 
 /// `XDG_CONFIG_HOME`, if it is set to an absolute path.
@@ -680,7 +707,10 @@ fn xdg_from(value: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
 
 /// The config file to read, see `resolve_config_path`.
 fn config_path() -> Option<std::path::PathBuf> {
-    resolve_config_path(xdg_config_home().as_deref(), dirs::config_dir().as_deref())
+    resolve_config_path(
+        xdg_config_home().as_deref(),
+        platform_config_dir().as_deref(),
+    )
 }
 
 fn config_file_in(dir: &std::path::Path) -> std::path::PathBuf {
@@ -689,7 +719,7 @@ fn config_file_in(dir: &std::path::Path) -> std::path::PathBuf {
 
 /// `$XDG_CONFIG_HOME/unifi/config.toml` when `XDG_CONFIG_HOME` is set, on
 /// every platform, else the file under `platform`, the OS default
-/// (`dirs::config_dir()`). On macOS that is `~/Library/Application Support`,
+/// (independent of XDG). On macOS that is `~/Library/Application Support`,
 /// which ignores XDG.
 fn preferred_config_path(
     xdg: Option<&std::path::Path>,
