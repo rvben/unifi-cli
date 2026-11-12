@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1](https://github.com/rvben/unifi-cli/compare/v0.5.0...v0.5.1) - 2026-11-12
+
+### Added
+
+- **networks**: add networks set-dns to set the DNS servers DHCP hands out ([626453b](https://github.com/rvben/unifi-cli/commit/626453b2c45c5a801979eb5ebd96f653807f813f))
+
+### Fixed
+
+- **config**: preserve native config fallback on Linux ([316ce9e](https://github.com/rvben/unifi-cli/commit/316ce9e44f0b6c8ebd5cf79b38a3d62bf55a6659))
+- **config**: honour XDG_CONFIG_HOME on every platform ([40989d9](https://github.com/rvben/unifi-cli/commit/40989d9dda63fed36697d4eaba13dff4dcec4ec3))
+- **networks**: show all four DHCP DNS servers in networks show ([e381216](https://github.com/rvben/unifi-cli/commit/e381216873d360b35be5c5eab137aa92fb4ed624))
+
 ## [0.5.0](https://github.com/rvben/unifi-cli/compare/v0.4.6...v0.5.0) - 2026-10-28
 
 ### Added
