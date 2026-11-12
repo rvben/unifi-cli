@@ -651,19 +651,65 @@ fn load_config_from(path: &std::path::Path, profile: Option<&str>) -> ConfigValu
 }
 
 fn load_config(profile: Option<&str>) -> ConfigValues {
-    let config_path = dirs::config_dir().map(|d| d.join("unifi").join("config.toml"));
-
-    if let Some(path) = config_path {
+    if let Some(path) = config_path() {
         return load_config_from(&path, profile);
     }
 
     ConfigValues::default()
 }
 
+/// Where `config init` writes: always the XDG path when `XDG_CONFIG_HOME` is
+/// set, even if `config_path()` is still falling back to the platform file.
 fn default_config_path() -> Result<std::path::PathBuf, InitError> {
-    dirs::config_dir()
-        .map(|d| d.join("unifi").join("config.toml"))
+    preferred_config_path(xdg_config_home().as_deref(), dirs::config_dir().as_deref())
         .ok_or(InitError("Could not determine config directory".into()))
+}
+
+/// `XDG_CONFIG_HOME`, if it is set to an absolute path.
+fn xdg_config_home() -> Option<std::path::PathBuf> {
+    xdg_from(std::env::var_os("XDG_CONFIG_HOME"))
+}
+
+/// The XDG Base Directory spec says an empty or relative value is invalid and
+/// must be ignored.
+fn xdg_from(value: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    value
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// The config file to read, see `resolve_config_path`.
+fn config_path() -> Option<std::path::PathBuf> {
+    resolve_config_path(xdg_config_home().as_deref(), dirs::config_dir().as_deref())
+}
+
+fn config_file_in(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("unifi").join("config.toml")
+}
+
+/// `$XDG_CONFIG_HOME/unifi/config.toml` when `XDG_CONFIG_HOME` is set, on
+/// every platform, else the file under `platform`, the OS default
+/// (`dirs::config_dir()`). On macOS that is `~/Library/Application Support`,
+/// which ignores XDG.
+fn preferred_config_path(
+    xdg: Option<&std::path::Path>,
+    platform: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    xdg.or(platform).map(config_file_in)
+}
+
+/// The preferred path, except that if the XDG file doesn't exist but the
+/// platform one does, keep reading the platform file so an existing config
+/// isn't silently dropped.
+fn resolve_config_path(
+    xdg: Option<&std::path::Path>,
+    platform: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let preferred = preferred_config_path(xdg, platform)?;
+    match platform.map(config_file_in) {
+        Some(legacy) if !preferred.is_file() && legacy.is_file() => Some(legacy),
+        _ => Some(preferred),
+    }
 }
 
 #[derive(Debug)]
@@ -805,6 +851,7 @@ fn sym_bold(s: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn run_init_with_io(
     reader: &mut dyn std::io::BufRead,
     writer: &mut dyn std::io::Write,
@@ -813,15 +860,39 @@ fn run_init_with_io(
     accept_invalid_certs: bool,
     profile_hint: Option<&str>,
 ) -> Result<InitOutcome, InitError> {
+    run_init_with_io_from(
+        reader,
+        writer,
+        config_path,
+        config_path,
+        use_tty,
+        accept_invalid_certs,
+        profile_hint,
+    )
+}
+
+/// Merge the answers into the config at `source` and write the result to
+/// `config_path`. The two differ when `XDG_CONFIG_HOME` is set but only the
+/// platform file exists: its profiles are carried over into the new XDG file,
+/// and the old file is left in place.
+fn run_init_with_io_from(
+    reader: &mut dyn std::io::BufRead,
+    writer: &mut dyn std::io::Write,
+    source: &std::path::Path,
+    config_path: &std::path::Path,
+    use_tty: bool,
+    accept_invalid_certs: bool,
+    profile_hint: Option<&str>,
+) -> Result<InitOutcome, InitError> {
     // Load existing config, warn if file exists but is corrupt
-    let existing = match std::fs::read_to_string(config_path) {
+    let existing = match std::fs::read_to_string(source) {
         Ok(contents) => match contents.parse::<toml::Table>() {
             Ok(table) => Some(table),
             Err(e) => {
                 writeln!(
                     writer,
                     "Warning: Existing config at {} is invalid TOML: {e}",
-                    config_path.display()
+                    source.display()
                 )?;
                 writeln!(writer, "A new config will be created.\n")?;
                 None
@@ -829,6 +900,14 @@ fn run_init_with_io(
         },
         Err(_) => None,
     };
+    if existing.is_some() && source != config_path {
+        writeln!(
+            writer,
+            "Existing config at {} will be copied to {}. The old file is left in place.\n",
+            source.display(),
+            config_path.display()
+        )?;
+    }
 
     // Profile name
     let profile_prompt = profile_hint.map_or_else(
@@ -1137,9 +1216,13 @@ async fn run_init(accept_invalid_certs: bool, profile_hint: Option<&str>) -> boo
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    let outcome = match run_init_with_io(
+    // Seed from the file that is currently read, which may be the platform
+    // file when the XDG one doesn't exist yet.
+    let source = config_path().unwrap_or_else(|| path.clone());
+    let outcome = match run_init_with_io_from(
         &mut reader,
         &mut writer,
+        &source,
         &path,
         use_tty,
         accept_invalid_certs,
@@ -1311,7 +1394,11 @@ fn install_completions(shell: Shell) {
             (dir, "unifi".to_string())
         }
         Shell::Fish => {
-            let dir = dirs::config_dir()
+            // fish reads $XDG_CONFIG_HOME/fish, else ~/.config/fish, on every
+            // platform, so don't use dirs::config_dir() (Application Support
+            // on macOS).
+            let dir = xdg_config_home()
+                .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
                 .map(|d| d.join("fish").join("completions"))
                 .unwrap_or_else(|| std::path::PathBuf::from("."));
             (dir, "unifi.fish".to_string())
@@ -2220,6 +2307,130 @@ mod tests {
     use std::io::Write;
 
     // --- Config loading ---
+
+    fn write_config_in(dir: &std::path::Path) -> std::path::PathBuf {
+        let file = dir.join("unifi").join("config.toml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "host = \"unifi.local\"\n").unwrap();
+        file
+    }
+
+    #[test]
+    fn config_path_without_xdg_uses_platform_dir() {
+        let platform = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_config_path(None, Some(platform.path())),
+            Some(platform.path().join("unifi").join("config.toml"))
+        );
+        assert_eq!(resolve_config_path(None, None), None);
+    }
+
+    #[test]
+    fn config_path_prefers_xdg_when_nothing_exists() {
+        let xdg = tempfile::tempdir().unwrap();
+        let platform = tempfile::tempdir().unwrap();
+        let expected = Some(xdg.path().join("unifi").join("config.toml"));
+        assert_eq!(
+            resolve_config_path(Some(xdg.path()), Some(platform.path())),
+            expected
+        );
+        assert_eq!(resolve_config_path(Some(xdg.path()), None), expected);
+    }
+
+    #[test]
+    fn config_path_falls_back_to_existing_platform_file() {
+        let xdg = tempfile::tempdir().unwrap();
+        let platform = tempfile::tempdir().unwrap();
+        let legacy = write_config_in(platform.path());
+        assert_eq!(
+            resolve_config_path(Some(xdg.path()), Some(platform.path())),
+            Some(legacy)
+        );
+        // config init still writes to the XDG path.
+        assert_eq!(
+            preferred_config_path(Some(xdg.path()), Some(platform.path())),
+            Some(xdg.path().join("unifi").join("config.toml"))
+        );
+    }
+
+    #[test]
+    fn init_copies_platform_config_into_xdg_file() {
+        let xdg = tempfile::tempdir().unwrap();
+        let platform = tempfile::tempdir().unwrap();
+        let legacy = platform.path().join("unifi").join("config.toml");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let legacy_contents =
+            "[profiles.home]\nhost = \"https://home.local\"\napi_key = \"home-key\"\n";
+        std::fs::write(&legacy, legacy_contents).unwrap();
+        let target = preferred_config_path(Some(xdg.path()), Some(platform.path())).unwrap();
+
+        // profile, host, key, username, confirm
+        let mut reader =
+            std::io::Cursor::new(b"office\nhttps://office.local\noffice-key\n\ny\n".to_vec());
+        let mut output = Vec::new();
+        run_init_with_io_from(
+            &mut reader,
+            &mut output,
+            &legacy,
+            &target,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let written = std::fs::read_to_string(&target).unwrap();
+        assert!(written.contains("[profiles.home]"));
+        assert!(written.contains("home-key"));
+        assert!(written.contains("[profiles.office]"));
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), legacy_contents);
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("will be copied to")
+        );
+        // With both files present, reads now come from the XDG file.
+        assert_eq!(
+            resolve_config_path(Some(xdg.path()), Some(platform.path())),
+            Some(target)
+        );
+    }
+
+    #[test]
+    fn config_path_prefers_existing_xdg_file_over_platform_file() {
+        let xdg = tempfile::tempdir().unwrap();
+        let platform = tempfile::tempdir().unwrap();
+        let preferred = write_config_in(xdg.path());
+        write_config_in(platform.path());
+        assert_eq!(
+            resolve_config_path(Some(xdg.path()), Some(platform.path())),
+            Some(preferred)
+        );
+    }
+
+    #[test]
+    fn config_path_with_xdg_equal_to_platform_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = Some(dir.path().join("unifi").join("config.toml"));
+        assert_eq!(
+            resolve_config_path(Some(dir.path()), Some(dir.path())),
+            expected
+        );
+        write_config_in(dir.path());
+        assert_eq!(
+            resolve_config_path(Some(dir.path()), Some(dir.path())),
+            expected
+        );
+    }
+
+    #[test]
+    fn xdg_config_home_ignores_empty_and_relative_values() {
+        assert_eq!(xdg_from(None), None);
+        assert_eq!(xdg_from(Some("".into())), None);
+        assert_eq!(xdg_from(Some("relative/config".into())), None);
+        let absolute = std::env::temp_dir();
+        assert_eq!(xdg_from(Some(absolute.clone().into())), Some(absolute));
+    }
 
     #[test]
     fn mfa_code_selection_prefers_a_fresh_interactive_prompt() {
