@@ -135,9 +135,19 @@ export UNIFI_ACCEPT_INVALID_CERTS=true
 
 ### Config file
 
-Linux: `~/.config/unifi/config.toml`.
-macOS: `~/Library/Application Support/unifi/config.toml`.
+If [XDG_CONFIG_HOME](https://specifications.freedesktop.org/basedir/) is set to an absolute path, `$XDG_CONFIG_HOME/unifi/config.toml` is used on every platform.
+
+Otherwise the platform default applies:
+
+Linux: `$HOME/.config/unifi/config.toml`.
+macOS: `$HOME/Library/Application Support/unifi/config.toml`.
 Windows: `%APPDATA%\unifi\config.toml`.
+
+When `XDG_CONFIG_HOME` is set but `$XDG_CONFIG_HOME/unifi/config.toml` doesn't exist, an existing file at the platform default is still read.
+
+`unifi config init` always writes to `$XDG_CONFIG_HOME/unifi/config.toml` when `XDG_CONFIG_HOME` is set, copying any profiles from the platform default file into it and leaving the old file in place.
+
+`unifi completions fish --install` writes to `$XDG_CONFIG_HOME/fish/completions`, or `~/.config/fish/completions` when it is unset.
 
 `unifi config init` writes a new file and renames it over any existing config
 instead of writing in place, so a failed write leaves the previous config
